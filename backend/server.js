@@ -907,10 +907,16 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
         `INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1, $2, 0) ON CONFLICT (product_id, branch_id) DO NOTHING`,
         [pid, branchId]
       );
-      await client.query(
-        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
+      // Atomic, race-safe decrement: only succeeds if enough stock is on hand.
+      const dec = await client.query(
+        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3 AND quantity >= $1',
         [qty, pid, branchId]
       );
+      if (dec.rowCount === 0) {
+        const avail = await client.query('SELECT COALESCE(quantity, 0) AS q FROM product_stock WHERE product_id=$1 AND branch_id=$2', [pid, branchId]);
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Недостаточно остатка: есть ${parseFloat(avail.rows[0]?.q || 0)}, нужно ${qty}` });
+      }
       // Cash income — only the actually paid portion. Debt portion is tracked in stock_outcome.payment_status.
       if (paid > 0) {
         const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [pid]);
@@ -962,24 +968,23 @@ app.post('/api/stock/return-to-supplier', auth(['admin', 'manager', 'warehouse',
     if (req.user.role !== 'admin' && sup.rows[0].company_id !== req.user.company_id) {
       await client.query('ROLLBACK'); return res.status(400).json({ error: 'Поставщик не в вашей компании' });
     }
-    // Stock check
-    const stockRow = await client.query('SELECT quantity FROM product_stock WHERE product_id=$1 AND branch_id=$2', [pid, branchId]);
-    if (!stockRow.rows[0] || parseFloat(stockRow.rows[0].quantity) < qty) {
-      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' });
-    }
     // Get cost price for record
     const p = await client.query('SELECT price_buy FROM products WHERE id=$1', [pid]);
     const price = parseFloat(p.rows[0]?.price_buy || 0);
+    // Atomic, race-safe decrement: only succeeds if enough stock is on hand.
+    const dec = await client.query(
+      'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3 AND quantity >= $1',
+      [qty, pid, branchId]
+    );
+    if (dec.rowCount === 0) {
+      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' });
+    }
     // Record outcome of type return_to_supplier
     const out = await client.query(
       `INSERT INTO stock_outcome (product_id, quantity, price, note, created_by, approved_by, status, branch_id,
                                   outcome_type, supplier_id)
        VALUES ($1,$2,$3,$4,$5,$6,'approved',$7,'return_to_supplier',$8) RETURNING *`,
       [pid, qty, price, note || '', req.user.id, req.user.id, branchId, supId]
-    );
-    await client.query(
-      'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
-      [qty, pid, branchId]
     );
     // Cash inflow if supplier refunded
     const refund = parseFloat(refund_amount) || 0;
@@ -1011,21 +1016,21 @@ app.post('/api/stock/writeoff', auth(['admin', 'manager', 'warehouse', 'cashier'
     if (!reason || !reason.trim()) return res.status(400).json({ error: 'Причина списания обязательна' });
     const branchId = getBranchFilter(req.user, req.body);
     await client.query('BEGIN');
-    const stockRow = await client.query('SELECT quantity FROM product_stock WHERE product_id=$1 AND branch_id=$2', [pid, branchId]);
-    if (!stockRow.rows[0] || parseFloat(stockRow.rows[0].quantity) < qty) {
-      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' });
-    }
     const p = await client.query('SELECT price_buy FROM products WHERE id=$1', [pid]);
     const price = parseFloat(p.rows[0]?.price_buy || 0);
+    // Atomic, race-safe decrement: only succeeds if enough stock is on hand.
+    const dec = await client.query(
+      'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3 AND quantity >= $1',
+      [qty, pid, branchId]
+    );
+    if (dec.rowCount === 0) {
+      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' });
+    }
     const out = await client.query(
       `INSERT INTO stock_outcome (product_id, quantity, price, note, created_by, approved_by, status, branch_id,
                                   outcome_type, writeoff_reason)
        VALUES ($1,$2,$3,$4,$5,$6,'approved',$7,'writeoff',$8) RETURNING *`,
       [pid, qty, price, note || '', req.user.id, req.user.id, branchId, reason.trim()]
-    );
-    await client.query(
-      'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
-      [qty, pid, branchId]
     );
     audit(req, 'writeoff', 'stock_outcome', out.rows[0].id, null, { product_id: pid, quantity: qty, reason: reason.trim(), value: qty * price });
     await client.query('COMMIT');
@@ -1141,26 +1146,21 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
     );
     if (!rows[0]) throw new Error('Не найдено или уже обработано');
     if (action === 'approve') {
-      // Stock availability check — pending sales may have piled up; verify at approval time.
-      const stockCheck = await client.query(
-        'SELECT quantity FROM product_stock WHERE product_id=$1 AND branch_id=$2',
-        [rows[0].product_id, rows[0].branch_id]
-      );
-      const available = parseFloat(stockCheck.rows[0]?.quantity || 0);
-      const needed = parseFloat(rows[0].quantity);
-      if (available < needed) {
-        // Roll back the status update we just did
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Недостаточно остатка: есть ${available}, нужно ${needed}` });
-      }
       await client.query(
         `INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1, $2, 0) ON CONFLICT (product_id, branch_id) DO NOTHING`,
         [rows[0].product_id, rows[0].branch_id]
       );
-      await client.query(
-        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
+      // Atomic, race-safe decrement — pending sales may have piled up, so verify at approval time.
+      const needed = parseFloat(rows[0].quantity);
+      const dec = await client.query(
+        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3 AND quantity >= $1',
         [rows[0].quantity, rows[0].product_id, rows[0].branch_id]
       );
+      if (dec.rowCount === 0) {
+        const avail = await client.query('SELECT COALESCE(quantity, 0) AS q FROM product_stock WHERE product_id=$1 AND branch_id=$2', [rows[0].product_id, rows[0].branch_id]);
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Недостаточно остатка: есть ${parseFloat(avail.rows[0]?.q || 0)}, нужно ${needed}` });
+      }
       // Auto cash income from the sale — settled status depends on ACTUAL seller's role
       const amount = parseFloat(rows[0].quantity) * parseFloat(rows[0].price || 0);
       if (amount > 0) {
@@ -1572,45 +1572,52 @@ app.get('/api/cash/settlement/sales', auth(['admin', 'founder', 'gen_dir', 'mana
 
 // Confirm a SINGLE cash_income (one sale) — preferred over the bulk-by-seller endpoint
 app.post('/api/cash/settlement/accept-one', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+  const client = await pool.connect();
   try {
     const { cash_id, received_amount } = req.body;
     const id = parseInt(cash_id);
     if (!id) return res.status(400).json({ error: 'cash_id required' });
-    const { rows: [ci] } = await pool.query('SELECT * FROM cash_income WHERE id=$1', [id]);
-    if (!ci) return res.status(404).json({ error: 'Not found' });
-    if (ci.is_settled) return res.status(400).json({ error: 'Уже подтверждено' });
-    // Branch isolation: cashier can only settle their own branch's income
     const branchId = getBranchFilter(req.user, req.query);
+    await client.query('BEGIN');
+    // Branch isolation check before claiming the row.
+    const { rows: [ci] } = await client.query('SELECT branch_id, is_settled FROM cash_income WHERE id=$1 FOR UPDATE', [id]);
+    if (!ci) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
     if (branchId && ci.branch_id !== branchId) {
-      return res.status(403).json({ error: 'Not in your branch' });
+      await client.query('ROLLBACK'); return res.status(403).json({ error: 'Not in your branch' });
     }
-    const expected = parseFloat(ci.amount);
+    // Atomic, idempotent claim: only one concurrent request wins.
+    const claim = await client.query(
+      'UPDATE cash_income SET is_settled = TRUE, settled_at = NOW(), settled_by = $1 WHERE id = $2 AND is_settled = FALSE RETURNING amount, branch_id, outcome_id',
+      [req.user.id, id]
+    );
+    if (claim.rowCount === 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Уже подтверждено' }); }
+    const claimed = claim.rows[0];
+    const expected = parseFloat(claimed.amount);
     const received = Number.isFinite(parseFloat(received_amount)) ? parseFloat(received_amount) : expected;
     const discrepancy = received - expected;
-    // If under/over — adjust amount to actual received so cash balance is correct
+    // If under/over — record the difference as a separate cash flow so the till stays correct.
     if (Math.abs(discrepancy) > 0.01) {
-      // Record discrepancy as separate cash flow
       const desc = discrepancy < 0
-        ? `Недостача при сдаче #${ci.outcome_id || ci.id}: ${Math.abs(discrepancy)}`
-        : `Излишек при сдаче #${ci.outcome_id || ci.id}: +${discrepancy}`;
+        ? `Недостача при сдаче #${claimed.outcome_id || id}: ${Math.abs(discrepancy)}`
+        : `Излишек при сдаче #${claimed.outcome_id || id}: +${discrepancy}`;
       if (discrepancy < 0) {
-        await pool.query(
+        await client.query(
           `INSERT INTO cash_expense (amount, description, created_by, branch_id) VALUES ($1,$2,$3,$4)`,
-          [Math.abs(discrepancy), desc, req.user.id, ci.branch_id]
+          [Math.abs(discrepancy), desc, req.user.id, claimed.branch_id]
         );
       } else {
-        await pool.query(
+        await client.query(
           `INSERT INTO cash_income (amount, description, created_by, branch_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,TRUE,'cash')`,
-          [discrepancy, desc, req.user.id, ci.branch_id]
+          [discrepancy, desc, req.user.id, claimed.branch_id]
         );
       }
     }
-    await pool.query(
-      'UPDATE cash_income SET is_settled = TRUE, settled_at = NOW(), settled_by = $1 WHERE id = $2',
-      [req.user.id, id]
-    );
+    await client.query('COMMIT');
     res.json({ ok: true, expected, received, discrepancy });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 app.get('/api/cash/settlement/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
@@ -1666,23 +1673,18 @@ app.post('/api/cash/settlement/accept', auth(['admin', 'founder', 'gen_dir', 'ma
     if (!sid) return res.status(400).json({ error: 'seller_id обязателен' });
     await client.query('BEGIN');
     const branchId = getBranchFilter(req.user, req.body);
-    // Sum expected
-    const params = [sid];
-    let where = 'WHERE is_settled = FALSE AND created_by = $1';
-    if (branchId) { where += ` AND branch_id = $${params.length+1}`; params.push(branchId); }
-    const { rows: [agg] } = await client.query(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM cash_income ${where}`, params);
-    const expected = parseFloat(agg.total);
-    const count = parseInt(agg.cnt);
-    if (count === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Нет несданной выручки от этого продавца' }); }
-
-    // Mark all settled — explicit query, params: [cashierId, sellerId, branchId?]
+    // Atomically claim all of this seller's unsettled rows. expected/count come from the rows
+    // we actually settled — not a prior SELECT — so a concurrent accept can't double-count.
     const updParams = [req.user.id, sid];
     let updWhere = 'WHERE is_settled = FALSE AND created_by = $2';
     if (branchId) { updParams.push(branchId); updWhere += ` AND branch_id = $${updParams.length}`; }
-    await client.query(
-      `UPDATE cash_income SET is_settled=TRUE, settled_at=NOW(), settled_by=$1 ${updWhere}`,
+    const upd = await client.query(
+      `UPDATE cash_income SET is_settled=TRUE, settled_at=NOW(), settled_by=$1 ${updWhere} RETURNING amount`,
       updParams
     );
+    const count = upd.rowCount;
+    if (count === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Нет несданной выручки от этого продавца' }); }
+    const expected = upd.rows.reduce((s, r) => s + parseFloat(r.amount), 0);
 
     // Discrepancy handling
     let discrepancy = 0;
@@ -1876,7 +1878,9 @@ app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req,
       sales_revenue: revenue,
       sales_cost: cost,
       gross_profit: revenue - cost,
-      net_profit: cashBalance + revenue - cost,
+      // Net profit = actual net cash flow (settled income − expense). Sale proceeds are
+      // already inside cashBalance, so adding gross margin on top double-counted revenue.
+      net_profit: cashBalance,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
