@@ -512,20 +512,42 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
         </div>
       </div>
 
-      {/* Price + Quantity — side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
+      {/* Both prices side-by-side — purchase (for Приход) + sale (for Расход) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
         <div>
-          <label style={S.label}>
-            {uz ? "NARXI (SO'M / " + form.unit + ")" : 'ЦЕНА ПРОДАЖИ (за ' + form.unit + ')'}
+          <label style={{ ...S.label, color: '#16a34a' }}>
+            {uz ? "TAN NARXI (SO'M / " + form.unit + ")" : 'ЦЕНА ЗАКУПКИ (за ' + form.unit + ')'}
           </label>
           <input
-            style={{ ...S.input, fontSize: '15px', padding: '12px', textAlign: 'center', fontFamily: "'JetBrains Mono', monospace" }}
-            type="number" min="0" inputMode="numeric"
+            style={{ ...S.input, fontSize: '15px', padding: '12px', textAlign: 'center', fontFamily: "'JetBrains Mono', monospace", borderColor: form.price_buy ? '#16a34a' : '#E2E4F0' }}
+            type="number" min="0" step="any" inputMode="decimal"
+            value={form.price_buy}
+            onChange={e => setForm({ ...form, price_buy: e.target.value })}
+            placeholder="0"
+          />
+          <div style={{ fontSize: '10px', color: 'var(--text3)', marginTop: '4px', textAlign: 'center' }}>
+            {uz ? '↪ Kirim uchun' : '↪ Для прихода'}
+          </div>
+        </div>
+        <div>
+          <label style={{ ...S.label, color: '#FF6B2B' }}>
+            {uz ? "SOTUV NARXI (SO'M / " + form.unit + ")" : 'ЦЕНА ПРОДАЖИ (за ' + form.unit + ')'}
+          </label>
+          <input
+            style={{ ...S.input, fontSize: '15px', padding: '12px', textAlign: 'center', fontFamily: "'JetBrains Mono', monospace", borderColor: form.price_sell ? '#FF6B2B' : '#E2E4F0' }}
+            type="number" min="0" step="any" inputMode="decimal"
             value={form.price_sell}
             onChange={e => setForm({ ...form, price_sell: e.target.value })}
             placeholder="0"
           />
+          <div style={{ fontSize: '10px', color: 'var(--text3)', marginTop: '4px', textAlign: 'center' }}>
+            {uz ? '↪ Chiqim/sotuv uchun' : '↪ Для расхода/продажи'}
+          </div>
         </div>
+      </div>
+
+      {/* Quantity — full width */}
+      <div style={{ marginBottom: '14px' }}>
         <div>
           <label style={S.label}>
             {uz ? 'MIQDOR (' + form.unit + ')' : 'КОЛИЧЕСТВО (' + form.unit + ')'}
@@ -611,14 +633,6 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
 
       {showOptional && (
         <div style={{ marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div>
-            <label style={S.label}>{uz ? 'TAN NARXI (SO\'M)' : 'ЦЕНА ЗАКУПКИ'}</label>
-            <input style={{ ...S.input, fontSize: '14px', padding: '11px 12px' }}
-              type="number" min="0" inputMode="numeric"
-              value={form.price_buy}
-              onChange={e => setForm({ ...form, price_buy: e.target.value })}
-              placeholder="0" />
-          </div>
           <div>
             <label style={S.label}>{uz ? "RANG / O'LCHAM" : 'ЦВЕТ / РАЗМЕР'}</label>
             <input style={{ ...S.input, fontSize: '14px', padding: '11px 12px' }} value={form.color_size}
@@ -1145,11 +1159,16 @@ export default function Mobile() {
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = '#F4F5FA'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                <span style={{
-                  width: 34, height: 34, borderRadius: 8, background: '#F4F5FA',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 16, flexShrink: 0,
-                }}>📦</span>
+                {p.photo_url ? (
+                  <img src={p.photo_url} alt=""
+                    style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover', flexShrink: 0, border: '1px solid #E2E4F0' }} />
+                ) : (
+                  <span style={{
+                    width: 34, height: 34, borderRadius: 8, background: '#F4F5FA',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 16, flexShrink: 0,
+                  }}>📦</span>
+                )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: '#1A1B2E', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {(uz && p.name_uz) || p.name_ru}

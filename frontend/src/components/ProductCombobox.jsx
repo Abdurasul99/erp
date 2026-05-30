@@ -122,11 +122,21 @@ export default function ProductCombobox({ products, value, onChange, placeholder
                   background: isSelected ? ACC + '14' : isHi ? 'var(--bg-2)' : 'transparent',
                   transition: 'background-color .08s ease',
                 }}>
+                {p.photo_url ? (
+                  <img src={p.photo_url} alt=""
+                    style={{
+                      width: '32px', height: '32px', borderRadius: '8px',
+                      objectFit: 'cover', flexShrink: 0,
+                      border: isSelected ? `1.5px solid ${ACC}` : '1px solid var(--border)',
+                    }}
+                    onError={e => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }} />
+                ) : null}
                 <span style={{
                   width: '32px', height: '32px', borderRadius: '8px',
                   background: isSelected ? ACC + '20' : 'var(--bg-2)',
                   color: isSelected ? ACC : 'var(--text2)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  display: p.photo_url ? 'none' : 'flex',
+                  alignItems: 'center', justifyContent: 'center',
                   fontSize: '15px', flexShrink: 0, fontWeight: 800,
                 }}>
                   📦
