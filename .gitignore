@@ -39,3 +39,29 @@ coverage/
 # Local deploy scripts (contain SSH credentials)
 deploy-*.bat
 deploy-*.ps1
+_deploy*.cjs
+_e2e*.js
+_runtest*.cjs
+_setenv*.cjs
+_logs*.cjs
+_smoke*.cjs
+_inspect*.cjs
+_cleanup*.cjs
+_delete*.cjs
+_final*.cjs
+_redeploy*.cjs
+_upload_test*.cjs
+_check_env*.cjs
+_test_eps*.js
+_e2e_chart*.js
+_e2e_ai*.js
+_new_endpoints*.cjs
+_remote_smoke*.cjs
+_payload.json
+
+# Personal access / credentials file — NEVER commit
+CREDENTIALS.md
+SECRETS.md
+*credentials*.md
+*secret*.md
+*-credentials-*.md

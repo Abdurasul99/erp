@@ -1,0 +1,285 @@
+/* Owner-shell scoped styles — additive to root styles.css (same design tokens).
+   The shell occupies the full viewport when active.  Scoped to .owner-shell to
+   avoid leaking layout into other pages (Login, SellerView, Mobile). */
+
+.owner-shell {
+  --sidebar-w: 250px;
+  --topbar-h: 60px;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  height: 100vh;
+  background:
+    radial-gradient(1100px 700px at 90% -10%, rgba(91,79,232,.06), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, rgba(255,107,43,.05), transparent 60%),
+    var(--bg);
+}
+
+.owner-shell .o-sidebar {
+  background: linear-gradient(180deg, #1e1b4b 0%, #1a1740 100%);
+  color: #fff;
+  padding: 16px 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.owner-shell .o-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.owner-shell .o-brand-ico {
+  width: 38px; height: 38px; border-radius: 11px;
+  background: linear-gradient(135deg, var(--orange), var(--primary));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 19px;
+  box-shadow: 0 4px 12px rgba(91,79,232,.35);
+}
+.owner-shell .o-brand-name { font-weight: 900; font-size: 16px; letter-spacing: -0.3px; }
+.owner-shell .o-brand-sub  { font-size: 10px; color: rgba(255,255,255,.5); font-weight: 700; letter-spacing: .6px; text-transform: uppercase; margin-top: 1px; }
+
+.owner-shell .o-link {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 10px;
+  color: rgba(255,255,255,.78);
+  text-decoration: none; font-size: 13px; font-weight: 600;
+  transition: all .15s var(--ease);
+  cursor: pointer; user-select: none;
+  background: none; border: none; text-align: left;
+  font-family: inherit; width: 100%;
+}
+.owner-shell .o-link:hover { background: rgba(255,255,255,.06); color: #fff; }
+.owner-shell .o-link.active {
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: #fff; font-weight: 700;
+  box-shadow: 0 4px 12px rgba(91,79,232,.35);
+}
+.owner-shell .o-link-ico { font-size: 15px; width: 22px; text-align: center; }
+.owner-shell .o-link-badge {
+  margin-left: auto; background: rgba(255,255,255,.18); color: #fff;
+  padding: 1px 7px; border-radius: 8px; font-size: 10px; font-weight: 800;
+}
+.owner-shell .o-side-foot {
+  margin-top: auto; padding: 12px 12px 4px;
+  border-top: 1px solid rgba(255,255,255,.08);
+  font-size: 11px; color: rgba(255,255,255,.6);
+  display: flex; align-items: center; gap: 8px;
+}
+.owner-shell .o-dot { width: 8px; height: 8px; border-radius: 50%; background: #22C55E; box-shadow: 0 0 6px #22C55E; }
+
+.owner-shell .o-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+.owner-shell .o-topbar {
+  height: var(--topbar-h); flex-shrink: 0;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 22px;
+}
+.owner-shell .o-topbar-title { font-size: 15px; font-weight: 800; color: var(--text); }
+.owner-shell .o-topbar-sub { font-size: 11px; color: var(--text3); font-weight: 600; margin-top: 1px; }
+.owner-shell .o-branch-pick {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-2); padding: 6px 12px; border-radius: 10px;
+  font-size: 13px; font-weight: 700; color: var(--text);
+  border: 1px solid var(--border); cursor: pointer;
+}
+.owner-shell .o-branch-pick:hover { border-color: var(--primary); }
+.owner-shell .o-user {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; border-radius: 20px;
+  background: var(--bg-2);
+}
+.owner-shell .o-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--orange));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 800; font-size: 12px;
+}
+.owner-shell .o-content {
+  flex: 1; overflow-y: auto; padding: 22px;
+}
+
+/* Primitive cards / tiles. Scoped under .owner-shell so we don't collide
+   with the same class names used by older non-shell components. */
+.owner-shell .o-tile {
+  background: var(--surface);
+  border-radius: 16px; padding: 16px 18px;
+  border: 1px solid rgba(230,232,242,.6);
+  border-left-width: 4px;
+  box-shadow: var(--shadow);
+  transition: transform .2s var(--ease), box-shadow .2s var(--ease);
+}
+.owner-shell .o-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.owner-shell .o-tile-label { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+.owner-shell .o-tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; line-height: 1.1; }
+.owner-shell .o-tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 600; }
+.owner-shell .o-tile-delta { font-size: 11px; font-weight: 800; margin-top: 4px; }
+.owner-shell .o-tile-delta.up { color: var(--green); }
+.owner-shell .o-tile-delta.down { color: var(--red); }
+
+.owner-shell .o-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 22px;
+  border: 1px solid rgba(230, 232, 242, .6);
+}
+.owner-shell .o-card-h {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  font-weight: 800; font-size: 14px; color: var(--text);
+}
+.owner-shell .o-card-h-ico { font-size: 17px; }
+.owner-shell .o-card-h-actions { margin-left: auto; display: flex; gap: 6px; }
+
+.owner-shell .o-pageh {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 18px; gap: 12px; flex-wrap: wrap;
+}
+.owner-shell .o-pageh-title { font-size: 22px; font-weight: 900; color: var(--text); letter-spacing: -0.3px; }
+.owner-shell .o-pageh-sub   { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 500; }
+
+.owner-shell .o-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.owner-shell .o-grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+.owner-shell .o-grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+
+.owner-shell .o-bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
+.owner-shell .o-bar  { flex: 1; background: linear-gradient(180deg, var(--primary), var(--primary-dark)); border-radius: 5px 5px 0 0; min-height: 4px; }
+.owner-shell .o-spark { width: 100%; height: 36px; }
+
+.owner-shell .o-progress { height: 8px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
+.owner-shell .o-progress > div { height: 100%; background: linear-gradient(90deg, var(--primary), var(--orange)); border-radius: 6px; transition: width .3s ease; }
+
+.owner-shell .o-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+.owner-shell .o-badge.green  { background: rgba(34,197,94,.14);  color: #15803d; }
+.owner-shell .o-badge.red    { background: rgba(239,68,68,.14);  color: #b91c1c; }
+.owner-shell .o-badge.yellow { background: rgba(245,158,11,.14); color: #b45309; }
+.owner-shell .o-badge.blue   { background: rgba(91,79,232,.14);  color: var(--primary); }
+.owner-shell .o-badge.purple { background: rgba(124,58,237,.14); color: #7c3aed; }
+.owner-shell .o-badge.orange { background: rgba(255,107,43,.14); color: var(--orange); }
+.owner-shell .o-badge.gray   { background: rgba(107,114,128,.12); color: #4b5563; }
+
+.owner-shell .o-list { display: flex; flex-direction: column; }
+.owner-shell .o-li   { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(230,232,242,.6); }
+.owner-shell .o-li:last-child { border-bottom: none; }
+.owner-shell .o-li-title { font-weight: 700; font-size: 13px; color: var(--text); }
+.owner-shell .o-li-sub   { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+.owner-shell .o-pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
+.owner-shell .o-pill  { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
+.owner-shell .o-pill.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+
+.owner-shell .o-coming {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 50px 20px; text-align: center; color: var(--text3);
+}
+.owner-shell .o-coming-ico { font-size: 44px; margin-bottom: 14px; }
+.owner-shell .o-coming-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+
+.owner-shell .o-tool-card {
+  background: #fff; border-radius: 14px; padding: 18px 20px;
+  cursor: pointer; border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transition: all .2s var(--ease);
+}
+.owner-shell .o-tool-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--primary); }
+.owner-shell .o-tool-ico {
+  width: 46px; height: 46px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; margin-bottom: 12px;
+}
+.owner-shell .o-tool-title { font-weight: 800; font-size: 15px; margin-bottom: 4px; color: var(--text); }
+.owner-shell .o-tool-desc  { font-size: 12.5px; color: var(--text2); line-height: 1.5; }
+.owner-shell .o-tool-cta   { margin-top: 10px; font-size: 12px; font-weight: 700; }
+
+.owner-shell .o-section-hero {
+  border-radius: 16px; padding: 24px 28px; margin-bottom: 22px; color: #fff;
+}
+.owner-shell .o-section-hero-eyebrow { font-size: 11px; font-weight: 800; opacity: .8; text-transform: uppercase; letter-spacing: .6px; }
+.owner-shell .o-section-hero-title   { font-size: 26px; font-weight: 900; margin-top: 4px; letter-spacing: -0.5px; }
+.owner-shell .o-section-hero-desc    { font-size: 14px; opacity: .85; margin-top: 6px; max-width: 600px; }
+
+/* Plain table inside owner-shell uses existing styles, but ensure padding consistent */
+.owner-shell .o-card table { width: 100%; border-collapse: collapse; }
+.owner-shell .o-card thead th { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; padding: 10px 10px; text-align: left; border-bottom: 1.5px solid var(--border); }
+.owner-shell .o-card tbody td { padding: 11px 10px; font-size: 13px; border-bottom: 1px solid rgba(230,232,242,.6); vertical-align: middle; }
+.owner-shell .o-card tbody tr:last-child td { border-bottom: none; }
+.owner-shell .o-card tbody tr:hover { background: rgba(91,79,232,.04); }
+
+/* Prototype-compatible class aliases — let us copy 47 prototype tools verbatim.
+   These selectors only apply inside .owner-shell, so live wareapp pages outside the shell stay unaffected. */
+.owner-shell .tile { background: var(--surface); border-radius: 16px; padding: 16px 18px; border: 1px solid rgba(230,232,242,.6); border-left-width: 4px; box-shadow: var(--shadow); }
+.owner-shell .tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.owner-shell .tile-label { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
+.owner-shell .tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; line-height: 1.1; }
+.owner-shell .tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 600; }
+.owner-shell .tile-delta { font-size: 11px; font-weight: 800; margin-top: 4px; }
+.owner-shell .tile-delta.up { color: var(--green); }
+.owner-shell .tile-delta.down { color: var(--red); }
+
+.owner-shell .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 800; font-size: 14px; color: var(--text); }
+.owner-shell .card-header-icon { font-size: 17px; }
+.owner-shell .card-header-actions { margin-left: auto; display: flex; gap: 6px; }
+
+.owner-shell .sparkline { width: 100%; height: 36px; }
+.owner-shell .bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
+.owner-shell .bars .bar { flex: 1; background: linear-gradient(180deg, var(--primary), var(--primary-dark)); border-radius: 5px 5px 0 0; min-height: 4px; }
+
+.owner-shell .progress { height: 8px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
+.owner-shell .progress .progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--orange)); border-radius: 6px; }
+
+.owner-shell .pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
+.owner-shell .pills .pill { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
+.owner-shell .pills .pill.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+
+.owner-shell .list { display: flex; flex-direction: column; }
+.owner-shell .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(230,232,242,.6); }
+.owner-shell .list-item:last-child { border-bottom: none; }
+.owner-shell .list-item-title { font-weight: 700; font-size: 13px; color: var(--text); }
+.owner-shell .list-item-sub { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+.owner-shell .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.owner-shell .page-title { font-size: 22px; font-weight: 900; color: var(--text); letter-spacing: -0.3px; }
+.owner-shell .page-sub { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 500; }
+
+.owner-shell .section-title { font-size: 14px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin: 22px 0 12px; }
+
+.owner-shell .coming-soon { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 50px 20px; text-align: center; color: var(--text3); }
+.owner-shell .coming-soon-icon { font-size: 44px; margin-bottom: 14px; }
+.owner-shell .coming-soon-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+
+.owner-shell .flow { display: flex; gap: 10px; overflow-x: auto; padding: 4px 0; }
+.owner-shell .flow-step { min-width: 160px; padding: 14px; border-radius: 12px; background: var(--surface); border: 1.5px solid var(--border); position: relative; }
+.owner-shell .flow-step::after { content: '→'; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 18px; font-weight: 700; }
+.owner-shell .flow-step:last-child::after { content: ''; }
+
+.owner-shell .badge-cyan   { background: rgba(14,165,233,.14); color: #0369a1; }
+.owner-shell .badge-purple { background: rgba(124,58,237,.14); color: #7c3aed; }
+.owner-shell .badge-orange { background: rgba(255,107,43,.14); color: var(--orange); }
+.owner-shell .badge-gray   { background: rgba(107,114,128,.12); color: #4b5563; }
+
+/* Collapsed sidebar — narrow rail with icons only.
+   Toggled via the button at the bottom; persisted to localStorage. */
+.owner-shell.collapsed { grid-template-columns: 64px 1fr; }
+.owner-shell.collapsed .o-link { justify-content: center; padding: 11px 6px; }
+.owner-shell.collapsed .o-brand { padding: 6px 4px 14px; justify-content: center; }
+.owner-shell.collapsed .o-brand-ico { width: 36px; height: 36px; }
+
+/* Dashboard hero row — on narrow screens collapses to a single column */
+@media (max-width: 900px) {
+  .owner-shell .dashboard-hero-row { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 1100px) {
+  .owner-shell { grid-template-columns: 70px 1fr; }
+  .owner-shell .o-link span:not(.o-link-ico) { display: none; }
+  .owner-shell .o-link-badge { display: none; }
+  .owner-shell .o-brand-name, .owner-shell .o-brand-sub { display: none; }
+  .owner-shell .o-link { justify-content: center; padding: 12px; }
+  .owner-shell .o-grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .owner-shell .o-grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 700px) {
+  .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4 { grid-template-columns: 1fr; }
+  .owner-shell .o-content { padding: 14px; }
+}

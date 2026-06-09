@@ -97,6 +97,34 @@ function getBranchFilter(user, query = {}) {
   return user.branch_id || null;
 }
 
+// Resolve the set of branch IDs the user is allowed to query.
+// Returns { ids, restrictive } where `restrictive` means we MUST constrain by these ids
+// (false only when admin queries unscoped across all tenants).
+// Throws 403 if a query branch_id falls outside user's company.
+async function getUserBranchIds(user, query = {}) {
+  const qBranch = query.branch_id ? parseInt(query.branch_id, 10) : null;
+  if (user.role === 'admin') {
+    if (qBranch) return { ids: [qBranch], restrictive: true };
+    return { ids: null, restrictive: false };
+  }
+  if (user.role === 'manager') {
+    if (!user.branch_id) return { ids: [], restrictive: true };
+    if (qBranch && qBranch !== user.branch_id) {
+      const err = new Error('Out of branch scope'); err.statusCode = 403; throw err;
+    }
+    return { ids: [user.branch_id], restrictive: true };
+  }
+  // gen_dir / founder / cashier / warehouse / seller — scope to their company
+  if (!user.company_id) return { ids: [], restrictive: true };
+  if (qBranch) {
+    const o = await pool.query('SELECT id FROM branches WHERE id = $1 AND company_id = $2', [qBranch, user.company_id]);
+    if (!o.rows[0]) { const err = new Error('Branch not in your company'); err.statusCode = 403; throw err; }
+    return { ids: [qBranch], restrictive: true };
+  }
+  const all = await pool.query('SELECT id FROM branches WHERE company_id = $1', [user.company_id]);
+  return { ids: all.rows.map(r => r.id), restrictive: true };
+}
+
 // Guard: makes sure a branch belongs to the user's company. Used on writes by sellers.
 async function assertBranchInCompany(user, branchId) {
   if (!branchId) return;
@@ -233,51 +261,677 @@ app.post('/api/branches', auth(['admin', 'gen_dir', 'founder']), async (req, res
 
 app.put('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query('SELECT id, company_id FROM branches WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
+      return res.status(403).json({ error: 'Out of scope' });
+    }
     const { name, address, phone } = req.body;
-    await pool.query('UPDATE branches SET name=$1, address=$2, phone=$3 WHERE id=$4', [name, address || '', phone || '', req.params.id]);
+    await pool.query(
+      'UPDATE branches SET name=$1, address=$2, phone=$3 WHERE id=$4 AND company_id=$5',
+      [name, address || '', phone || '', id, cur.company_id]
+    );
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.delete('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
-  await pool.query('DELETE FROM branches WHERE id = $1', [req.params.id]);
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  const { rows: [cur] } = await pool.query('SELECT id, company_id FROM branches WHERE id=$1', [id]);
+  if (!cur) return res.status(404).json({ error: 'Not found' });
+  if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
+    return res.status(403).json({ error: 'Out of scope' });
+  }
+  await pool.query('DELETE FROM branches WHERE id = $1 AND company_id = $2', [id, cur.company_id]);
   res.json({ ok: true });
 });
 
-// === COMPANY DASHBOARD (gen_dir) ===
-app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+// === Customer SEGMENTATION (RFM-lite) ===
+// Buckets customers into VIP / Regular / Sleeping / Lost / New based on recency + revenue.
+// Thresholds tuned for Uzbek retail; tweak later via config table.
+app.get('/api/customers/segments', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const branches = await pool.query(
-      'SELECT id, name FROM branches WHERE company_id = $1', [companyId]
-    );
-    const stats = await Promise.all(branches.rows.map(async (b) => {
-      const cashI = await pool.query('SELECT COALESCE(SUM(amount),0) as t FROM cash_income WHERE branch_id=$1 AND is_settled IS NOT FALSE', [b.id]);
-      const cashE = await pool.query('SELECT COALESCE(SUM(amount),0) as t FROM cash_expense WHERE branch_id=$1', [b.id]);
-      const sales = await pool.query(`
-        SELECT COALESCE(SUM(so.quantity*p.price_sell),0) as revenue,
-               COALESCE(SUM(so.quantity*p.price_buy),0) as cost
-        FROM stock_outcome so JOIN products p ON so.product_id=p.id
-        WHERE so.status='approved' AND so.branch_id=$1`, [b.id]);
-      const stockVal = await pool.query(`
-        SELECT COALESCE(SUM(ps.quantity*p.price_sell),0) as value
-        FROM product_stock ps JOIN products p ON ps.product_id=p.id
-        WHERE ps.branch_id=$1`, [b.id]);
-      const workers = await pool.query('SELECT COUNT(*) as c FROM users WHERE branch_id=$1', [b.id]);
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Single CTE: per-customer aggregates over the last 365 days
+    const { rows } = await pool.query(`
+      WITH agg AS (
+        SELECT c.id, c.name, c.phone,
+               COUNT(so.id) FILTER (WHERE so.status='approved') AS deals,
+               COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
+               MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at,
+               EXTRACT(DAY FROM NOW() - MAX(so.created_at) FILTER (WHERE so.status='approved')) AS days_since,
+               EXTRACT(DAY FROM NOW() - c.created_at) AS days_old
+        FROM customers c
+        LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL
+        GROUP BY c.id, c.name, c.phone, c.created_at
+      )
+      SELECT id, name, phone,
+             deals::int,
+             revenue::numeric,
+             last_at,
+             COALESCE(days_since, days_old)::int AS days_since,
+             CASE
+               WHEN deals = 0 AND days_old < 30 THEN 'new'
+               WHEN deals = 0 THEN 'lost'
+               WHEN days_since >= 120 THEN 'lost'
+               WHEN days_since >= 60 THEN 'sleeping'
+               WHEN revenue >= 5000000 THEN 'vip'
+               ELSE 'regular'
+             END AS segment
+      FROM agg
+      ORDER BY revenue DESC NULLS LAST
+      LIMIT 1000
+    `, [companyId]);
+
+    // Per-segment totals
+    const summary = { vip: 0, regular: 0, sleeping: 0, lost: 0, new: 0, total: rows.length, revenue: 0 };
+    for (const r of rows) {
+      summary[r.segment] = (summary[r.segment] || 0) + 1;
+      summary.revenue += parseFloat(r.revenue) || 0;
+    }
+    res.json({ customers: rows, summary });
+  } catch (e) {
+    console.error('segments err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === ABC / XYZ analysis ===
+// A/B/C — share of revenue. X/Y/Z — coefficient of variation across last 90 days of sales.
+app.get('/api/inventory/abc-xyz', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Aggregate per-product over the last 90 days; compute weekly buckets for stdev.
+    const { rows } = await pool.query(`
+      WITH per_week AS (
+        SELECT p.id AS product_id, p.name_ru, p.unit,
+               date_trunc('week', so.created_at) AS wk,
+               SUM(so.quantity) AS qty,
+               SUM(so.quantity * so.price) AS revenue
+        FROM products p
+        LEFT JOIN stock_outcome so ON so.product_id = p.id
+          AND so.status = 'approved'
+          AND so.created_at >= NOW() - INTERVAL '90 days'
+          ${branchSQL}
+        WHERE p.company_id = $1
+        GROUP BY p.id, p.name_ru, p.unit, wk
+      ),
+      per_product AS (
+        SELECT product_id, name_ru, unit,
+               COALESCE(SUM(revenue), 0) AS revenue_total,
+               COALESCE(SUM(qty), 0) AS qty_total,
+               COALESCE(AVG(qty), 0) AS qty_avg,
+               COALESCE(STDDEV_POP(qty), 0) AS qty_std,
+               COUNT(wk) FILTER (WHERE qty > 0) AS weeks_with_sales
+        FROM per_week
+        GROUP BY product_id, name_ru, unit
+      )
+      SELECT *, CASE WHEN qty_avg > 0 THEN qty_std / qty_avg ELSE NULL END AS cov
+      FROM per_product
+      ORDER BY revenue_total DESC
+    `, [companyId]);
+
+    // Assign ABC by cumulative share
+    const totalRev = rows.reduce((s, r) => s + parseFloat(r.revenue_total || 0), 0);
+    let cum = 0;
+    const items = rows.map(r => {
+      const rev = parseFloat(r.revenue_total || 0);
+      cum += rev;
+      const share = totalRev > 0 ? cum / totalRev : 0;
+      const abc = share <= 0.80 ? 'A' : share <= 0.95 ? 'B' : 'C';
+      const cov = r.cov == null ? null : parseFloat(r.cov);
+      const xyz = cov == null ? 'Z' : cov <= 0.25 ? 'X' : cov <= 0.5 ? 'Y' : 'Z';
       return {
-        branch_id: b.id, branch_name: b.name,
-        cash_income: parseFloat(cashI.rows[0].t),
-        cash_expense: parseFloat(cashE.rows[0].t),
-        cash_balance: parseFloat(cashI.rows[0].t) - parseFloat(cashE.rows[0].t),
-        sales_revenue: parseFloat(sales.rows[0].revenue),
-        sales_cost: parseFloat(sales.rows[0].cost),
-        gross_profit: parseFloat(sales.rows[0].revenue) - parseFloat(sales.rows[0].cost),
-        stock_value: parseFloat(stockVal.rows[0].value),
-        worker_count: parseInt(workers.rows[0].c),
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        revenue: rev,
+        qty: parseFloat(r.qty_total || 0),
+        weeks_with_sales: parseInt(r.weeks_with_sales || 0),
+        cov,
+        abc, xyz,
+        cell: abc + xyz,
       };
-    }));
-    res.json({ company_id: companyId, branches: stats });
+    });
+
+    // 3×3 matrix summary
+    const matrix = {};
+    for (const c of ['A', 'B', 'C']) for (const x of ['X', 'Y', 'Z']) matrix[c + x] = { count: 0, revenue: 0 };
+    for (const i of items) {
+      matrix[i.cell].count++;
+      matrix[i.cell].revenue += i.revenue;
+    }
+    res.json({ items, matrix, total_revenue: totalRev });
+  } catch (e) {
+    console.error('abc-xyz err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Pricing analyzer — margin by product ===
+app.get('/api/pricing/analyze', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Per-product: price_buy, price_sell from products; recent sales revenue from stock_outcome.
+    const { rows } = await pool.query(`
+      SELECT p.id, p.name_ru, p.unit, p.price_buy, p.price_sell,
+             COALESCE(rev.revenue, 0) AS revenue_90d,
+             COALESCE(rev.qty, 0)     AS qty_90d
+      FROM products p
+      LEFT JOIN LATERAL (
+        SELECT SUM(so.quantity * so.price) AS revenue, SUM(so.quantity) AS qty
+        FROM stock_outcome so
+        WHERE so.product_id = p.id
+          AND so.status='approved'
+          AND so.created_at >= NOW() - INTERVAL '90 days'
+          ${branchSQL}
+      ) rev ON TRUE
+      WHERE p.company_id = $1
+      ORDER BY revenue_90d DESC NULLS LAST
+      LIMIT 1000
+    `, [companyId]);
+
+    const items = rows.map(r => {
+      const buy = parseFloat(r.price_buy) || 0;
+      const sell = parseFloat(r.price_sell) || 0;
+      const margin = sell > 0 ? ((sell - buy) / sell) * 100 : 0;
+      let tone = 'green'; // healthy margin
+      if (margin < 10) tone = 'red';
+      else if (margin < 25) tone = 'yellow';
+      return {
+        id: r.id, name: r.name_ru, unit: r.unit,
+        price_buy: buy, price_sell: sell,
+        margin_pct: Math.round(margin * 10) / 10,
+        revenue_90d: parseFloat(r.revenue_90d) || 0,
+        qty_90d: parseFloat(r.qty_90d) || 0,
+        tone,
+      };
+    });
+
+    const summary = {
+      total: items.length,
+      red: items.filter(i => i.tone === 'red').length,
+      yellow: items.filter(i => i.tone === 'yellow').length,
+      green: items.filter(i => i.tone === 'green').length,
+      avg_margin: items.length > 0 ? Math.round(items.reduce((s, i) => s + i.margin_pct, 0) / items.length * 10) / 10 : 0,
+    };
+    res.json({ items, summary });
+  } catch (e) {
+    console.error('pricing err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Risk Control — unified alerts feed ===
+app.get('/api/risks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+    const branchSQLso = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const branchSQLsi = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+
+    const alerts = [];
+
+    // 1) Low stock (< 5) and out of stock
+    const lowStock = await pool.query(`
+      SELECT p.id, p.name_ru, ps.quantity, ps.branch_id, b.name AS branch_name
+      FROM product_stock ps
+      JOIN products p ON p.id = ps.product_id
+      LEFT JOIN branches b ON b.id = ps.branch_id
+      WHERE p.company_id = $1 AND ps.quantity > 0 AND ps.quantity < 5 ${branchSQL}
+      LIMIT 50
+    `, [companyId]);
+    for (const r of lowStock.rows) {
+      alerts.push({
+        severity: r.quantity < 2 ? 'critical' : 'warning',
+        category: 'stock',
+        title: `Низкий остаток: ${r.name_ru}`,
+        detail: `Осталось ${parseFloat(r.quantity)} шт${r.branch_name ? ` · ${r.branch_name}` : ''}`,
+        action_url: '/owner/warehouse/stock',
+      });
+    }
+
+    // 2) Out of stock for products that sold recently
+    const outOfStock = await pool.query(`
+      SELECT p.id, p.name_ru, ps.branch_id, b.name AS branch_name
+      FROM product_stock ps
+      JOIN products p ON p.id = ps.product_id
+      LEFT JOIN branches b ON b.id = ps.branch_id
+      WHERE p.company_id = $1 AND ps.quantity = 0 ${branchSQL}
+        AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+      LIMIT 30
+    `, [companyId]);
+    for (const r of outOfStock.rows) {
+      alerts.push({
+        severity: 'critical',
+        category: 'stock',
+        title: `Нет в наличии: ${r.name_ru}`,
+        detail: `Был спрос за 14 дней${r.branch_name ? ` · ${r.branch_name}` : ''}`,
+        action_url: '/owner/warehouse/income',
+      });
+    }
+
+    // 3) Overdue client debts
+    const overdueDebts = await pool.query(`
+      SELECT so.id, so.due_date,
+             ((so.quantity * so.price) - COALESCE(so.paid_amount, 0)) AS remaining,
+             c.name AS customer_name
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      LEFT JOIN customers c ON c.id = so.customer_id
+      WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+        AND so.due_date IS NOT NULL AND so.due_date < CURRENT_DATE
+        ${branchSQLso}
+      ORDER BY so.due_date ASC LIMIT 30
+    `, [companyId]);
+    for (const r of overdueDebts.rows) {
+      const daysLate = Math.floor((new Date() - new Date(r.due_date)) / 86400000);
+      alerts.push({
+        severity: daysLate > 7 ? 'critical' : 'warning',
+        category: 'debt',
+        title: `Просрочен долг: ${r.customer_name || 'клиент'}`,
+        detail: `${Math.round(parseFloat(r.remaining)).toLocaleString('ru-RU')} UZS · ${daysLate} дн.`,
+        action_url: '/owner/clients/debts-clients',
+      });
+    }
+
+    // 4) Pending outcomes awaiting approval > 1h
+    const pending = await pool.query(`
+      SELECT COUNT(*) AS c FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status='pending' AND so.created_at < NOW() - INTERVAL '1 hour'
+        ${branchSQLso}
+    `, [companyId]);
+    const pendingCount = parseInt(pending.rows[0]?.c || 0);
+    if (pendingCount > 0) {
+      alerts.push({
+        severity: 'warning',
+        category: 'workflow',
+        title: `${pendingCount} продаж ждут подтверждения`,
+        detail: 'Менеджер должен подтвердить',
+        action_url: '/owner/sales/sales-history',
+      });
+    }
+
+    // 5) Sleeping VIP customers (revenue > 5M, last_at > 30 days)
+    const sleepingVIP = await pool.query(`
+      WITH agg AS (
+        SELECT c.id, c.name,
+               COALESCE(SUM(so.quantity*so.price), 0) AS revenue,
+               MAX(so.created_at) AS last_at
+        FROM customers c
+        LEFT JOIN stock_outcome so ON so.customer_id = c.id AND so.status='approved' ${branchSQLso}
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL
+        GROUP BY c.id, c.name
+      )
+      SELECT id, name, revenue, last_at FROM agg
+      WHERE revenue >= 5000000 AND last_at IS NOT NULL AND last_at < NOW() - INTERVAL '30 days'
+      ORDER BY revenue DESC LIMIT 10
+    `, [companyId]);
+    for (const r of sleepingVIP.rows) {
+      const days = Math.floor((new Date() - new Date(r.last_at)) / 86400000);
+      alerts.push({
+        severity: 'info',
+        category: 'customer',
+        title: `Спящий VIP: ${r.name}`,
+        detail: `Без покупок ${days} дн · LTV ${Math.round(parseFloat(r.revenue) / 1e6 * 10) / 10}M UZS`,
+        action_url: '/owner/clients/crm',
+      });
+    }
+
+    // 6) Overdue supplier debts (we owe)
+    const overdueSupplier = await pool.query(`
+      SELECT si.id, si.due_date,
+             ((si.quantity * si.price) - COALESCE(si.paid_amount, 0)) AS remaining,
+             s.name AS supplier_name
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+        AND si.due_date IS NOT NULL AND si.due_date < CURRENT_DATE
+        ${branchSQLsi}
+      ORDER BY si.due_date ASC LIMIT 30
+    `, [companyId]);
+    for (const r of overdueSupplier.rows) {
+      const daysLate = Math.floor((new Date() - new Date(r.due_date)) / 86400000);
+      alerts.push({
+        severity: daysLate > 7 ? 'critical' : 'warning',
+        category: 'supplier-debt',
+        title: `Долг поставщику: ${r.supplier_name || 'поставщик'}`,
+        detail: `${Math.round(parseFloat(r.remaining)).toLocaleString('ru-RU')} UZS · ${daysLate} дн. просрочки`,
+        action_url: '/owner/warehouse/debts-suppliers',
+      });
+    }
+
+    // Group by severity for summary
+    const summary = {
+      total: alerts.length,
+      critical: alerts.filter(a => a.severity === 'critical').length,
+      warning: alerts.filter(a => a.severity === 'warning').length,
+      info: alerts.filter(a => a.severity === 'info').length,
+    };
+    res.json({ alerts, summary });
+  } catch (e) {
+    console.error('risks err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Supplier debts (all unpaid incomes company-wide) ===
+app.get('/api/suppliers/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+  try {
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = [req.user.company_id];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = `AND si.branch_id = $${params.length}`; }
+    const { rows } = await pool.query(`
+      SELECT si.id, si.created_at, si.quantity, si.price, si.payment_status, si.payment_method,
+             si.paid_amount, si.due_date, si.branch_id,
+             (si.quantity * si.price) AS total_amount,
+             ((si.quantity * si.price) - COALESCE(si.paid_amount, 0)) AS remaining,
+             p.name_ru AS product_name, p.unit,
+             s.id AS supplier_id, s.name AS supplier_name, s.phone AS supplier_phone,
+             b.name AS branch_name,
+             CASE WHEN si.due_date IS NOT NULL AND si.due_date < CURRENT_DATE THEN TRUE ELSE FALSE END AS overdue
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      LEFT JOIN branches b ON b.id = si.branch_id
+      WHERE p.company_id = $1 AND si.payment_status <> 'paid' ${branchFilter}
+      ORDER BY si.due_date NULLS LAST, si.created_at DESC
+      LIMIT 500
+    `, params);
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === COMPANY DASHBOARD (gen_dir/founder/manager) ===
+// Query params:
+//   from, to — ISO timestamps for sales period filter (default: lifetime)
+//   branch_id — optional drill-down for owner; manager is always pinned to own branch
+// Returns: { branches:[{...kpis}], totals:{}, sales_trend:[{date,revenue}], top_products:[], top_sellers:[], alerts:[] }
+app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const scopedBranch = isManager ? req.user.branch_id : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+
+    // Build period predicate for stock_outcome
+    const periodParams = [];
+    let periodSQL = '';
+    if (from) { periodParams.push(from); periodSQL += ` AND so.created_at >= $${periodParams.length}`; }
+    if (to)   { periodParams.push(to);   periodSQL += ` AND so.created_at <  $${periodParams.length}`; }
+
+    // Branch list visible to caller
+    let branchesQuery;
+    if (isManager) {
+      branchesQuery = await pool.query('SELECT id, name FROM branches WHERE id=$1 AND company_id=$2', [req.user.branch_id, companyId]);
+    } else if (scopedBranch) {
+      branchesQuery = await pool.query('SELECT id, name FROM branches WHERE id=$1 AND company_id=$2', [scopedBranch, companyId]);
+    } else {
+      branchesQuery = await pool.query('SELECT id, name FROM branches WHERE company_id=$1 ORDER BY id', [companyId]);
+    }
+    const branches = branchesQuery.rows;
+    const branchIds = branches.map(b => b.id);
+    if (branchIds.length === 0) {
+      return res.json({ company_id: companyId, branches: [], totals: {}, sales_trend: [], top_products: [], top_sellers: [], alerts: [] });
+    }
+
+    // Per-branch KPIs — single set of grouped queries
+    const branchIdsList = `(${branchIds.join(',')})`;
+    const [salesAgg, cashIAgg, cashEAgg, stockAgg, workersAgg] = await Promise.all([
+      pool.query(`
+        SELECT so.branch_id,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+               COUNT(*) AS deals
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+        GROUP BY so.branch_id`,
+        periodParams),
+      pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) AS t FROM cash_income
+                  WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE GROUP BY branch_id`),
+      pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) AS t FROM cash_expense
+                  WHERE branch_id IN ${branchIdsList} GROUP BY branch_id`),
+      pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity * COALESCE(p.price_sell,0)),0) AS value
+                  FROM product_stock ps JOIN products p ON p.id = ps.product_id
+                  WHERE ps.branch_id IN ${branchIdsList} GROUP BY ps.branch_id`),
+      pool.query(`SELECT branch_id, COUNT(*) AS c FROM users
+                  WHERE branch_id IN ${branchIdsList} GROUP BY branch_id`),
+    ]);
+    const idx = (rows, key = 't') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[key]) || 0]));
+    const cashIByB = idx(cashIAgg.rows);
+    const cashEByB = idx(cashEAgg.rows);
+    const stockByB = idx(stockAgg.rows, 'value');
+    const workersByB = idx(workersAgg.rows, 'c');
+    const salesByB = Object.fromEntries(salesAgg.rows.map(r => [r.branch_id, {
+      revenue: parseFloat(r.revenue) || 0,
+      cost: parseFloat(r.cost) || 0,
+      deals: parseInt(r.deals) || 0,
+    }]));
+    const perBranch = branches.map(b => {
+      const s = salesByB[b.id] || { revenue: 0, cost: 0, deals: 0 };
+      const ci = cashIByB[b.id] || 0;
+      const ce = cashEByB[b.id] || 0;
+      return {
+        branch_id: b.id,
+        branch_name: b.name,
+        cash_income: ci,
+        cash_expense: ce,
+        cash_balance: ci - ce,
+        sales_revenue: s.revenue,
+        sales_cost: s.cost,
+        gross_profit: s.revenue - s.cost,
+        margin_pct: s.revenue > 0 ? Math.round(((s.revenue - s.cost) / s.revenue) * 1000) / 10 : 0,
+        deals_count: s.deals,
+        avg_check: s.deals > 0 ? Math.round(s.revenue / s.deals) : 0,
+        stock_value: stockByB[b.id] || 0,
+        worker_count: workersByB[b.id] || 0,
+      };
+    });
+
+    const totals = perBranch.reduce((acc, b) => ({
+      cash_income: acc.cash_income + b.cash_income,
+      cash_expense: acc.cash_expense + b.cash_expense,
+      cash_balance: acc.cash_balance + b.cash_balance,
+      sales_revenue: acc.sales_revenue + b.sales_revenue,
+      sales_cost: acc.sales_cost + b.sales_cost,
+      gross_profit: acc.gross_profit + b.gross_profit,
+      stock_value: acc.stock_value + b.stock_value,
+      deals_count: acc.deals_count + b.deals_count,
+      worker_count: acc.worker_count + b.worker_count,
+    }), { cash_income: 0, cash_expense: 0, cash_balance: 0, sales_revenue: 0, sales_cost: 0, gross_profit: 0, stock_value: 0, deals_count: 0, worker_count: 0 });
+    totals.margin_pct = totals.sales_revenue > 0 ? Math.round((totals.gross_profit / totals.sales_revenue) * 1000) / 10 : 0;
+    totals.avg_check = totals.deals_count > 0 ? Math.round(totals.sales_revenue / totals.deals_count) : 0;
+
+    // Sales trend covering the selected period (revenue per day).
+    // If no period → last 30 days. The frontend draws this as an area chart.
+    let trendFromIso = from;
+    let trendToIso = to || new Date().toISOString();
+    if (!trendFromIso) {
+      const d = new Date(); d.setDate(d.getDate() - 30);
+      trendFromIso = d.toISOString();
+    }
+    const trendQ = await pool.query(`
+      SELECT date_trunc('day', so.created_at)::date AS d,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COUNT(*) AS deals
+      FROM stock_outcome so
+      WHERE so.status='approved'
+        AND so.branch_id IN ${branchIdsList}
+        AND so.created_at >= $1 AND so.created_at < $2
+      GROUP BY d ORDER BY d`,
+      [trendFromIso, trendToIso]);
+    const trendMap = new Map();
+    for (const r of trendQ.rows) trendMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue: parseFloat(r.revenue) || 0, deals: parseInt(r.deals) || 0 });
+    const sales_trend = [];
+    const startDay = new Date(trendFromIso); startDay.setHours(0, 0, 0, 0);
+    const endDay = new Date(trendToIso); endDay.setHours(0, 0, 0, 0);
+    for (let d = new Date(startDay); d <= endDay; d.setDate(d.getDate() + 1)) {
+      const key = d.toISOString().slice(0, 10);
+      const v = trendMap.get(key) || { revenue: 0, deals: 0 };
+      sales_trend.push({ date: key, revenue: v.revenue, deals: v.deals });
+    }
+
+    // Previous period comparison — same length as current, ending right before `from`.
+    // Lets the frontend show "growth vs previous period" tile deltas + a comparison chart.
+    let prev_totals = null;
+    let prev_trend = [];
+    if (from) {
+      const periodMs = new Date(trendToIso) - new Date(from);
+      const prevTo = from;
+      const prevFrom = new Date(new Date(from) - periodMs).toISOString();
+      const prevAgg = await pool.query(`
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+               COUNT(*) AS deals
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList}
+          AND so.created_at >= $1 AND so.created_at < $2`,
+        [prevFrom, prevTo]);
+      const pr = prevAgg.rows[0];
+      const pRev = parseFloat(pr.revenue) || 0;
+      const pCost = parseFloat(pr.cost) || 0;
+      const pDeals = parseInt(pr.deals) || 0;
+      prev_totals = {
+        sales_revenue: pRev,
+        gross_profit: pRev - pCost,
+        deals_count: pDeals,
+        avg_check: pDeals > 0 ? Math.round(pRev / pDeals) : 0,
+      };
+      // Prev-period daily trend (for the comparison chart)
+      const prevTrendQ = await pool.query(`
+        SELECT date_trunc('day', so.created_at)::date AS d,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+        FROM stock_outcome so
+        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList}
+          AND so.created_at >= $1 AND so.created_at < $2
+        GROUP BY d ORDER BY d`,
+        [prevFrom, prevTo]);
+      const prevMap = new Map();
+      for (const r of prevTrendQ.rows) prevMap.set(new Date(r.d).toISOString().slice(0, 10), parseFloat(r.revenue) || 0);
+      const ps = new Date(prevFrom); ps.setHours(0, 0, 0, 0);
+      const pe = new Date(prevTo); pe.setHours(0, 0, 0, 0);
+      for (let d = new Date(ps); d < pe; d.setDate(d.getDate() + 1)) {
+        const key = d.toISOString().slice(0, 10);
+        prev_trend.push({ date: key, revenue: prevMap.get(key) || 0 });
+      }
+    }
+
+    // Department-level counters used by department mini-dashboards
+    const [custQ, supQ, lowStockCountQ, newCustQ, debtsQ] = await Promise.all([
+      pool.query('SELECT COUNT(*) AS c FROM customers WHERE company_id = $1 AND deleted_at IS NULL', [companyId]),
+      pool.query('SELECT COUNT(*) AS c FROM suppliers WHERE company_id = $1', [companyId]),
+      pool.query(`SELECT COUNT(*) AS c FROM product_stock ps JOIN products p ON p.id = ps.product_id
+                  WHERE p.company_id = $1 AND ps.branch_id IN ${branchIdsList} AND ps.quantity < 5`, [companyId]),
+      pool.query(`SELECT COUNT(*) AS c FROM customers WHERE company_id = $1 AND deleted_at IS NULL
+                  AND created_at >= NOW() - INTERVAL '30 days'`, [companyId]),
+      pool.query(`SELECT
+        (SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0)
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+           AND so.branch_id IN ${branchIdsList}) AS client_debts,
+        (SELECT COALESCE(SUM((si.quantity*si.price) - COALESCE(si.paid_amount,0)),0)
+         FROM stock_income si JOIN products p ON p.id = si.product_id
+         WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+           AND si.branch_id IN ${branchIdsList}) AS supplier_debts`, [companyId]),
+    ]);
+    totals.customer_count = parseInt(custQ.rows[0]?.c || 0);
+    totals.supplier_count = parseInt(supQ.rows[0]?.c || 0);
+    totals.low_stock_count = parseInt(lowStockCountQ.rows[0]?.c || 0);
+    totals.new_customers_30d = parseInt(newCustQ.rows[0]?.c || 0);
+    totals.client_debts = parseFloat(debtsQ.rows[0]?.client_debts || 0);
+    totals.supplier_debts = parseFloat(debtsQ.rows[0]?.supplier_debts || 0);
+
+    // Top 5 products by revenue in period
+    const topProdQ = await pool.query(`
+      SELECT p.id, p.name_ru, p.unit,
+             COALESCE(SUM(so.quantity), 0) AS qty,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+      GROUP BY p.id, p.name_ru, p.unit
+      ORDER BY revenue DESC LIMIT 5`,
+      periodParams);
+
+    // Top 5 sellers by revenue (created_by user) in period
+    const topSellQ = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COUNT(*) AS deals
+      FROM stock_outcome so
+      JOIN users u ON u.id = so.created_by
+      WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+      GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
+      ORDER BY revenue DESC LIMIT 5`,
+      periodParams);
+
+    // Simple rule-based alerts
+    const alerts = [];
+    // Low stock alert — count products with stock < 5
+    const lowStockQ = await pool.query(`
+      SELECT COUNT(*) AS c FROM product_stock ps
+      WHERE ps.branch_id IN ${branchIdsList} AND ps.quantity > 0 AND ps.quantity < 5`);
+    const lowStock = parseInt(lowStockQ.rows[0]?.c || 0);
+    if (lowStock > 0) {
+      alerts.push({ tone: 'red', title: `Низкий остаток: ${lowStock} товаров`, sub: 'Меньше 5 единиц на складе — рискуете остаться без продаж' });
+    }
+    // Pending outcomes (unconfirmed sales)
+    const pendingQ = await pool.query(`
+      SELECT COUNT(*) AS c FROM stock_outcome so
+      WHERE so.status='pending' AND so.branch_id IN ${branchIdsList}`);
+    const pending = parseInt(pendingQ.rows[0]?.c || 0);
+    if (pending > 0) {
+      alerts.push({ tone: 'yellow', title: `${pending} сделок ждут подтверждения`, sub: 'Менеджер должен подтвердить' });
+    }
+    // Branch underperforming — if branch revenue < 50% of the company avg
+    if (perBranch.length > 1) {
+      const avgRev = totals.sales_revenue / perBranch.length;
+      for (const b of perBranch) {
+        if (avgRev > 0 && b.sales_revenue < avgRev * 0.5) {
+          alerts.push({ tone: 'purple', title: `Филиал "${b.branch_name}" отстаёт`, sub: `Выручка ${Math.round(b.sales_revenue / 1e6 * 10) / 10}M vs средняя ${Math.round(avgRev / 1e6 * 10) / 10}M` });
+        }
+      }
+    }
+
+    res.json({
+      company_id: companyId,
+      branches: perBranch,
+      totals,
+      prev_totals,
+      sales_trend,
+      prev_trend,
+      top_products: topProdQ.rows.map(r => ({ id: r.id, name: r.name_ru, unit: r.unit, qty: parseFloat(r.qty), revenue: parseFloat(r.revenue) })),
+      top_sellers: topSellQ.rows.map(r => ({
+        id: r.id, username: r.username, role: r.role,
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
+        revenue: parseFloat(r.revenue), deals: parseInt(r.deals),
+      })),
+      alerts,
+    });
+  } catch (e) {
+    console.error('dashboard error', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // === AUTH ===
@@ -426,34 +1080,60 @@ app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Returns true if the calling user is allowed to mutate the target user.
+// Non-admin can only touch users in their own company; manager additionally restricted to own branch
+// and forbidden from touching admin/founder/gen_dir roles.
+function canMutateUser(actor, target) {
+  if (actor.role === 'admin') return true;
+  if (!target) return false;
+  if (target.company_id !== actor.company_id) return false;
+  if (actor.role === 'manager') {
+    if (target.branch_id !== actor.branch_id) return false;
+    if (['admin', 'founder', 'gen_dir', 'manager'].includes(target.role)) return false;
+  }
+  if (actor.role === 'gen_dir' || actor.role === 'founder') {
+    if (target.role === 'admin') return false;
+  }
+  return true;
+}
+
 app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
     const { role, company_id, branch_id, first_name, last_name, username } = req.body;
-    const { rows: [cur] } = await pool.query('SELECT role, username FROM users WHERE id=$1', [req.params.id]);
+    const { rows: [cur] } = await pool.query('SELECT id, role, username, company_id, branch_id FROM users WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    // Force tenant fields to caller's scope for non-admin to prevent escalation
+    let effectiveCompany = company_id;
+    let effectiveBranch = branch_id;
+    if (req.user.role !== 'admin') {
+      effectiveCompany = req.user.company_id;
+      if (req.user.role === 'manager') effectiveBranch = req.user.branch_id;
+    }
     if (cur && role && cur.role !== role) {
       await pool.query(
         'INSERT INTO role_change_log (user_id, username, old_role, new_role, changed_by, changed_by_username) VALUES ($1,$2,$3,$4,$5,$6)',
-        [req.params.id, cur.username, cur.role, role, req.user.id, req.user.username]
+        [id, cur.username, cur.role, role, req.user.id, req.user.username]
       );
     }
-    // Company-level roles — never attach a branch
-    const branchVal = isCompanyLevel(role) ? null : (branch_id || null);
-    // Pre-check: only one founder/gen_dir per company
-    if (isCompanyLevel(role) && (company_id || cur?.company_id)) {
-      const targetCompany = company_id || cur?.company_id;
-      const dup = await pool.query('SELECT id, username FROM users WHERE role=$1 AND company_id=$2 AND id != $3 LIMIT 1', [role, targetCompany, req.params.id]);
+    const branchVal = isCompanyLevel(role) ? null : (effectiveBranch || null);
+    if (isCompanyLevel(role) && (effectiveCompany || cur?.company_id)) {
+      const targetCompany = effectiveCompany || cur?.company_id;
+      const dup = await pool.query('SELECT id, username FROM users WHERE role=$1 AND company_id=$2 AND id != $3 LIMIT 1', [role, targetCompany, id]);
       if (dup.rows[0]) {
         const label = role === 'founder' ? 'учредитель' : 'ген. директор';
         return res.status(409).json({ error: `У компании уже есть ${label}: @${dup.rows[0].username}. Сначала измените его роль.` });
       }
     }
     const sets = ['role=$1','company_id=$2','branch_id=$3','first_name=$4','last_name=$5'];
-    const vals = [role, company_id || null, branchVal, first_name || null, last_name || null];
+    const vals = [role, effectiveCompany || null, branchVal, first_name || null, last_name || null];
     if (req.user.role === 'admin' && username && username.trim()) {
       sets.push(`username=$${vals.length + 1}`);
       vals.push(username.trim());
     }
-    vals.push(req.params.id);
+    vals.push(id);
     try {
       await pool.query(`UPDATE users SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
     } catch (e) {
@@ -469,20 +1149,29 @@ app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
 
 app.delete('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
-    const { rows: [cur] } = await pool.query('SELECT id, username, role, branch_id FROM users WHERE id=$1', [req.params.id]);
-    if (cur) {
-      await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
-      audit(req, 'delete', 'user', cur.id, cur, null);
-    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query('SELECT id, username, role, branch_id, company_id FROM users WHERE id=$1', [id]);
+    if (!cur) return res.json({ ok: true });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    if (cur.id === req.user.id) return res.status(400).json({ error: 'Нельзя удалить самого себя' });
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    audit(req, 'delete', 'user', cur.id, cur, null);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/users/:id/block', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query('SELECT id, role, branch_id, company_id FROM users WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    if (cur.id === req.user.id) return res.status(400).json({ error: 'Нельзя заблокировать самого себя' });
     const { is_blocked } = req.body;
-    await pool.query('UPDATE users SET is_blocked = $1 WHERE id = $2', [is_blocked, req.params.id]);
-    audit(req, is_blocked ? 'block' : 'unblock', 'user', parseInt(req.params.id), null, { is_blocked });
+    await pool.query('UPDATE users SET is_blocked = $1 WHERE id = $2', [is_blocked, id]);
+    audit(req, is_blocked ? 'block' : 'unblock', 'user', id, null, { is_blocked });
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -505,9 +1194,15 @@ app.post('/api/auth/change-password', auth(), async (req, res) => {
 app.post('/api/users/reset-password', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const { user_id, password } = req.body;
+    const targetId = parseInt(user_id, 10);
+    if (!Number.isFinite(targetId)) return res.status(400).json({ error: 'bad user_id' });
     if (!password || password.length < 4) return res.status(400).json({ error: 'Пароль минимум 4 символа' });
+    const { rows: [cur] } = await pool.query('SELECT id, role, branch_id, company_id FROM users WHERE id=$1', [targetId]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
     const hash = await bcrypt.hash(password, 10);
-    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, user_id]);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, targetId]);
+    audit(req, 'reset_password', 'user', targetId, null, { by: req.user.id });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -654,12 +1349,23 @@ app.post('/api/products', auth(['admin', 'cashier', 'warehouse', 'manager']), as
 
 app.put('/api/products/:id', auth(['admin', 'cashier', 'warehouse', 'manager']), async (req, res) => {
   try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query(
+      'SELECT id, company_id FROM products WHERE id = $1 AND deleted_at IS NULL', [id]
+    );
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
+      return res.status(403).json({ error: 'Out of scope' });
+    }
     const { name_ru, name_uz, type_id, category_id, barcode, photo_url, unit, price_buy, price_sell, color_size, brand } = req.body;
     const { rows } = await pool.query(
       `UPDATE products SET name_ru=$1, name_uz=$2, type_id=$3, category_id=$4, barcode=$5,
-       photo_url=$6, unit=$7, price_buy=$8, price_sell=$9, color_size=$10, brand=$11 WHERE id=$12 RETURNING *`,
+       photo_url=$6, unit=$7, price_buy=$8, price_sell=$9, color_size=$10, brand=$11
+       WHERE id=$12 AND company_id=$13 RETURNING *`,
       [name_ru, name_uz || name_ru, type_id || null, category_id || null, barcode || null,
-       photo_url || null, unit || 'шт', price_buy || 0, price_sell || 0, color_size || null, brand || null, req.params.id]
+       photo_url || null, unit || 'шт', price_buy || 0, price_sell || 0, color_size || null, brand || null,
+       id, cur.company_id]
     );
     res.json(rows[0]);
   } catch (e) {
@@ -721,7 +1427,7 @@ app.post('/api/stock/income', auth(['cashier', 'warehouse', 'manager']), async (
   const client = await pool.connect();
   try {
     const {
-      product_id, quantity, price, note, supplier, supplier_id, exchange_rate,
+      product_id, quantity, price, price_sell, note, supplier, supplier_id, exchange_rate,
       payment_status, paid_amount, due_date, payment_method, currency,
     } = req.body;
     const pid = parseInt(product_id);
@@ -776,6 +1482,23 @@ app.post('/api/stock/income', auth(['cashier', 'warehouse', 'manager']), async (
        ON CONFLICT (product_id, branch_id) DO UPDATE SET quantity = product_stock.quantity + $3, updated_at = NOW()`,
       [pid, branchId, qty]
     );
+
+    // Update product prices from this shipment.
+    // - Buy price: if provided > 0 and changed, write the new buy price.
+    //   Future: could become an average; for now we keep "latest wins" so cashier sees current cost.
+    // - Sell price: only update if cashier explicitly provided a non-null value (price_sell !== null && >= 0).
+    //   Passing null = "don't touch sell price for this product".
+    const newBuy = parseFloat(price);
+    if (Number.isFinite(newBuy) && newBuy > 0) {
+      await client.query('UPDATE products SET price_buy = $1 WHERE id = $2', [newBuy, pid]);
+    }
+    if (price_sell !== null && price_sell !== undefined) {
+      const newSell = parseFloat(price_sell);
+      if (Number.isFinite(newSell) && newSell >= 0) {
+        await client.query('UPDATE products SET price_sell = $1 WHERE id = $2', [newSell, pid]);
+      }
+    }
+
     await client.query('COMMIT');
     res.json(rows[0]);
   } catch (e) {
@@ -1059,18 +1782,18 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
     // Use sale's price as basis if linked
     let unitPrice = 0;
     let origId = null;
+    let origRow = null;
     let origQtyRemaining = Infinity;
     if (original_outcome_id) {
-      const orig = await client.query('SELECT * FROM stock_outcome WHERE id=$1', [original_outcome_id]);
+      const orig = await client.query('SELECT * FROM stock_outcome WHERE id=$1 FOR UPDATE', [original_outcome_id]);
       if (orig.rows[0]) {
-        // Cross-branch refund protection: the original sale must be in the same branch
         if (orig.rows[0].branch_id !== branchId) {
           await client.query('ROLLBACK');
           return res.status(403).json({ error: 'Original sale is in a different branch' });
         }
         unitPrice = parseFloat(orig.rows[0].price);
         origId = orig.rows[0].id;
-        // Cap return qty by what was actually sold minus already-returned qty
+        origRow = orig.rows[0];
         const sold = parseFloat(orig.rows[0].quantity);
         const { rows: [agg] } = await client.query(
           'SELECT COALESCE(SUM(quantity), 0) AS returned FROM stock_outcome WHERE original_outcome_id=$1 AND outcome_type=$2',
@@ -1083,7 +1806,23 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
         }
       }
     }
-    const refundTotal = parseFloat(refund_amount) || (qty * unitPrice);
+    // CAP the cash refund at what the customer ACTUALLY paid.
+    // If they bought on debt and never paid, we don't pay them anything in cash —
+    // we just decrement their outstanding debt by the same amount.
+    // Without this cap, a debt-buying customer could "return" goods and walk out with cash.
+    let refundTotal = parseFloat(refund_amount) || (qty * unitPrice);
+    let debtCancellation = 0;
+    if (origRow) {
+      const origTotal = parseFloat(origRow.quantity) * parseFloat(origRow.price || 0);
+      const paid = parseFloat(origRow.paid_amount || 0);
+      const cashCapForFullReturn = paid;
+      const proportional = origTotal > 0 ? (qty / parseFloat(origRow.quantity)) * paid : 0;
+      const maxCash = Math.min(cashCapForFullReturn, proportional);
+      if (refundTotal > maxCash) {
+        debtCancellation = refundTotal - maxCash;
+        refundTotal = maxCash;
+      }
+    }
     // Record a CUSTOMER_RETURN outcome with NEGATIVE-flow logic: actually we INCREASE stock,
     // and create a cash_expense. We record qty as positive for accounting clarity.
     const out = await client.query(
@@ -1101,17 +1840,42 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
       'UPDATE product_stock SET quantity = quantity + $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
       [qty, pid, branchId]
     );
-    // Cash goes OUT (we paid the customer back)
+    // Cash goes OUT (only when the customer actually paid in cash for this portion).
+    // Card/transfer/wire returns don't touch the cash till — they reverse on the original channel.
     if (refundTotal > 0) {
       const pm = ['cash','card','transfer','wire'].includes(payment_method) ? payment_method : 'cash';
+      const touchesCash = pm === 'cash';
       const prodName = await client.query('SELECT name_ru FROM products WHERE id=$1', [pid]);
+      if (touchesCash) {
+        await client.query(
+          `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
+           VALUES ($1,$2,$3,$4,$5,'UZS',$1,1)`,
+          [refundTotal, `Возврат клиенту: ${prodName.rows[0]?.name_ru || ''} × ${qty}`, req.user.id, branchId, pm]
+        );
+      }
+    }
+    // Decrement the customer's outstanding debt on the original sale.
+    if (origRow && debtCancellation > 0) {
+      const origTotal = parseFloat(origRow.quantity) * parseFloat(origRow.price || 0);
+      const origPaid = parseFloat(origRow.paid_amount || 0);
+      const newPaid = origPaid;
+      const remainingAfter = Math.max(0, origTotal - newPaid - debtCancellation);
+      const newStatus = remainingAfter < 0.01 ? 'paid' : (newPaid > 0 ? 'partial' : 'debt');
       await client.query(
-        `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
-         VALUES ($1,$2,$3,$4,$5,'UZS',$1,1)`,
-        [refundTotal, `Возврат клиенту: ${prodName.rows[0]?.name_ru || ''} × ${qty}`, req.user.id, branchId, pm]
+        `UPDATE stock_outcome
+            SET quantity = quantity - $1,
+                payment_status = CASE
+                  WHEN (quantity - $1) * price - COALESCE(paid_amount, 0) < 0.01 THEN 'paid'
+                  WHEN COALESCE(paid_amount, 0) > 0 THEN 'partial'
+                  ELSE 'debt'
+                END
+          WHERE id = $2`,
+        [qty, origId]
       );
     }
-    audit(req, 'customer_return', 'stock_outcome', out.rows[0].id, null, { product_id: pid, quantity: qty, refund: refundTotal, original_outcome_id: origId });
+    audit(req, 'customer_return', 'stock_outcome', out.rows[0].id, null, {
+      product_id: pid, quantity: qty, refund_cash: refundTotal, debt_cancelled: debtCancellation, original_outcome_id: origId,
+    });
     await client.query('COMMIT');
     res.json(out.rows[0]);
   } catch (e) {
@@ -1137,6 +1901,13 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const scoped = await loadScopedOutcome(client, req.params.id, req.user);
+    if (scoped.error) { await client.query('ROLLBACK'); return res.status(scoped.error.status).json({ error: scoped.error.msg }); }
+    if (scoped.row.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Уже обработано' });
+    }
+
     const { action } = req.body;
     const newStatus = action === 'approve' ? 'approved' : 'rejected';
     const { rows } = await client.query(
@@ -1150,7 +1921,6 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
         `INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1, $2, 0) ON CONFLICT (product_id, branch_id) DO NOTHING`,
         [rows[0].product_id, rows[0].branch_id]
       );
-      // Atomic, race-safe decrement — pending sales may have piled up, so verify at approval time.
       const needed = parseFloat(rows[0].quantity);
       const dec = await client.query(
         'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3 AND quantity >= $1',
@@ -1161,16 +1931,23 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
         await client.query('ROLLBACK');
         return res.status(400).json({ error: `Недостаточно остатка: есть ${parseFloat(avail.rows[0]?.q || 0)}, нужно ${needed}` });
       }
-      // Auto cash income from the sale — settled status depends on ACTUAL seller's role
-      const amount = parseFloat(rows[0].quantity) * parseFloat(rows[0].price || 0);
-      if (amount > 0) {
+      // CASH BOOKING — only the amount the customer ACTUALLY paid, never the full revenue.
+      // Debt sales (payment_status='debt' or 'partial') leave the unpaid portion to be booked later
+      // when the customer settles via POST /api/sales/:id/pay or PUT /api/stock/outcome/:id/pay.
+      // Also: card/transfer/wire payments do NOT touch the cash till — only 'cash' does.
+      const total = parseFloat(rows[0].quantity) * parseFloat(rows[0].price || 0);
+      const paid = parseFloat(rows[0].paid_amount);
+      const cashAmount = Number.isFinite(paid) ? Math.min(paid, total) : (rows[0].payment_status === 'paid' ? total : 0);
+      const pmethod = rows[0].payment_method || 'cash';
+      const touchesCash = pmethod === 'cash';
+      if (cashAmount > 0 && touchesCash) {
         const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [rows[0].product_id]);
         const desc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${rows[0].quantity}`;
         const sellerRoleQ = await client.query('SELECT role FROM users WHERE id=$1', [rows[0].created_by]);
         const isSettled = sellerRoleQ.rows[0]?.role !== 'seller';
         await client.query(
           'INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING',
-          [amount, desc, rows[0].created_by, rows[0].branch_id, rows[0].id, isSettled, rows[0].payment_method || 'cash']
+          [cashAmount, desc, rows[0].created_by, rows[0].branch_id, rows[0].id, isSettled, pmethod]
         );
       }
     }
@@ -1184,14 +1961,36 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
   }
 });
 
+// Helper — load a stock_outcome row scoped to caller's company (returns null if cross-tenant).
+// All outcome mutators (PUT, DELETE, /approve, /pay) must go through this to avoid cross-tenant tampering.
+async function loadScopedOutcome(client, outcomeId, reqUser) {
+  const { rows } = await client.query(
+    `SELECT so.*, b.company_id AS branch_company_id
+     FROM stock_outcome so
+     LEFT JOIN branches b ON b.id = so.branch_id
+     WHERE so.id = $1`,
+    [outcomeId]
+  );
+  if (!rows[0]) return { row: null, error: { status: 404, msg: 'Not found' } };
+  const cur = rows[0];
+  if (reqUser.role !== 'admin' && cur.branch_company_id !== reqUser.company_id) {
+    return { row: null, error: { status: 403, msg: 'Out of scope' } };
+  }
+  if (reqUser.role === 'manager' && reqUser.branch_id && cur.branch_id !== reqUser.branch_id) {
+    return { row: null, error: { status: 403, msg: 'Out of branch scope' } };
+  }
+  return { row: cur, error: null };
+}
+
 // Edit stock outcome (price, note, quantity). Adjusts stock if quantity changes on approved record.
 app.put('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { quantity, price, note } = req.body;
-    const { rows: [cur] } = await client.query('SELECT * FROM stock_outcome WHERE id=$1', [req.params.id]);
-    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+    const scoped = await loadScopedOutcome(client, req.params.id, req.user);
+    if (scoped.error) { await client.query('ROLLBACK'); return res.status(scoped.error.status).json({ error: scoped.error.msg }); }
+    const cur = scoped.row;
     const newQty = quantity !== undefined ? parseFloat(quantity) : parseFloat(cur.quantity);
     if (newQty <= 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Quantity must be > 0' }); }
     // If approved and qty changed, adjust stock by the delta
@@ -1207,19 +2006,30 @@ app.put('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), async (
       `UPDATE stock_outcome SET quantity=$1, price=$2, note=$3 WHERE id=$4 RETURNING *`,
       [newQty, newPrice, note !== undefined ? note : cur.note, req.params.id]
     );
-    // Sync linked cash_income if outcome is approved (delete+insert or update)
-    if (cur.status === 'approved') {
+    // Sync the ORIGINAL-sale cash_income only — preserve any /pay debt-payment rows that legitimately
+    // booked customer payments against this outcome. Only touch the original auto-row if it was created
+    // for the FULL sale (i.e. on paid status) — for debt sales, the original row is 0/null and /pay
+    // creates per-payment rows separately.
+    if (cur.status === 'approved' && cur.payment_method !== 'card' && cur.payment_method !== 'transfer' && cur.payment_method !== 'wire') {
       const newAmount = newQty * newPrice;
-      // Remove old auto-cash entries for this outcome (cascade-safe to recreate)
-      await client.query('DELETE FROM cash_income WHERE outcome_id=$1', [req.params.id]);
-      if (newAmount > 0) {
-        const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [cur.product_id]);
-        const desc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${newQty}`;
+      const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [cur.product_id]);
+      const newDesc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${newQty}`;
+      // Try UPDATE in place to preserve is_settled / settled_at / settled_by metadata
+      const upd = await client.query(
+        `UPDATE cash_income
+           SET amount = $1, description = $2
+         WHERE outcome_id = $3
+           AND description LIKE 'Продажа:%'
+         RETURNING id`,
+        [newAmount, newDesc, req.params.id]
+      );
+      if (upd.rowCount === 0 && newAmount > 0 && cur.payment_status === 'paid') {
+        // No original-sale row existed yet (e.g. was debt, now changed to paid via edit) — create one.
         const sellerRoleQ = await client.query('SELECT role FROM users WHERE id=$1', [cur.created_by]);
         const isSettled = sellerRoleQ.rows[0]?.role !== 'seller';
         await client.query(
           'INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [newAmount, desc, cur.created_by, cur.branch_id, cur.id, isSettled, cur.payment_method || 'cash']
+          [newAmount, newDesc, cur.created_by, cur.branch_id, cur.id, isSettled, cur.payment_method || 'cash']
         );
       }
     }
@@ -1236,15 +2046,18 @@ app.delete('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), asyn
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows: [cur] } = await client.query('SELECT * FROM stock_outcome WHERE id=$1', [req.params.id]);
-    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+    const scoped = await loadScopedOutcome(client, req.params.id, req.user);
+    if (scoped.error) { await client.query('ROLLBACK'); return res.status(scoped.error.status).json({ error: scoped.error.msg }); }
+    const cur = scoped.row;
     if (cur.status === 'approved') {
       await client.query(
         'UPDATE product_stock SET quantity = quantity + $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
         [cur.quantity, cur.product_id, cur.branch_id]
       );
     }
+    await client.query('DELETE FROM cash_income WHERE outcome_id = $1', [req.params.id]);
     await client.query('DELETE FROM stock_outcome WHERE id=$1', [req.params.id]);
+    audit(req, 'delete', 'stock_outcome', cur.id, { quantity: cur.quantity, price: cur.price, branch_id: cur.branch_id }, null);
     await client.query('COMMIT');
     res.json({ ok: true });
   } catch (e) {
@@ -1358,32 +2171,36 @@ app.delete('/api/cash/categories/:id', auth(['cashier', 'manager', 'gen_dir', 'f
 // === CASH ===
 app.get('/api/cash/balance', auth(['cashier', 'manager', 'gen_dir', 'founder']), async (req, res) => {
   try {
-    const branchId = getBranchFilter(req.user, req.query);
-    const bCond = branchId ? `WHERE ci.branch_id = ${branchId}` : '';
-    const bCond2 = branchId ? `WHERE ce.branch_id = ${branchId}` : '';
-    const bSimple = branchId ? `WHERE branch_id = ${branchId}` : '';
-    // Balance counts ONLY money physically in the till — i.e. is_settled = TRUE.
-    // Seller's unsettled income is excluded from the total but still listed.
-    const settledFilter = bSimple
-      ? `${bSimple} AND is_settled IS NOT FALSE`
-      : `WHERE is_settled IS NOT FALSE`;
-    const income = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM cash_income ${settledFilter}`);
-    const expense = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM cash_expense ${bSimple}`);
-    // Also surface "pending" (not-yet-settled) income so cashier sees what's coming
-    const pendingFilter = bSimple
-      ? `${bSimple} AND is_settled = FALSE`
-      : `WHERE is_settled = FALSE`;
-    const pending = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM cash_income ${pendingFilter}`);
-    const incomeList = await pool.query(`
-      SELECT ci.*, u.username FROM cash_income ci
-      LEFT JOIN users u ON ci.created_by = u.id
-      ${bCond} ORDER BY ci.created_at DESC LIMIT 50
-    `);
-    const expenseList = await pool.query(`
-      SELECT ce.*, u.username FROM cash_expense ce
-      LEFT JOIN users u ON ce.created_by = u.id
-      ${bCond2} ORDER BY ce.created_at DESC LIMIT 50
-    `);
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    // Empty allowed-branch list → no data at all (avoids unscoped global query).
+    if (scope.restrictive && scope.ids.length === 0) {
+      return res.json({ total_income: 0, total_expense: 0, balance: 0, pending_income: 0, pending_count: 0, income_list: [], expense_list: [] });
+    }
+    const ids = scope.ids;
+    const branchFilterSimple = ids ? 'WHERE branch_id = ANY($1::int[])' : '';
+    const branchFilterCi     = ids ? 'WHERE ci.branch_id = ANY($1::int[])' : '';
+    const branchFilterCe     = ids ? 'WHERE ce.branch_id = ANY($1::int[])' : '';
+    const settledFilter = ids
+      ? 'WHERE branch_id = ANY($1::int[]) AND is_settled IS NOT FALSE'
+      : 'WHERE is_settled IS NOT FALSE';
+    const pendingFilter = ids
+      ? 'WHERE branch_id = ANY($1::int[]) AND is_settled = FALSE'
+      : 'WHERE is_settled = FALSE';
+    const params = ids ? [ids] : [];
+
+    const income = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM cash_income ${settledFilter}`, params);
+    const expense = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM cash_expense ${branchFilterSimple}`, params);
+    const pending = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM cash_income ${pendingFilter}`, params);
+    const incomeList = await pool.query(
+      `SELECT ci.*, u.username FROM cash_income ci
+       LEFT JOIN users u ON ci.created_by = u.id
+       ${branchFilterCi} ORDER BY ci.created_at DESC LIMIT 50`, params);
+    const expenseList = await pool.query(
+      `SELECT ce.*, u.username FROM cash_expense ce
+       LEFT JOIN users u ON ce.created_by = u.id
+       ${branchFilterCe} ORDER BY ce.created_at DESC LIMIT 50`, params);
     res.json({
       total_income: parseFloat(income.rows[0].total),
       total_expense: parseFloat(expense.rows[0].total),
@@ -1403,16 +2220,20 @@ app.get('/api/cash/balance', auth(['cashier', 'manager', 'gen_dir', 'founder']),
 // outstanding debts, foreign-currency breakdown.
 app.get('/api/cash/report', auth(['cashier', 'manager', 'gen_dir', 'founder', 'admin']), async (req, res) => {
   try {
-    const branchId = getBranchFilter(req.user, req.query);
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) {
+      return res.json({ settled: { total: 0, cnt: 0 }, pending: { total: 0, cnt: 0 }, expense: { total: 0, cnt: 0 }, sales: { revenue: 0, cost: 0, qty_total: 0, cnt: 0 }, by_method: [], by_seller: [], by_day: [], debts: { client: 0, supplier: 0 }, foreign_currency: [] });
+    }
     const { from, to } = req.query;
     const params = [];
     const conds = [];
-    if (branchId) { params.push(branchId); conds.push(`branch_id = $${params.length}`); }
+    if (scope.ids) { params.push(scope.ids); conds.push(`branch_id = ANY($${params.length}::int[])`); }
     if (from) { params.push(from); conds.push(`created_at >= $${params.length}`); }
     if (to) { params.push(to); conds.push(`created_at < $${params.length}`); }
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
 
-    // For stock_outcome, use the so. prefix on conds
     const soConds = conds.map(c => c.replace(/^([a-z_]+)/, 'so.$1'));
     const soWhere = soConds.length ? 'WHERE ' + soConds.join(' AND ') + ` AND so.status='approved'` : `WHERE so.status='approved'`;
 
@@ -1856,18 +2677,27 @@ app.get('/api/team/kpi', auth(['founder', 'gen_dir', 'manager']), async (req, re
 
 app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
-    const branchId = getBranchFilter(req.user, req.query);
-    const bWhere = branchId ? `AND so.branch_id = ${branchId}` : '';
-    const bSimpleI = branchId ? `WHERE branch_id = ${branchId}` : '';
-    const settledFilterI = bSimpleI ? `${bSimpleI} AND is_settled IS NOT FALSE` : 'WHERE is_settled IS NOT FALSE';
-    const cashI = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_income ${settledFilterI}`);
-    const cashE = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_expense ${bSimpleI}`);
-    const sales = await pool.query(`
-      SELECT COALESCE(SUM(so.quantity * p.price_sell), 0) AS revenue,
-             COALESCE(SUM(so.quantity * p.price_buy), 0) AS cost
-      FROM stock_outcome so JOIN products p ON so.product_id = p.id
-      WHERE so.status = 'approved' ${bWhere}
-    `);
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) {
+      return res.json({ cash_income: 0, cash_expense: 0, cash_balance: 0, sales_revenue: 0, sales_cost: 0, gross_profit: 0, net_profit: 0 });
+    }
+    const ids = scope.ids;
+    const cashWhere = ids ? 'WHERE branch_id = ANY($1::int[])' : '';
+    const cashSettled = ids
+      ? 'WHERE branch_id = ANY($1::int[]) AND is_settled IS NOT FALSE'
+      : 'WHERE is_settled IS NOT FALSE';
+    const soWhere = ids ? "WHERE so.status = 'approved' AND so.branch_id = ANY($1::int[])" : "WHERE so.status = 'approved'";
+    const params = ids ? [ids] : [];
+
+    const cashI = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_income ${cashSettled}`, params);
+    const cashE = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_expense ${cashWhere}`, params);
+    const sales = await pool.query(
+      `SELECT COALESCE(SUM(so.quantity * p.price_sell), 0) AS revenue,
+              COALESCE(SUM(so.quantity * p.price_buy), 0) AS cost
+       FROM stock_outcome so JOIN products p ON so.product_id = p.id
+       ${soWhere}`, params);
     const revenue = parseFloat(sales.rows[0].revenue);
     const cost = parseFloat(sales.rows[0].cost);
     const cashBalance = parseFloat(cashI.rows[0].t) - parseFloat(cashE.rows[0].t);
@@ -1878,8 +2708,6 @@ app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req,
       sales_revenue: revenue,
       sales_cost: cost,
       gross_profit: revenue - cost,
-      // Net profit = actual net cash flow (settled income − expense). Sale proceeds are
-      // already inside cashBalance, so adding gross margin on top double-counted revenue.
       net_profit: cashBalance,
     });
   } catch (e) {
@@ -3269,7 +4097,1016 @@ app.get('/api/audit-log', auth(['admin', 'gen_dir', 'founder']), async (req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// === ADMIN SAAS DASHBOARD — meta-level view across all client companies ===
+// Only admin sees this. Returns: list of companies + KPIs + health indicator + system totals.
+app.get('/api/admin/dashboard', auth(['admin']), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const periodParams = [];
+    let periodSQL = '';
+    if (from) { periodParams.push(from); periodSQL += ` AND so.created_at >= $${periodParams.length}`; }
+    if (to)   { periodParams.push(to);   periodSQL += ` AND so.created_at <  $${periodParams.length}`; }
+
+    const companiesQ = await pool.query(`
+      SELECT c.id, c.name, c.created_at,
+             (SELECT COUNT(*) FROM branches b WHERE b.company_id = c.id) AS branches_count,
+             (SELECT COUNT(*) FROM users u   WHERE u.company_id = c.id AND COALESCE(u.is_blocked, false) = false) AS users_count,
+             (SELECT MAX(u.last_login_at) FROM users u WHERE u.company_id = c.id) AS last_login_at
+      FROM companies c
+      ORDER BY c.id
+    `);
+
+    const enriched = await Promise.all(companiesQ.rows.map(async (c) => {
+      const branchIdsR = await pool.query('SELECT id FROM branches WHERE company_id = $1', [c.id]);
+      const branchIds = branchIdsR.rows.map(r => r.id);
+      if (branchIds.length === 0) {
+        return { ...c, sales_revenue: 0, gross_profit: 0, deals_count: 0, cash_balance: 0, health: scoreHealth(c.last_login_at, 0) };
+      }
+      const idList = `(${branchIds.join(',')})`;
+      const [salesQ, cashIQ, cashEQ] = await Promise.all([
+        pool.query(`
+          SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                 COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
+                 COUNT(*) AS deals
+          FROM stock_outcome so JOIN products p ON p.id = so.product_id
+          WHERE so.status='approved' AND so.branch_id IN ${idList} ${periodSQL}`,
+          periodParams),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_income  WHERE branch_id IN ${idList} AND is_settled IS NOT FALSE`),
+        pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_expense WHERE branch_id IN ${idList}`),
+      ]);
+      const rev = parseFloat(salesQ.rows[0].revenue) || 0;
+      const cost = parseFloat(salesQ.rows[0].cost) || 0;
+      const deals = parseInt(salesQ.rows[0].deals) || 0;
+      const ci = parseFloat(cashIQ.rows[0].t) || 0;
+      const ce = parseFloat(cashEQ.rows[0].t) || 0;
+      return {
+        ...c,
+        sales_revenue: rev,
+        gross_profit: rev - cost,
+        margin_pct: rev > 0 ? Math.round(((rev - cost) / rev) * 1000) / 10 : 0,
+        deals_count: deals,
+        cash_balance: ci - ce,
+        health: scoreHealth(c.last_login_at, deals),
+      };
+    }));
+
+    // System-wide totals
+    const sysTotals = enriched.reduce((acc, c) => ({
+      sales_revenue: acc.sales_revenue + c.sales_revenue,
+      gross_profit:  acc.gross_profit + c.gross_profit,
+      deals_count:   acc.deals_count + c.deals_count,
+      cash_balance:  acc.cash_balance + c.cash_balance,
+      users_count:   acc.users_count + parseInt(c.users_count || 0),
+      branches_count: acc.branches_count + parseInt(c.branches_count || 0),
+    }), { sales_revenue: 0, gross_profit: 0, deals_count: 0, cash_balance: 0, users_count: 0, branches_count: 0 });
+
+    const summary = {
+      total_companies: enriched.length,
+      active_30d: enriched.filter(c => c.health.status !== 'inactive').length,
+      at_risk: enriched.filter(c => c.health.status === 'risk' || c.health.status === 'inactive').length,
+      new_this_month: enriched.filter(c => {
+        const ageDays = (Date.now() - new Date(c.created_at).getTime()) / 86400000;
+        return ageDays <= 30;
+      }).length,
+    };
+
+    res.json({ companies: enriched, totals: sysTotals, summary });
+  } catch (e) {
+    console.error('admin/dashboard err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function scoreHealth(lastLoginAt, dealsCount) {
+  if (!lastLoginAt) return { status: 'inactive', label: 'Не активна', tone: 'red', days_since: null };
+  const days = Math.floor((Date.now() - new Date(lastLoginAt).getTime()) / 86400000);
+  if (days >= 30) return { status: 'inactive', label: 'Не активна 30+ дн', tone: 'red', days_since: days };
+  if (days >= 7 || dealsCount === 0) return { status: 'risk', label: 'В риске', tone: 'yellow', days_since: days };
+  return { status: 'healthy', label: 'Активна', tone: 'green', days_since: days };
+}
+
+// === ADMIN — drill-down per company ===
+app.get('/api/admin/companies/:id', auth(['admin']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+
+    const cQ = await pool.query('SELECT * FROM companies WHERE id = $1', [id]);
+    if (!cQ.rows[0]) return res.status(404).json({ error: 'Company not found' });
+
+    const [branchesQ, usersQ] = await Promise.all([
+      pool.query('SELECT id, name FROM branches WHERE company_id = $1 ORDER BY id', [id]),
+      pool.query(`
+        SELECT id, username, role, first_name, last_name, branch_id, last_login_at, is_blocked
+        FROM users WHERE company_id = $1
+        ORDER BY role, username
+      `, [id]),
+    ]);
+    const branchIds = branchesQ.rows.map(r => r.id);
+    let kpi = { sales_revenue: 0, deals_count: 0, cash_balance: 0, stock_value: 0 };
+    if (branchIds.length > 0) {
+      const list = `(${branchIds.join(',')})`;
+      const r1 = await pool.query(`
+        SELECT COALESCE(SUM(so.quantity*so.price),0) AS rev,
+               COUNT(*) AS deals
+        FROM stock_outcome so WHERE so.status='approved' AND so.branch_id IN ${list}`);
+      const r2 = await pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_income  WHERE branch_id IN ${list} AND is_settled IS NOT FALSE`);
+      const r3 = await pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_expense WHERE branch_id IN ${list}`);
+      const r4 = await pool.query(`
+        SELECT COALESCE(SUM(ps.quantity * COALESCE(p.price_sell,0)),0) AS v
+        FROM product_stock ps JOIN products p ON p.id = ps.product_id
+        WHERE ps.branch_id IN ${list}`);
+      kpi = {
+        sales_revenue: parseFloat(r1.rows[0].rev) || 0,
+        deals_count: parseInt(r1.rows[0].deals) || 0,
+        cash_balance: (parseFloat(r2.rows[0].t) || 0) - (parseFloat(r3.rows[0].t) || 0),
+        stock_value: parseFloat(r4.rows[0].v) || 0,
+      };
+    }
+    res.json({
+      company: cQ.rows[0],
+      branches: branchesQ.rows,
+      users: usersQ.rows,
+      kpi,
+    });
+  } catch (e) {
+    console.error('admin/company err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === FEATURE FLAGS ===
+const FEATURE_CATALOG = [
+  { key: 'multi-branch-dashboard', label: 'Multi-branch dashboard',  tier: 'basic',  desc: 'Сводка по всем филиалам' },
+  { key: 'ai-advisor',             label: 'AI-консультант',           tier: 'pro',    desc: 'Чат-бот + советы' },
+  { key: 'segmentation',           label: 'Сегментация клиентов',     tier: 'pro',    desc: 'VIP / спящие / ушли' },
+  { key: 'abc-xyz',                label: 'ABC/XYZ анализ',           tier: 'pro',    desc: 'Точка заказа, мёртвый товар' },
+  { key: 'pricing',                label: 'Pricing analyzer',         tier: 'pro',    desc: 'Маржа по товарам' },
+  { key: 'risk-control',           label: 'Risk Control',             tier: 'pro',    desc: 'Единая лента алертов' },
+  { key: 'loyalty',                label: 'Программа лояльности',     tier: 'enterprise', desc: 'Tier-кэшбек' },
+  { key: 'nps',                    label: 'NPS опросы',               tier: 'enterprise', desc: 'Авто-опросы покупателей' },
+  { key: 'b2b-pipeline',           label: 'B2B Kanban',               tier: 'enterprise', desc: 'Sales-pipeline' },
+  { key: 'whatif-modeling',        label: 'What-If модель',           tier: 'enterprise', desc: 'Симулятор цен/скидок' },
+  { key: 'marketing-roi',          label: 'Marketing ROI',            tier: 'enterprise', desc: 'CPL × LTV по каналам' },
+];
+
+app.get('/api/admin/features/catalog', auth(['admin']), (req, res) => {
+  res.json(FEATURE_CATALOG);
+});
+
+app.get('/api/admin/features', auth(['admin']), async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT cf.company_id, cf.feature_key, cf.enabled, cf.plan_tier, cf.enabled_at, cf.enabled_by,
+             c.name AS company_name, u.username AS enabled_by_username
+      FROM company_features cf
+      JOIN companies c ON c.id = cf.company_id
+      LEFT JOIN users u ON u.id = cf.enabled_by
+      ORDER BY c.id, cf.feature_key
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error('admin/features list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/features/toggle', auth(['admin']), async (req, res) => {
+  try {
+    const { company_id, feature_key, enabled } = req.body;
+    if (!company_id || !feature_key || typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'company_id, feature_key, enabled required' });
+    }
+    if (!FEATURE_CATALOG.find(f => f.key === feature_key)) {
+      return res.status(400).json({ error: 'Unknown feature_key' });
+    }
+    const tier = (FEATURE_CATALOG.find(f => f.key === feature_key) || {}).tier || 'basic';
+    await pool.query(`
+      INSERT INTO company_features (company_id, feature_key, enabled, plan_tier, enabled_at, enabled_by)
+      VALUES ($1, $2, $3, $4, NOW(), $5)
+      ON CONFLICT (company_id, feature_key)
+      DO UPDATE SET enabled = EXCLUDED.enabled, plan_tier = EXCLUDED.plan_tier,
+                    enabled_at = NOW(), enabled_by = EXCLUDED.enabled_by
+    `, [company_id, feature_key, enabled, tier, req.user.id]);
+    audit(req, enabled ? 'feature_on' : 'feature_off', 'company_feature', company_id, null, { feature_key, enabled });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('admin/features toggle err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get feature keys enabled for current user's company. Used by frontend FeaturesContext.
+app.get('/api/me/features', auth(), async (req, res) => {
+  try {
+    if (!req.user.company_id) return res.json({ keys: [] });
+    const { rows } = await pool.query(
+      'SELECT feature_key FROM company_features WHERE company_id = $1 AND enabled = true',
+      [req.user.company_id]
+    );
+    res.json({ keys: rows.map(r => r.feature_key) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === MARKETING: Personas (JTBD / avatars / pains) ===
+const MKT_ROLES = ['admin','founder','gen_dir','manager'];
+
+app.get('/api/marketing/personas', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.*, u.username AS created_by_username
+       FROM marketing_personas p
+       LEFT JOIN users u ON u.id = p.created_by
+       WHERE p.company_id = $1
+       ORDER BY p.created_at DESC`,
+      [req.user.company_id]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/marketing/personas', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { name, age_range, gender, jtbd, pains, objections, channels, budget, notes } = req.body || {};
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+    const { rows } = await pool.query(
+      `INSERT INTO marketing_personas
+         (company_id, name, age_range, gender, jtbd, pains, objections, channels, budget, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [req.user.company_id, name.trim(), age_range || null, gender || null, jtbd || null,
+       pains || null, objections || null, channels || null, budget || null, notes || null, req.user.id]
+    );
+    audit(req, 'create', 'marketing_persona', rows[0].id, null, rows[0]);
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.put('/api/marketing/personas/:id', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { name, age_range, gender, jtbd, pains, objections, channels, budget, notes } = req.body || {};
+    const { rows } = await pool.query(
+      `UPDATE marketing_personas
+         SET name = COALESCE($1, name),
+             age_range = $2, gender = $3, jtbd = $4, pains = $5, objections = $6,
+             channels = $7, budget = $8, notes = $9, updated_at = NOW()
+       WHERE id = $10 AND company_id = $11
+       RETURNING *`,
+      [name?.trim() || null, age_range || null, gender || null, jtbd || null, pains || null,
+       objections || null, channels || null, budget || null, notes || null, id, req.user.company_id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    audit(req, 'update', 'marketing_persona', id, null, rows[0]);
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/marketing/personas/:id', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rowCount } = await pool.query(
+      'DELETE FROM marketing_personas WHERE id = $1 AND company_id = $2',
+      [id, req.user.company_id]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    audit(req, 'delete', 'marketing_persona', id, null, null);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === MARKETING: Content plan ===
+app.get('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { from, to, status, platform } = req.query;
+    const params = [req.user.company_id];
+    const conds = ['c.company_id = $1'];
+    if (from)     { params.push(from);     conds.push(`c.scheduled_for >= $${params.length}`); }
+    if (to)       { params.push(to);       conds.push(`c.scheduled_for <= $${params.length}`); }
+    if (status)   { params.push(status);   conds.push(`c.status = $${params.length}`); }
+    if (platform) { params.push(platform); conds.push(`c.platform = $${params.length}`); }
+    const { rows } = await pool.query(
+      `SELECT c.*, p.name AS persona_name, u.username AS created_by_username
+       FROM marketing_content c
+       LEFT JOIN marketing_personas p ON p.id = c.persona_id
+       LEFT JOIN users u ON u.id = c.created_by
+       WHERE ${conds.join(' AND ')}
+       ORDER BY c.scheduled_for DESC NULLS LAST, c.created_at DESC
+       LIMIT 500`,
+      params
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes } = req.body || {};
+    if (!title || !title.trim()) return res.status(400).json({ error: 'title required' });
+    const allowedPlatform = ['instagram','telegram','tiktok','youtube','facebook','email','sms','website','other'];
+    const allowedFormat = ['post','reels','story','video','photo','carousel','article','email','sms','live','other'];
+    const allowedStatus = ['planned','in_progress','published','cancelled'];
+    const plat = allowedPlatform.includes(platform) ? platform : 'instagram';
+    const fmt  = allowedFormat.includes(format) ? format : 'post';
+    const st   = allowedStatus.includes(status) ? status : 'planned';
+    const pid  = persona_id ? parseInt(persona_id, 10) : null;
+    if (pid != null) {
+      const o = await pool.query('SELECT company_id FROM marketing_personas WHERE id = $1', [pid]);
+      if (!o.rows[0] || o.rows[0].company_id !== req.user.company_id) {
+        return res.status(400).json({ error: 'persona out of scope' });
+      }
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO marketing_content
+         (company_id, title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [req.user.company_id, title.trim(), plat, fmt, scheduled_for || null, st, pid,
+       hook || null, body || null, cta || null, notes || null, req.user.id]
+    );
+    audit(req, 'create', 'marketing_content', rows[0].id, null, rows[0]);
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.put('/api/marketing/content/:id', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes } = req.body || {};
+    const pid = persona_id === null ? null : persona_id ? parseInt(persona_id, 10) : null;
+    const { rows } = await pool.query(
+      `UPDATE marketing_content
+         SET title = COALESCE($1, title),
+             platform = COALESCE($2, platform),
+             format   = COALESCE($3, format),
+             scheduled_for = $4,
+             status   = COALESCE($5, status),
+             persona_id = $6,
+             hook = $7, body = $8, cta = $9, notes = $10,
+             updated_at = NOW()
+       WHERE id = $11 AND company_id = $12 RETURNING *`,
+      [title?.trim() || null, platform || null, format || null, scheduled_for || null,
+       status || null, pid, hook || null, body || null, cta || null, notes || null,
+       id, req.user.company_id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    audit(req, 'update', 'marketing_content', id, null, rows[0]);
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/marketing/content/:id', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { rowCount } = await pool.query(
+      'DELETE FROM marketing_content WHERE id = $1 AND company_id = $2',
+      [id, req.user.company_id]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    audit(req, 'delete', 'marketing_content', id, null, null);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === AI CHAT — DeepSeek proxy ===
+// Token loaded from env (DEEPSEEK_API_KEY). Owner roles only. Logs usage to ai_chat_log.
+// Backend acts as proxy so the key never reaches the browser.
+const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
+const AI_ROLES = ['admin','founder','gen_dir'];
+
+function fmtUZS(v) {
+  const n = parseFloat(v) || 0;
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1).replace(/\.?0+$/, '') + 'K';
+  return Math.round(n).toString();
+}
+
+// Fetch a snapshot of the user's company business state — gets injected into the AI's system prompt
+// so the assistant can reason with REAL numbers instead of saying "I don't have access".
+//
+// SCOPE STRICTNESS:
+//   - All queries filtered by user.company_id (directly OR through branchIds derived from
+//     `branches WHERE company_id = user.company_id`).
+//   - Manager: only their own branch_id appears in branchIds.
+//   - AI receives ONLY this company's data. There is no path to another company's rows.
+//
+// PERIOD STRATEGY:
+//   - Lifetime totals: revenue, profit, deals across ALL history of the company.
+//   - Current 30d vs previous 30d for delta% (so AI can say "growing/shrinking").
+//   - Last 24 months as monthly buckets (full history overview without flooding tokens).
+//   - All-time top products + top sellers.
+async function getCompanyContextForAI(user) {
+  if (!user.company_id) return '';
+  try {
+    const isManager = user.role === 'manager';
+    let branchIds;
+    if (isManager) {
+      branchIds = user.branch_id ? [user.branch_id] : [];
+    } else {
+      const br = await pool.query('SELECT id FROM branches WHERE company_id = $1', [user.company_id]);
+      branchIds = br.rows.map(r => r.id);
+    }
+    if (branchIds.length === 0) return '';
+
+    const now = new Date();
+    const monthAgo = new Date(now); monthAgo.setDate(monthAgo.getDate() - 30);
+    const prevMonthAgo = new Date(monthAgo); prevMonthAgo.setDate(prevMonthAgo.getDate() - 30);
+    const twoYearsAgo = new Date(now); twoYearsAgo.setMonth(twoYearsAgo.getMonth() - 24);
+
+    const [
+      branchesQ,
+      lifetimeQ,
+      salesNowQ, salesPrevQ,
+      cashIQ, cashEQ,
+      stockQ, lowStockQ,
+      custQ, custNewQ, custLifetimeQ,
+      supQ,
+      debtsClientQ, debtsSupQ,
+      pendingQ,
+      topProdAllQ, topProdNowQ,
+      topSellAllQ,
+      perBranchLifetimeQ, perBranchNowQ,
+      monthlyTrendQ,
+      productsCountQ,
+    ] = await Promise.all([
+      pool.query('SELECT id, name FROM branches WHERE id = ANY($1::int[])', [branchIds]),
+      pool.query(
+        `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
+                COUNT(*) AS deals,
+                MIN(so.created_at) AS first_sale,
+                MAX(so.created_at) AS last_sale
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2`,
+        [branchIds, user.company_id]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
+                COUNT(*) AS deals
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+           AND p.company_id = $4 AND so.created_at >= $2 AND so.created_at < $3`,
+        [branchIds, monthAgo.toISOString(), now.toISOString(), user.company_id]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
+                COUNT(*) AS deals
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+           AND p.company_id = $4 AND so.created_at >= $2 AND so.created_at < $3`,
+        [branchIds, prevMonthAgo.toISOString(), monthAgo.toISOString(), user.company_id]
+      ),
+      pool.query('SELECT COALESCE(SUM(amount),0) AS t FROM cash_income WHERE branch_id = ANY($1::int[]) AND is_settled IS NOT FALSE', [branchIds]),
+      pool.query('SELECT COALESCE(SUM(amount),0) AS t FROM cash_expense WHERE branch_id = ANY($1::int[])', [branchIds]),
+      pool.query(
+        `SELECT COALESCE(SUM(ps.quantity * COALESCE(p.price_sell,0)),0) AS value,
+                COUNT(*) AS sku
+         FROM product_stock ps JOIN products p ON p.id = ps.product_id
+         WHERE ps.branch_id = ANY($1::int[]) AND p.company_id = $2`,
+        [branchIds, user.company_id]
+      ),
+      pool.query(
+        `SELECT COUNT(*) AS c FROM product_stock ps JOIN products p ON p.id = ps.product_id
+         WHERE ps.branch_id = ANY($1::int[]) AND p.company_id = $2 AND ps.quantity < 5`,
+        [branchIds, user.company_id]
+      ),
+      pool.query('SELECT COUNT(*) AS c FROM customers WHERE company_id = $1 AND deleted_at IS NULL', [user.company_id]),
+      pool.query(
+        `SELECT COUNT(*) AS c FROM customers WHERE company_id = $1 AND deleted_at IS NULL AND created_at >= NOW() - INTERVAL '30 days'`,
+        [user.company_id]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(so.quantity*so.price),0) AS total_spent
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND p.company_id = $1 AND so.customer_id IS NOT NULL`,
+        [user.company_id]
+      ),
+      pool.query('SELECT COUNT(*) AS c FROM suppliers WHERE company_id = $1', [user.company_id]),
+      pool.query(
+        `SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) AS amt, COUNT(*) AS cnt
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+           AND so.branch_id = ANY($2::int[])`,
+        [user.company_id, branchIds]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM((si.quantity*si.price) - COALESCE(si.paid_amount,0)),0) AS amt, COUNT(*) AS cnt
+         FROM stock_income si JOIN products p ON p.id = si.product_id
+         WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+           AND si.branch_id = ANY($2::int[])`,
+        [user.company_id, branchIds]
+      ),
+      pool.query(
+        `SELECT COUNT(*) AS c FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE p.company_id = $1 AND so.status='pending' AND so.branch_id = ANY($2::int[])`,
+        [user.company_id, branchIds]
+      ),
+      pool.query(
+        `SELECT p.name_ru AS name,
+                COALESCE(SUM(so.quantity),0) AS qty,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         GROUP BY p.id, p.name_ru ORDER BY revenue DESC LIMIT 10`,
+        [branchIds, user.company_id]
+      ),
+      pool.query(
+        `SELECT p.name_ru AS name,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+           AND so.created_at >= $3
+         GROUP BY p.id, p.name_ru ORDER BY revenue DESC LIMIT 5`,
+        [branchIds, user.company_id, monthAgo.toISOString()]
+      ),
+      pool.query(
+        `SELECT COALESCE(NULLIF(TRIM(CONCAT(u.first_name,' ',COALESCE(u.last_name,''))), ''), u.username) AS name,
+                u.role,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM stock_outcome so
+         JOIN users u ON u.id = so.created_by
+         JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
+         ORDER BY revenue DESC LIMIT 5`,
+        [branchIds, user.company_id]
+      ),
+      pool.query(
+        `SELECT b.name AS branch_name,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM branches b
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved'
+         LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
+         WHERE b.id = ANY($1::int[])
+         GROUP BY b.id, b.name ORDER BY revenue DESC`,
+        [branchIds, user.company_id]
+      ),
+      pool.query(
+        `SELECT b.name AS branch_name,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM branches b
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND so.created_at >= $3
+         LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
+         WHERE b.id = ANY($1::int[])
+         GROUP BY b.id, b.name ORDER BY revenue DESC`,
+        [branchIds, user.company_id, monthAgo.toISOString()]
+      ),
+      pool.query(
+        `SELECT to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS month,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+           AND so.created_at >= $3
+         GROUP BY month ORDER BY month`,
+        [branchIds, user.company_id, twoYearsAgo.toISOString()]
+      ),
+      pool.query('SELECT COUNT(*) AS c FROM products WHERE company_id = $1 AND (deleted_at IS NULL OR deleted_at IS NULL)', [user.company_id]),
+    ]);
+
+    const lt = lifetimeQ.rows[0];
+    const ltRev = parseFloat(lt.revenue) || 0;
+    const ltCost = parseFloat(lt.cost) || 0;
+    const ltDeals = parseInt(lt.deals) || 0;
+    const ltProfit = ltRev - ltCost;
+    const ltMargin = ltRev > 0 ? Math.round((ltProfit / ltRev) * 1000) / 10 : 0;
+    const ltAvgCheck = ltDeals > 0 ? Math.round(ltRev / ltDeals) : 0;
+
+    const nowRev = parseFloat(salesNowQ.rows[0].revenue) || 0;
+    const nowCost = parseFloat(salesNowQ.rows[0].cost) || 0;
+    const nowDeals = parseInt(salesNowQ.rows[0].deals) || 0;
+    const nowProfit = nowRev - nowCost;
+    const nowMargin = nowRev > 0 ? Math.round((nowProfit / nowRev) * 1000) / 10 : 0;
+    const nowAvgCheck = nowDeals > 0 ? Math.round(nowRev / nowDeals) : 0;
+
+    const prevRev = parseFloat(salesPrevQ.rows[0].revenue) || 0;
+    const prevDeals = parseInt(salesPrevQ.rows[0].deals) || 0;
+    const revDelta = prevRev > 0 ? Math.round(((nowRev - prevRev) / prevRev) * 100) : null;
+    const dealsDelta = prevDeals > 0 ? Math.round(((nowDeals - prevDeals) / prevDeals) * 100) : null;
+
+    const cashI = parseFloat(cashIQ.rows[0].t) || 0;
+    const cashE = parseFloat(cashEQ.rows[0].t) || 0;
+
+    const lines = [];
+    lines.push('');
+    lines.push('=== ДАННЫЕ ВАШЕЙ КОМПАНИИ (только она, никакие другие) ===');
+    const firstSaleStr = lt.first_sale ? new Date(lt.first_sale).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }) : 'нет данных';
+    const lastSaleStr = lt.last_sale ? new Date(lt.last_sale).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }) : 'нет данных';
+    lines.push(`Период всей истории: с ${firstSaleStr} по ${lastSaleStr}.`);
+    lines.push(`Филиалов: ${branchesQ.rows.length} (${branchesQ.rows.map(b => b.name).join(', ')}). Товаров в каталоге: ${productsCountQ.rows[0].c}.`);
+    lines.push('');
+    lines.push('--- ЗА ВСЁ ВРЕМЯ (lifetime) ---');
+    lines.push(`Выручка: ${fmtUZS(ltRev)} UZS. Прибыль: ${fmtUZS(ltProfit)} UZS. Маржа: ${ltMargin}%.`);
+    lines.push(`Сделок: ${ltDeals}. Средний чек: ${fmtUZS(ltAvgCheck)} UZS.`);
+    lines.push(`Касса (всё время): приход ${fmtUZS(cashI)}, расход ${fmtUZS(cashE)}, баланс ${fmtUZS(cashI - cashE)} UZS.`);
+    lines.push('');
+    lines.push('--- ТЕКУЩИЕ 30 ДНЕЙ vs ПРЕДЫДУЩИЕ 30 ДНЕЙ ---');
+    lines.push(`Выручка 30д: ${fmtUZS(nowRev)} UZS${revDelta != null ? ` (${revDelta >= 0 ? '+' : ''}${revDelta}% к прошлым 30д = ${fmtUZS(prevRev)})` : ''}.`);
+    lines.push(`Прибыль 30д: ${fmtUZS(nowProfit)} UZS, маржа ${nowMargin}%. Сделок: ${nowDeals}${dealsDelta != null ? ` (${dealsDelta >= 0 ? '+' : ''}${dealsDelta}%)` : ''}. Средний чек: ${fmtUZS(nowAvgCheck)} UZS.`);
+    lines.push('');
+    lines.push('--- СКЛАД (текущее состояние) ---');
+    lines.push(`Стоимость склада: ${fmtUZS(stockQ.rows[0].value)} UZS, ${stockQ.rows[0].sku} SKU. Низкий остаток (<5 шт): ${lowStockQ.rows[0].c}.`);
+    lines.push('');
+    lines.push('--- КЛИЕНТЫ И ПОСТАВЩИКИ ---');
+    lines.push(`Клиентов в базе: ${custQ.rows[0].c} (новых за 30д: ${custNewQ.rows[0].c}). Совокупно потратили: ${fmtUZS(custLifetimeQ.rows[0].total_spent)} UZS.`);
+    lines.push(`Поставщиков: ${supQ.rows[0].c}.`);
+    if (parseInt(debtsClientQ.rows[0].cnt) > 0) lines.push(`Долги клиентов (нам): ${debtsClientQ.rows[0].cnt} сделок на ${fmtUZS(debtsClientQ.rows[0].amt)} UZS.`);
+    if (parseInt(debtsSupQ.rows[0].cnt) > 0)    lines.push(`Долги поставщикам (мы): ${debtsSupQ.rows[0].cnt} приходов на ${fmtUZS(debtsSupQ.rows[0].amt)} UZS.`);
+    if (parseInt(pendingQ.rows[0].c) > 0)        lines.push(`Ожидают подтверждения: ${pendingQ.rows[0].c} продаж.`);
+
+    if (perBranchLifetimeQ.rows.length > 1) {
+      lines.push('');
+      lines.push('--- ФИЛИАЛЫ (всё время) ---');
+      for (const b of perBranchLifetimeQ.rows) {
+        lines.push(`  ${b.branch_name}: ${fmtUZS(b.revenue)} UZS (${b.deals} сделок).`);
+      }
+      lines.push('--- ФИЛИАЛЫ (последние 30д) ---');
+      for (const b of perBranchNowQ.rows) {
+        lines.push(`  ${b.branch_name}: ${fmtUZS(b.revenue)} UZS (${b.deals} сделок).`);
+      }
+    }
+
+    if (topProdAllQ.rows.length > 0) {
+      lines.push('');
+      lines.push('--- ТОП-10 ТОВАРОВ (всё время, по выручке) ---');
+      topProdAllQ.rows.forEach((p, i) => {
+        lines.push(`  ${i + 1}. ${p.name} — ${fmtUZS(p.revenue)} UZS (${parseFloat(p.qty)} шт).`);
+      });
+    }
+    if (topProdNowQ.rows.length > 0) {
+      lines.push('--- ТОП-5 ТОВАРОВ (последние 30д) ---');
+      topProdNowQ.rows.forEach((p, i) => {
+        lines.push(`  ${i + 1}. ${p.name} — ${fmtUZS(p.revenue)} UZS.`);
+      });
+    }
+    if (topSellAllQ.rows.length > 0) {
+      lines.push('');
+      lines.push('--- ТОП-5 ПРОДАВЦОВ (всё время) ---');
+      topSellAllQ.rows.forEach((s, i) => {
+        lines.push(`  ${i + 1}. ${s.name} (${s.role}) — ${fmtUZS(s.revenue)} UZS, ${s.deals} сделок.`);
+      });
+    }
+    if (monthlyTrendQ.rows.length > 0) {
+      lines.push('');
+      lines.push('--- ТРЕНД ВЫРУЧКИ ПО МЕСЯЦАМ (последние 24 месяца) ---');
+      for (const m of monthlyTrendQ.rows) {
+        lines.push(`  ${m.month}: ${fmtUZS(m.revenue)} UZS (${m.deals} сделок).`);
+      }
+    }
+    lines.push('');
+    lines.push('=== КОНЕЦ ДАННЫХ — это ИСКЛЮЧИТЕЛЬНО данные одной компании пользователя ===');
+    return lines.join('\n');
+  } catch (e) {
+    console.error('getCompanyContextForAI err', e.message);
+    return '';
+  }
+}
+
+async function buildSystemPrompt(user) {
+  const lines = [
+    'Ты — встроенный AI-консультант ERP-системы WareApp для розничной и оптовой торговли в Узбекистане.',
+    'У ТЕБЯ ЕСТЬ доступ к данным компании пользователя за всё время её существования — они в блоке "ДАННЫЕ ВАШЕЙ КОМПАНИИ" ниже. Используй эти цифры в ответах, ссылайся на них как на факт.',
+    'СТРОГО: данные ниже относятся ТОЛЬКО к одной компании — компании текущего пользователя. Ты НЕ видишь данные других компаний SaaS-системы и НЕ должен сравнивать с ними.',
+    'НИКОГДА не говори "у меня нет доступа к данным", "я не подключён к базе" или "я не могу анализировать историю" — данные за весь период работы компании уже в этом промпте.',
+    'Отвечай кратко (2-6 предложений), по делу, на русском. ВСЕГДА приводи конкретные цифры из данных компании когда они уместны (выручка, маржа, сделки, имена филиалов и товаров).',
+    'Для прогнозов используй помесячный тренд (он за 24 месяца внизу) — посчитай средний рост/спад и экстраполируй.',
+    'Для сравнения "сейчас vs раньше" сопоставляй "Текущие 30 дней" и "Предыдущие 30 дней" — там уже посчитана дельта в %.',
+    'ВИЗУАЛИЗАЦИЯ: если пользователь явно просит график/диаграмму/визуализацию (слова: график, диаграмма, визуализируй, покажи график, нарисуй), заверши ответ ОТДЕЛЬНОЙ строкой:',
+    '  [[CHART:TYPE]]',
+    'где TYPE — один из: monthly_revenue (помесячная выручка), top_products (топ-товары), top_sellers (топ-продавцы), branches (филиалы), period_compare (текущие 30д vs предыдущие).',
+    'Можешь вставить НЕСКОЛЬКО тегов подряд (каждый на новой строке) если нужно несколько графиков.',
+    'НЕ рисуй ASCII-графики или текстовые палочки — система отрендерит настоящий график автоматически на основе тега.',
+    'НЕ объясняй что такое тег [[CHART:...]] — пользователь его не видит, он видит уже отрендеренный график.',
+    'Будь конкретен: ссылайся на разделы системы (Главная, Склад, Касса, Клиентский сервис, Финансы, HR, Маркетинг, Закупки, Операции).',
+    'Если нужно действие — указывай куда нажать (например: «Склад → Остатки → выбери товар → подними цену в Sotish narxi»).',
+    'Если данных не хватает (например пользователь спросил про что-то конкретное чего нет в блоке) — честно скажи «в текущих данных этого не вижу, проверь сам в разделе X».',
+    'Никаких длинных списков и markdown-заголовков (кроме случаев когда явно нужны). Простой связный текст.',
+    'Все суммы — в узбекских сумах (UZS). Сокращения: K=тысяча, M=миллион, B=миллиард.',
+  ];
+  if (user.company_id) {
+    try {
+      const r = await pool.query('SELECT name FROM companies WHERE id = $1', [user.company_id]);
+      if (r.rows[0]?.name) lines.push(`Название компании: "${r.rows[0].name}".`);
+    } catch {}
+  }
+  if (user.role) {
+    const roleMap = { founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер', admin: 'Администратор SaaS' };
+    lines.push(`Роль собеседника: ${roleMap[user.role] || user.role}.`);
+    if (user.role === 'manager') lines.push('Менеджер — данные ниже ТОЛЬКО по его филиалу, не по всей компании.');
+  }
+  const context = await getCompanyContextForAI(user);
+  return lines.join(' ') + (context ? '\n' + context : '');
+}
+
+app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY на сервере.' });
+    }
+    const { messages, model } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages array required' });
+    }
+    const cleaned = messages
+      .filter(m => m && ['user','assistant'].includes(m.role) && typeof m.content === 'string')
+      .slice(-20)
+      .map(m => ({ role: m.role, content: m.content.slice(0, 4000) }));
+    if (cleaned.length === 0) return res.status(400).json({ error: 'no valid messages' });
+
+    const sys = await buildSystemPrompt(req.user);
+    const requestBody = {
+      model: model === 'deepseek-reasoner' ? 'deepseek-reasoner' : 'deepseek-chat',
+      messages: [{ role: 'system', content: sys }, ...cleaned],
+      stream: false,
+      temperature: 0.5,
+      max_tokens: 600,
+    };
+
+    const r = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    const latency = Date.now() - startedAt;
+
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      console.error('deepseek non-ok', r.status, text.slice(0, 200));
+      return res.status(502).json({ error: `Upstream AI error ${r.status}. Попробуйте ещё раз через минуту.` });
+    }
+    const data = await r.json();
+    const reply = data?.choices?.[0]?.message?.content || '';
+    const usage = data?.usage || {};
+    pool.query(
+      'INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, requestBody.model, latency]
+    ).catch(e => console.error('ai_chat_log insert err', e.message));
+
+    res.json({
+      reply,
+      model: requestBody.model,
+      usage: { prompt: usage.prompt_tokens, completion: usage.completion_tokens },
+      latency_ms: latency,
+    });
+  } catch (e) {
+    console.error('ai/chat err', e);
+    res.status(500).json({ error: 'AI временно недоступен. Попробуйте позже.' });
+  }
+});
+
+// Chart data for AI-rendered visualizations. Frontend asks for a chart type, backend returns
+// the data already scoped to the user's company (or branch for manager). The AI itself never
+// returns chart pixels — it tags responses like [[CHART:monthly_revenue]] and the UI renders
+// the real chart next to the message using this endpoint.
+app.get('/api/ai/chart-data', auth(AI_ROLES), async (req, res) => {
+  try {
+    const type = (req.query.type || '').toString();
+    if (!req.user.company_id) return res.json({ type, data: null });
+
+    const isManager = req.user.role === 'manager';
+    let branchIds;
+    if (isManager) {
+      branchIds = req.user.branch_id ? [req.user.branch_id] : [];
+    } else {
+      const br = await pool.query('SELECT id FROM branches WHERE company_id = $1', [req.user.company_id]);
+      branchIds = br.rows.map(r => r.id);
+    }
+    if (branchIds.length === 0) return res.json({ type, data: null });
+
+    const now = new Date();
+    const monthAgo = new Date(now); monthAgo.setDate(monthAgo.getDate() - 30);
+    const prevMonthAgo = new Date(monthAgo); prevMonthAgo.setDate(prevMonthAgo.getDate() - 30);
+    const twoYearsAgo = new Date(now); twoYearsAgo.setMonth(twoYearsAgo.getMonth() - 24);
+
+    if (type === 'monthly_revenue') {
+      const { rows } = await pool.query(
+        `SELECT to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS month,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+           AND so.created_at >= $3
+         GROUP BY month ORDER BY month`,
+        [branchIds, req.user.company_id, twoYearsAgo.toISOString()]
+      );
+      return res.json({
+        type, title: 'Помесячная выручка за 24 месяца', unit: 'UZS',
+        data: rows.map(r => ({ label: r.month, value: parseFloat(r.revenue), sub: r.deals + ' сделок' })),
+      });
+    }
+
+    if (type === 'top_products') {
+      const { rows } = await pool.query(
+        `SELECT p.name_ru AS name,
+                COALESCE(SUM(so.quantity),0) AS qty,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                p.unit
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         GROUP BY p.id, p.name_ru, p.unit ORDER BY revenue DESC LIMIT 10`,
+        [branchIds, req.user.company_id]
+      );
+      return res.json({
+        type, title: 'Топ-10 товаров (за всё время)', unit: 'UZS',
+        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: parseFloat(r.qty) + ' ' + (r.unit || 'шт') })),
+      });
+    }
+
+    if (type === 'top_sellers') {
+      const { rows } = await pool.query(
+        `SELECT COALESCE(NULLIF(TRIM(CONCAT(u.first_name,' ',COALESCE(u.last_name,''))), ''), u.username) AS name,
+                u.role,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM stock_outcome so
+         JOIN users u ON u.id = so.created_by
+         JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
+         ORDER BY revenue DESC LIMIT 10`,
+        [branchIds, req.user.company_id]
+      );
+      return res.json({
+        type, title: 'Топ продавцов (за всё время)', unit: 'UZS',
+        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: r.deals + ' сделок · ' + r.role })),
+      });
+    }
+
+    if (type === 'branches') {
+      const { rows } = await pool.query(
+        `SELECT b.name AS branch_name,
+                COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COUNT(so.id) AS deals
+         FROM branches b
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved'
+         LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
+         WHERE b.id = ANY($1::int[])
+         GROUP BY b.id, b.name ORDER BY revenue DESC`,
+        [branchIds, req.user.company_id]
+      );
+      return res.json({
+        type, title: 'Выручка по филиалам (за всё время)', unit: 'UZS',
+        data: rows.map(r => ({ label: r.branch_name, value: parseFloat(r.revenue), sub: r.deals + ' сделок' })),
+      });
+    }
+
+    if (type === 'period_compare') {
+      const [curR, prevR] = await Promise.all([
+        pool.query(
+          `SELECT date_trunc('day', so.created_at)::date AS d,
+                  COALESCE(SUM(so.quantity*so.price),0) AS revenue
+           FROM stock_outcome so JOIN products p ON p.id = so.product_id
+           WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+             AND so.created_at >= $3 AND so.created_at < $4
+           GROUP BY d ORDER BY d`,
+          [branchIds, req.user.company_id, monthAgo.toISOString(), now.toISOString()]
+        ),
+        pool.query(
+          `SELECT date_trunc('day', so.created_at)::date AS d,
+                  COALESCE(SUM(so.quantity*so.price),0) AS revenue
+           FROM stock_outcome so JOIN products p ON p.id = so.product_id
+           WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+             AND so.created_at >= $3 AND so.created_at < $4
+           GROUP BY d ORDER BY d`,
+          [branchIds, req.user.company_id, prevMonthAgo.toISOString(), monthAgo.toISOString()]
+        ),
+      ]);
+      const fmt = (rows) => rows.map(r => ({ label: new Date(r.d).toISOString().slice(5, 10), value: parseFloat(r.revenue) }));
+      return res.json({
+        type, title: 'Сравнение: текущие 30 дней vs предыдущие 30 дней', unit: 'UZS',
+        data: { current: fmt(curR.rows), prev: fmt(prevR.rows) },
+      });
+    }
+
+    return res.status(400).json({ error: 'unknown chart type', allowed: ['monthly_revenue','top_products','top_sellers','branches','period_compare'] });
+  } catch (e) {
+    console.error('ai/chart-data err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Suggest follow-up questions based on a prior assistant reply. Stateless — quick second LLM call.
+app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
+  try {
+    if (!process.env.DEEPSEEK_API_KEY) return res.json({ questions: [] });
+    const { last_reply } = req.body || {};
+    if (!last_reply || typeof last_reply !== 'string') return res.json({ questions: [] });
+    const prompt = 'На основе предыдущего ответа предложи 3 коротких follow-up вопроса от лица владельца розничного бизнеса. Возвращай ТОЛЬКО JSON-массив строк, без пояснений. Пример: ["...","...","..."]';
+    const r = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: 'Ответ AI:\n\n' + last_reply.slice(0, 2000) },
+        ],
+        stream: false, temperature: 0.7, max_tokens: 200,
+      }),
+    });
+    if (!r.ok) return res.json({ questions: [] });
+    const data = await r.json();
+    const raw = data?.choices?.[0]?.message?.content || '';
+    let parsed = [];
+    try {
+      const match = raw.match(/\[[\s\S]*?\]/);
+      if (match) parsed = JSON.parse(match[0]);
+    } catch {}
+    res.json({ questions: Array.isArray(parsed) ? parsed.slice(0, 5).filter(s => typeof s === 'string' && s.length > 0) : [] });
+  } catch (e) {
+    res.json({ questions: [] });
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+
+async function ensureSchema() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS company_features (
+        company_id  INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        feature_key VARCHAR(60) NOT NULL,
+        enabled     BOOLEAN DEFAULT false,
+        plan_tier   VARCHAR(30) DEFAULT 'basic',
+        enabled_at  TIMESTAMP DEFAULT NOW(),
+        enabled_by  INT REFERENCES users(id) ON DELETE SET NULL,
+        PRIMARY KEY (company_id, feature_key)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS marketing_personas (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        name VARCHAR(120) NOT NULL,
+        age_range VARCHAR(40),
+        gender VARCHAR(20),
+        jtbd TEXT,
+        pains TEXT,
+        objections TEXT,
+        channels VARCHAR(200),
+        budget VARCHAR(60),
+        notes TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_personas_company ON marketing_personas(company_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS marketing_content (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        title VARCHAR(200) NOT NULL,
+        platform VARCHAR(40) NOT NULL DEFAULT 'instagram',
+        format VARCHAR(40) NOT NULL DEFAULT 'post',
+        scheduled_for DATE,
+        status VARCHAR(20) NOT NULL DEFAULT 'planned',
+        persona_id INT REFERENCES marketing_personas(id) ON DELETE SET NULL,
+        hook TEXT,
+        body TEXT,
+        cta TEXT,
+        notes TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_content_company ON marketing_content(company_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_content_scheduled ON marketing_content(company_id, scheduled_for)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_chat_log (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE SET NULL,
+        company_id INT REFERENCES companies(id) ON DELETE CASCADE,
+        prompt_tokens INT,
+        completion_tokens INT,
+        model VARCHAR(60),
+        latency_ms INT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_chat_log_co_user ON ai_chat_log(company_id, user_id, created_at DESC)`);
+
+    console.log('schema OK');
+  } catch (e) {
+    console.error('ensureSchema err', e.message);
+  }
+}
+ensureSchema();
 
 app.listen(PORT, () => console.log(`WareApp API running on port ${PORT}`));

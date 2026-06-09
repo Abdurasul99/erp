@@ -10,7 +10,7 @@ export default function WarehouseIncome() {
   const { t } = useTranslation();
   const [products, setProducts] = useState([]);
   const [list, setList] = useState([]);
-  const [form, setForm] = useState({ product_id: '', quantity: '', price: '', supplier_id: null, note: '' });
+  const [form, setForm] = useState({ product_id: '', quantity: '', price: '', price_sell: '', supplier_id: null, note: '' });
   const [msg, setMsg, clearMsg] = useMsg();
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState('week');
@@ -23,6 +23,18 @@ export default function WarehouseIncome() {
   const loadList = async () => { const { data } = await api.get('/stock/income-list'); setList(data); };
 
   const selectedProduct = products.find(p => p.id === parseInt(form.product_id));
+
+  // When a product is picked, pre-fill price fields with its current buy/sell prices
+  // so the cashier sees what's currently set and can keep or change them.
+  useEffect(() => {
+    if (selectedProduct) {
+      setForm(f => ({
+        ...f,
+        price:      f.price      === '' ? (selectedProduct.price_buy  ? String(selectedProduct.price_buy)  : '') : f.price,
+        price_sell: f.price_sell === '' ? (selectedProduct.price_sell ? String(selectedProduct.price_sell) : '') : f.price_sell,
+      }));
+    }
+  }, [selectedProduct?.id]);
   // product_id → last income row (used both for supplier_id and the option label)
   const lastIncomeByProduct = (() => {
     const seen = new Map();
@@ -56,11 +68,15 @@ export default function WarehouseIncome() {
     setLoading(true);
     try {
       await api.post('/stock/income', {
-        product_id: parseInt(form.product_id), quantity: parseFloat(form.quantity),
-        price: parseFloat(form.price) || 0, supplier_id: form.supplier_id || null, note: form.note,
+        product_id: parseInt(form.product_id),
+        quantity: parseFloat(form.quantity),
+        price: parseFloat(form.price) || 0,
+        price_sell: form.price_sell !== '' ? parseFloat(form.price_sell) || 0 : null,
+        supplier_id: form.supplier_id || null,
+        note: form.note,
       });
       setMsg('success', t('success'));
-      setForm({ product_id: '', quantity: '', price: '', supplier_id: null, note: '' });
+      setForm({ product_id: '', quantity: '', price: '', price_sell: '', supplier_id: null, note: '' });
       loadList(); loadProducts();
     } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
     setLoading(false);
@@ -97,7 +113,14 @@ export default function WarehouseIncome() {
               {selectedProduct.photo_url && <img src={selectedProduct.photo_url} alt="" style={{ width: '40px', height: '40px', borderRadius: '6px', objectFit: 'cover' }} />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: '14px' }}>{selectedProduct.name_ru}</div>
-                <div style={{ fontSize: '12px', color: 'var(--text2)' }}>{t('stock')}: <span className="mono" style={{ fontWeight: 700, color: 'var(--primary)' }}>{parseFloat(parseFloat(selectedProduct.stock).toFixed(3)).toString()} {selectedProduct.unit}</span>{selectedProduct.type_name_ru && ` · ${selectedProduct.type_name_ru}`}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text2)' }}>
+                  {t('stock')}: <span className="mono" style={{ fontWeight: 700, color: 'var(--primary)' }}>{parseFloat(parseFloat(selectedProduct.stock).toFixed(3)).toString()} {selectedProduct.unit}</span>
+                  {selectedProduct.type_name_ru && ` · ${selectedProduct.type_name_ru}`}
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                  <span>📥 {t('priceBuy') || 'Закуп'}: <span className="mono" style={{ fontWeight: 700, color: 'var(--text)' }}>{fmtNum(selectedProduct.price_buy || 0)} UZS</span></span>
+                  <span>🏷️ {t('priceSell') || 'Продажа'}: <span className="mono" style={{ fontWeight: 700, color: 'var(--green)' }}>{fmtNum(selectedProduct.price_sell || 0)} UZS</span></span>
+                </div>
                 {lastSupplierForProduct?.name && (
                   <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '4px' }}>
                     {t('lastSupplier')}: <button type="button"
@@ -110,9 +133,51 @@ export default function WarehouseIncome() {
               </div>
             </div>
           )}
+          <div className="form-grid" style={{ marginBottom: '10px' }}>
+            <div>
+              <label className="label">{t('quantity')}{selectedProduct ? ` (${selectedProduct.unit})` : ''} *</label>
+              <input className="input mono" type="number" min="0.001" step="any" inputMode="decimal"
+                value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })}
+                required placeholder="0" />
+            </div>
+            <div>
+              <label className="label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>📥 {t('priceBuySum')}</span>
+                {selectedProduct?.price_buy && form.price && parseFloat(form.price) !== parseFloat(selectedProduct.price_buy) && (
+                  <span style={{ color: 'var(--orange)', fontSize: '10px', fontWeight: 800 }}>↑ ИЗМЕНИТСЯ</span>
+                )}
+              </label>
+              <input className="input mono" type="number" min="0" step="any" inputMode="decimal"
+                value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}
+                placeholder={selectedProduct?.price_buy ? String(selectedProduct.price_buy) : '0'} />
+            </div>
+          </div>
           <div className="form-grid" style={{ marginBottom: '12px' }}>
-            <div><label className="label">{t('quantity')}</label><input className="input" type="number" min="0.001" step="any" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} required placeholder="0" /></div>
-            <div><label className="label">{t('priceBuySum')}</label><input className="input" type="number" min="0" step="any" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="0" /></div>
+            <div>
+              <label className="label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>🏷️ {t('priceSellSum')}</span>
+                {selectedProduct?.price_sell && form.price_sell && parseFloat(form.price_sell) !== parseFloat(selectedProduct.price_sell) && (
+                  <span style={{ color: 'var(--orange)', fontSize: '10px', fontWeight: 800 }}>↑ ИЗМЕНИТСЯ</span>
+                )}
+              </label>
+              <input className="input mono" type="number" min="0" step="any" inputMode="decimal"
+                value={form.price_sell} onChange={e => setForm({ ...form, price_sell: e.target.value })}
+                placeholder={selectedProduct?.price_sell ? String(selectedProduct.price_sell) : '0'}
+                style={{ borderColor: 'rgba(34,197,94,.3)' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+              {form.price && form.price_sell && parseFloat(form.price_sell) > 0 && parseFloat(form.price) > 0 && (
+                <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,.08)', borderRadius: '8px', fontSize: '12px' }}>
+                  <span style={{ color: 'var(--text2)', fontWeight: 700 }}>Маржа: </span>
+                  <span className="mono" style={{ fontWeight: 800, color: 'var(--green)' }}>
+                    {Math.round((parseFloat(form.price_sell) - parseFloat(form.price)) / parseFloat(form.price_sell) * 1000) / 10}%
+                  </span>
+                  <span style={{ color: 'var(--text3)', marginLeft: 8, fontSize: 11 }}>
+                    +{fmtNum(parseFloat(form.price_sell) - parseFloat(form.price))} UZS/шт
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
           <div style={{ marginBottom: '12px' }}>
             <label className="label">{t('supplier')}</label>

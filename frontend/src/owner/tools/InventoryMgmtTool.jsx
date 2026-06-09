@@ -1,0 +1,147 @@
+import React, { useState, useEffect, useContext } from 'react';
+import api from '../../api.js';
+import { Card, Tile, Badge, PageHeader, fmtMoney, fmtNum, Pills } from '../ui.jsx';
+import { BranchScope } from '../OwnerShell.jsx';
+
+// 3×3 matrix: rows = A/B/C (revenue), cols = X/Y/Z (demand stability).
+// AX = stable cash cow → keep stocked. CZ = dead stock → liquidate.
+const CELL_META = {
+  AX: { color: '#22C55E', advice: 'Cash cow — держать запас, частые поставки' },
+  AY: { color: '#5B4FE8', advice: 'Стабильный лидер с колебаниями — буфер 20%' },
+  AZ: { color: '#0EA5E9', advice: 'Сезонник, который много даёт — прогноз' },
+  BX: { color: '#22C55E', advice: 'Стабильный середняк — оптимизировать запас' },
+  BY: { color: '#FF6B2B', advice: 'Умеренный · средняя предсказуемость' },
+  BZ: { color: '#F59E0B', advice: 'Непредсказуемый середняк — гибкий запас' },
+  CX: { color: '#0EA5E9', advice: 'Стабильный хвост — минимальный запас' },
+  CY: { color: '#F59E0B', advice: 'Низкий вклад · средние колебания' },
+  CZ: { color: '#EF4444', advice: 'Мёртвый товар — ликвидация со скидкой' },
+};
+
+const TABS = [
+  { value: 'all', label: 'Все' },
+  { value: 'A',   label: 'A' },
+  { value: 'B',   label: 'B' },
+  { value: 'C',   label: 'C' },
+];
+
+export default function InventoryMgmtTool() {
+  const { branchId } = useContext(BranchScope);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [tab, setTab] = useState('all');
+
+  useEffect(() => {
+    setLoading(true); setError(null);
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    api.get('/inventory/abc-xyz', { params })
+      .then(r => setData(r.data))
+      .catch(e => setError(e.response?.data?.error || e.message))
+      .finally(() => setLoading(false));
+  }, [branchId]);
+
+  const items = data?.items || [];
+  const matrix = data?.matrix || {};
+  const totalRev = data?.total_revenue || 0;
+
+  const filtered = tab === 'all' ? items : items.filter(i => i.abc === tab);
+
+  return (
+    <>
+      <PageHeader
+        title="📊 ABC / XYZ анализ"
+        sub="Топ-товары по выручке · точка заказа · мёртвый товар (90 дн)"
+        actions={<Badge tone="green">Live</Badge>}
+      />
+
+      {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
+
+      {loading ? (
+        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>Загрузка...</div></div></Card>
+      ) : (
+        <>
+          <div className="grid-4" style={{ marginBottom: 16 }}>
+            <Tile icon="🏆" label="Группа A" value={fmtNum((matrix.AX?.count || 0) + (matrix.AY?.count || 0) + (matrix.AZ?.count || 0))} sub="80% выручки" color="#22C55E" />
+            <Tile icon="📈" label="Группа B" value={fmtNum((matrix.BX?.count || 0) + (matrix.BY?.count || 0) + (matrix.BZ?.count || 0))} sub="15% выручки" color="#5B4FE8" />
+            <Tile icon="📉" label="Группа C" value={fmtNum((matrix.CX?.count || 0) + (matrix.CY?.count || 0) + (matrix.CZ?.count || 0))} sub="5% выручки"  color="#F59E0B" />
+            <Tile icon="💀" label="Мёртвые (CZ)" value={fmtNum(matrix.CZ?.count || 0)} sub="кандидаты на ликвидацию" color="#EF4444" />
+          </div>
+
+          <Card icon="🎯" title="Матрица ABC × XYZ" style={{ marginBottom: 16 }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ minWidth: 600 }}>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th style={{ textAlign: 'center' }}>X — стабильный спрос</th>
+                    <th style={{ textAlign: 'center' }}>Y — средние колебания</th>
+                    <th style={{ textAlign: 'center' }}>Z — нестабильный</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {['A', 'B', 'C'].map(row => (
+                    <tr key={row}>
+                      <td style={{ fontWeight: 800, fontSize: 14 }}>{row} — {row === 'A' ? 'топ выручки' : row === 'B' ? 'средние' : 'хвост'}</td>
+                      {['X', 'Y', 'Z'].map(col => {
+                        const cell = row + col;
+                        const meta = CELL_META[cell] || {};
+                        const data = matrix[cell] || { count: 0, revenue: 0 };
+                        return (
+                          <td key={col} style={{ background: meta.color + '14', padding: 14, textAlign: 'center' }}>
+                            <div style={{ fontSize: 22, fontWeight: 900, color: meta.color }} className="mono">{data.count}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>товаров</div>
+                            <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 4 }}>{fmtMoney(data.revenue)} UZS</div>
+                            <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 6, lineHeight: 1.3 }}>{meta.advice}</div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card icon="📋" title={`Товары (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS} />}>
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Товар</th>
+                    <th style={{ textAlign: 'center' }}>ABC × XYZ</th>
+                    <th style={{ textAlign: 'right' }}>Выручка 90д</th>
+                    <th style={{ textAlign: 'right' }}>Кол-во</th>
+                    <th style={{ textAlign: 'right' }}>CoV</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.length === 0 ? (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет товаров</td></tr>
+                  ) : filtered.slice(0, 200).map(it => {
+                    const meta = CELL_META[it.cell] || {};
+                    return (
+                      <tr key={it.product_id}>
+                        <td style={{ fontWeight: 700 }}>{it.name}</td>
+                        <td style={{ textAlign: 'center' }}>
+                          <span style={{ background: meta.color + '20', color: meta.color, padding: '3px 10px', borderRadius: 14, fontWeight: 800, fontSize: 12 }}>
+                            {it.cell}
+                          </span>
+                        </td>
+                        <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(it.revenue)}</td>
+                        <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(it.qty)} {it.unit}</td>
+                        <td className="mono" style={{ textAlign: 'right', color: 'var(--text2)', fontSize: 12 }}>
+                          {it.cov == null ? '—' : it.cov.toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
+    </>
+  );
+}

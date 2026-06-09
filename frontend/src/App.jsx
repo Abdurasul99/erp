@@ -6,6 +6,8 @@ import Desktop from './pages/Desktop.jsx';
 import Mobile from './pages/Mobile.jsx';
 import SellerView from './pages/SellerView.jsx';
 import SellerBranchPicker from './pages/SellerBranchPicker.jsx';
+import OwnerShell from './owner/OwnerShell.jsx';
+import AdminShell from './admin/AdminShell.jsx';
 import { getLang, setLang } from './i18n.js';
 import api from './api.js';
 
@@ -24,8 +26,15 @@ function RootRedirect() {
   if (user.role === 'seller') {
     return <Navigate to={localStorage.getItem('seller_branch_id') ? '/sell' : '/select-branch'} replace />;
   }
-  if (['admin', 'founder', 'gen_dir', 'manager'].includes(user.role)) return <Navigate to="/desktop" replace />;
+  if (['founder', 'gen_dir', 'manager'].includes(user.role)) return <Navigate to="/owner" replace />;
+  if (user.role === 'admin') return <Navigate to="/admin" replace />;
   return <Navigate to="/select" replace />;
+}
+
+function RequireAdmin({ children }) {
+  const { user } = useContext(AuthContext);
+  if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return children;
 }
 
 function RequireSellerBranch({ children }) {
@@ -41,6 +50,15 @@ function RequireSellerBranch({ children }) {
 function RequireNonSeller({ children }) {
   const { user } = useContext(AuthContext);
   if (user?.role === 'seller') return <Navigate to="/sell" replace />;
+  return children;
+}
+
+// Owner roles (founder/gen_dir/manager) now belong on /owner with the new shell.
+// If they hit /desktop directly (bookmark, old link) — bounce them to /owner.
+// Admin still uses /desktop because AdminPanel is admin-only.
+function RequireNotOwner({ children }) {
+  const { user } = useContext(AuthContext);
+  if (['founder', 'gen_dir', 'manager'].includes(user?.role)) return <Navigate to="/owner" replace />;
   return children;
 }
 
@@ -150,10 +168,12 @@ export default function App() {
           <Routes>
             <Route path="/login" element={user ? <RootRedirect /> : <Login />} />
             <Route path="/select" element={<RequireAuth><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireAuth>} />
-            <Route path="/desktop" element={<RequireAuth><RequireNonSeller><Desktop /></RequireNonSeller></RequireAuth>} />
+            <Route path="/desktop" element={<RequireAuth><RequireNonSeller><RequireNotOwner><Desktop /></RequireNotOwner></RequireNonSeller></RequireAuth>} />
             <Route path="/mobile" element={<RequireAuth><RequireNonSeller><Mobile /></RequireNonSeller></RequireAuth>} />
             <Route path="/select-branch" element={<RequireAuth><SellerBranchPicker /></RequireAuth>} />
             <Route path="/sell" element={<RequireAuth><RequireSellerBranch><SellerView /></RequireSellerBranch></RequireAuth>} />
+            <Route path="/owner/*" element={<RequireAuth><RequireNonSeller><OwnerShell /></RequireNonSeller></RequireAuth>} />
+            <Route path="/admin/*" element={<RequireAuth><RequireAdmin><AdminShell /></RequireAdmin></RequireAuth>} />
             <Route path="*" element={<RootRedirect />} />
           </Routes>
         </BrowserRouter>

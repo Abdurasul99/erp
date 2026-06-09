@@ -15,13 +15,37 @@
   --green: #22C55E;
   --red: #EF4444;
   --yellow: #F59E0B;
-  /* Layered shadows — softer + more modern (umbra + penumbra) */
+  --info: #0EA5E9;
+  --purple: #7C3AED;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-md:   13px;
+  --fs-base: 14px;
+  --fs-lg:   16px;
+  --fs-xl:   18px;
+  --fs-2xl:  22px;
+  --fs-3xl:  28px;
+
+  --lh-tight: 1.2;
+  --lh-base:  1.5;
+  --lh-loose: 1.7;
+
   --shadow-sm: 0 1px 2px rgba(26,27,46,.04), 0 1px 3px rgba(26,27,46,.06);
   --shadow:    0 2px 4px rgba(26,27,46,.04), 0 4px 16px rgba(91,79,232,.07);
   --shadow-lg: 0 4px 12px rgba(26,27,46,.06), 0 16px 40px rgba(91,79,232,.10);
   --shadow-focus: 0 0 0 4px rgba(91,79,232,.15);
-  --radius: 16px;
+  --radius:    16px;
   --radius-sm: 10px;
+  --radius-xs: 6px;
   --ease: cubic-bezier(.4, 0, .2, 1);
 }
 
@@ -161,6 +185,16 @@ select.input { cursor: pointer; padding-right: 32px; appearance: none; -webkit-a
   letter-spacing: 0.6px;
   margin-bottom: 7px;
   display: block;
+}
+/* Make trailing " *" in labels stand out as required-field markers without touching every label. */
+.label::after {
+  content: '';
+}
+.label[data-required="true"]::after,
+.label.required::after {
+  content: ' *';
+  color: var(--red);
+  font-weight: 800;
 }
 
 /* ── Badges ──────────────────────────────────────── */
@@ -409,6 +443,84 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 .slide-up { animation: slideUp .35s var(--ease); }
+
+.skeleton {
+  display: block;
+  background: linear-gradient(90deg, rgba(144,148,176,.10) 0%, rgba(144,148,176,.22) 50%, rgba(144,148,176,.10) 100%);
+  background-size: 200% 100%;
+  border-radius: var(--radius-xs);
+  animation: skeletonShimmer 1.4s linear infinite;
+}
+.skeleton-line { height: 12px; margin-bottom: 8px; }
+.skeleton-line:last-child { margin-bottom: 0; }
+.skeleton-block { height: 96px; }
+
+@keyframes skeletonShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-7) var(--space-5);
+  color: var(--text2);
+}
+.empty-state-icon {
+  font-size: 44px;
+  margin-bottom: var(--space-3);
+  opacity: .85;
+}
+.empty-state-title {
+  font-size: var(--fs-xl);
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: var(--space-2);
+}
+.empty-state-desc {
+  font-size: var(--fs-md);
+  color: var(--text2);
+  line-height: var(--lh-base);
+  max-width: 420px;
+  margin-bottom: var(--space-4);
+}
+
+.req-asterisk { color: var(--red); margin-left: 4px; font-weight: 800; }
+
+.tooltip-host { position: relative; display: inline-flex; }
+.tooltip-host:hover .tooltip-bubble,
+.tooltip-host:focus-within .tooltip-bubble { opacity: 1; visibility: visible; transform: translate(-50%, -4px); }
+.tooltip-bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: var(--text);
+  color: #fff;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  z-index: 50;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s var(--ease), transform .15s var(--ease);
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+.tooltip-bubble::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--text);
+}
 
 /* ── Scrollbars (WebKit) ─────────────────────────── */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

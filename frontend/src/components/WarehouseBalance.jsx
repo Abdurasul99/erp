@@ -4,6 +4,8 @@ import { AuthContext } from '../App.jsx';
 import { useMsg, fmtMoney, fmtNum, formatDate, formatTime } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
+import { loadSavedPaperSize, makeLabelHTML, renderPrintBarcodes } from '../utils/printLabel.js';
+import PaperSizeControl from '../utils/PaperSizeControl.jsx';
 
 export default function WarehouseBalance() {
   const { t, lang } = useTranslation();
@@ -24,6 +26,12 @@ export default function WarehouseBalance() {
   // Product picker inside the email modal
   const [pickerQuery, setPickerQuery] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Batch print: how many copies of each barcode label to print, on consecutive labels
+  const [printCount, setPrintCount] = useState(3);
+  // Adaptive paper size — pulls user's last choice from localStorage
+  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
+  // Multi-product select for bulk label printing
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   useEffect(() => {
     load();
@@ -241,53 +249,67 @@ ${draft.from || fromLabel()}`;
     } catch { alert(uz ? 'Nusxalashda xato' : 'Не удалось скопировать'); }
   };
 
-  // Open a popup with a print-ready label (barcode + name + price) and auto-print.
-  // User can "Save as PDF" from the browser's print dialog.
-  const printBarcode = async (item) => {
-    if (!item.barcode) { alert(t('noBarcode') || 'У товара нет штрих-кода'); return; }
+  // Print a batch of 58×40mm thermal labels in one print job.
+  // `items` — products to print. `copies` — how many of each. Items without a barcode are skipped.
+  // Layout rule:
+  //   copies=1 → one full-size barcode per 58×40mm page.
+  //   copies=3 → three barcodes stacked on ONE 58×40mm page (~13mm each, dashed cut line between).
+  //   copies=6 → 6 = 3×2 pages, three barcodes per page.
+  //   copies=9 → 9 = 3×3 pages, three barcodes per page.
+  // For multi-product bulk print, each product runs through its own page-stack independently.
+  // ONE barcode = ONE sticker; size taken from the paperSize state (adaptive).
+  // `copies` = how many copies per item; final pages = items × copies.
+  const printLabels = async (items, copies = printCount) => {
+    const valid = items.filter(it => it && it.barcode);
+    if (valid.length === 0) { alert(t('noBarcode') || 'У выбранных товаров нет штрих-кода'); return; }
+    const C = Math.max(1, Math.min(20, parseInt(copies, 10) || 1));
     const w = window.open('', '_blank', 'width=420,height=320');
     if (!w) { alert('Разрешите всплывающие окна для печати'); return; }
-    // Load JsBarcode dynamically (it's already in deps as a peer of SellerView)
     const { default: JsBarcode } = await import('jsbarcode');
-    const priceStr = item.price_sell ? `${parseFloat(item.price_sell).toLocaleString('ru-RU')} UZS` : '';
-    const html = `
-<!doctype html><html><head><meta charset="utf-8"><title>${item.name_ru} — ${item.barcode}</title>
-<style>
-  @page { size: 58mm 40mm; margin: 0; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    width: 58mm; height: 40mm; padding: 2mm;
-    font-family: 'Nunito', system-ui, sans-serif; -webkit-print-color-adjust: exact;
-    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-    overflow: hidden; background: #fff;
-  }
-  .n {
-    font-size: 9pt; font-weight: 700; text-align: center; line-height: 1.15;
-    max-height: 9mm; overflow: hidden; width: 100%; word-break: break-word;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  }
-  .p { font-size: 11pt; font-weight: 800; text-align: center; margin-top: 1mm; }
-  .bc { width: 100%; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
-  .bc svg { width: 54mm !important; height: auto !important; max-height: 22mm; display: block; }
-  .note { display: none; }
-</style></head>
-<body>
-  <div class="n">${(item.name_ru || '').replace(/</g, '&lt;')}</div>
-  ${priceStr ? `<div class="p">${priceStr}</div>` : ''}
-  <div class="bc"><svg id="bc"></svg></div>
-  <div class="note">Ctrl+P → «Сохранить как PDF»</div>
-</body></html>`;
+    const labels = valid.map(it => ({
+      name: it.name_ru,
+      barcode: it.barcode,
+      price: it.price_sell ? `${parseFloat(it.price_sell).toLocaleString('ru-RU')} UZS` : '',
+    }));
+    const html = makeLabelHTML({ paper: paperSize, labels, count: C });
     w.document.open(); w.document.write(html); w.document.close();
-    // Wait for window to finish layout, then render barcode
     setTimeout(() => {
-      try {
-        JsBarcode(w.document.getElementById('bc'), item.barcode, {
-          format: 'CODE128', width: 1.6, height: 50, fontSize: 12, margin: 2, displayValue: true,
-        });
-      } catch (e) { console.error('barcode err', e); }
-      setTimeout(() => { w.focus(); w.print(); }, 200);
+      try { renderPrintBarcodes(w, JsBarcode, paperSize); }
+      catch (e) { console.error('barcode err', e); }
     }, 100);
+  };
+
+  // Per-row single-product print (backward-compat wrapper)
+  const printBarcode = (item, count = printCount) => printLabels([item], count);
+
+  // Bulk print all selected products
+  const printSelected = () => {
+    const items = filtered.filter(it => selectedIds.has(it.id));
+    if (items.length === 0) return;
+    printLabels(items, printCount);
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    const visibleWithBarcode = filtered.filter(it => it.barcode).map(it => it.id);
+    setSelectedIds(prev => {
+      const allSelected = visibleWithBarcode.length > 0 && visibleWithBarcode.every(id => prev.has(id));
+      if (allSelected) {
+        const next = new Set(prev);
+        visibleWithBarcode.forEach(id => next.delete(id));
+        return next;
+      }
+      const next = new Set(prev);
+      visibleWithBarcode.forEach(id => next.add(id));
+      return next;
+    });
   };
 
   return (
@@ -331,6 +353,38 @@ ${draft.from || fromLabel()}`;
             title={t('emailLowStockSuppliers') || 'Письмо поставщикам по товарам с низким остатком'}>
             ✉️ {t('emailSuppliers') || 'Письмо поставщикам'}
           </button>
+          {/* Paper size — presets dropdown + custom W×H (cm) inputs */}
+          <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
+          {/* Batch print count selector — applies to every 🖨️ click and to bulk print */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+               title={uz ? 'Har bir mahsulot uchun nusxalar soni' : 'Сколько копий каждого ценника'}>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text2)' }}>🖨️</span>
+            <div style={{ display: 'flex', gap: '3px', background: '#F4F5FA', padding: '3px', borderRadius: '8px' }}>
+              {[1, 3, 6, 9].map(n => (
+                <button key={n} type="button" onClick={() => setPrintCount(n)} style={{
+                  padding: '4px 8px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+                  fontWeight: 800, fontSize: '11px',
+                  background: printCount === n ? '#fff' : 'transparent',
+                  color: printCount === n ? '#4338ca' : '#6B6F8A',
+                  boxShadow: printCount === n ? '0 1px 3px rgba(26,27,46,.1)' : 'none',
+                }}>×{n}</button>
+              ))}
+            </div>
+          </div>
+          {/* Bulk-print button — visible only when products are selected */}
+          {selectedIds.size > 0 && (
+            <button className="btn btn-sm" onClick={printSelected}
+              style={{ background: 'linear-gradient(135deg, #4338ca, #5b4fe8)', color: '#fff', border: 'none', fontWeight: 800 }}
+              title={uz ? `${selectedIds.size} ta tanlangan mahsulot × ${printCount} nusxa = ${selectedIds.size * printCount} ta etiketka` : `${selectedIds.size} выбрано × ${printCount} копий = ${selectedIds.size * printCount} этикеток`}>
+              🖨️ {uz ? 'Tanlanganni chop etish' : 'Печать выбранных'} ({selectedIds.size} × {printCount} = {selectedIds.size * printCount})
+            </button>
+          )}
+          {selectedIds.size > 0 && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setSelectedIds(new Set())}
+              title={uz ? 'Tanlovni tozalash' : 'Снять выделение'}>
+              ✕
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={load}>{t('refresh')}</button>
         </div>
 
@@ -341,6 +395,16 @@ ${draft.from || fromLabel()}`;
             <table>
               <thead>
                 <tr>
+                  <th style={{ width: '32px', textAlign: 'center' }}>
+                    <input type="checkbox"
+                      checked={(() => {
+                        const v = filtered.filter(it => it.barcode);
+                        return v.length > 0 && v.every(it => selectedIds.has(it.id));
+                      })()}
+                      onChange={toggleSelectAllVisible}
+                      title={uz ? 'Hammasini tanlash / olib tashlash' : 'Выбрать всё / снять'}
+                      style={{ cursor: 'pointer', width: '16px', height: '16px' }} />
+                  </th>
                   <th>{t('name')}</th>
                   <th>{t('type')}</th>
                   <th>{t('barcode')}</th>
@@ -355,12 +419,21 @@ ${draft.from || fromLabel()}`;
               </thead>
               <tbody>
                 {filtered.length === 0 && (
-                  <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text3)', padding: '32px' }}>{t('noData')}</td></tr>
+                  <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text3)', padding: '32px' }}>{t('noData')}</td></tr>
                 )}
                 {filtered.map(item => {
                   const clr = statusColor(item.stock);
+                  const isSelected = selectedIds.has(item.id);
                   return (
-                    <tr key={item.id}>
+                    <tr key={item.id} style={isSelected ? { background: 'rgba(67,56,202,.06)' } : undefined}>
+                      <td style={{ textAlign: 'center' }}>
+                        <input type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(item.id)}
+                          disabled={!item.barcode}
+                          title={!item.barcode ? (uz ? 'Shtrix-kod yo\'q' : 'Нет штрих-кода') : (uz ? 'Etiketkaga tanlash' : 'Выбрать для печати')}
+                          style={{ cursor: item.barcode ? 'pointer' : 'not-allowed', width: '16px', height: '16px', opacity: item.barcode ? 1 : 0.3 }} />
+                      </td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           {item.photo_url && <img src={item.photo_url} alt="" style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover' }} />}

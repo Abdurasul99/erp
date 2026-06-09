@@ -81,8 +81,14 @@ export default function ProductCombobox({ products, value, onChange, placeholder
           onChange={e => { setText(e.target.value); setOpen(true); setHighlight(0); if (value) onChange(''); }}
           onFocus={() => { setOpen(true); if (selected && text === nameOf(selected)) setText(''); }}
           onKeyDown={onKey}
-          placeholder={placeholder || (uz ? 'Tovarni qidiring yoki tanlang...' : 'Найдите или выберите товар...')}
+          placeholder={placeholder || (uz
+            ? 'Nomi, shtrix-kod yoki turi bo\'yicha qidiring'
+            : 'Поиск по названию, штрих-коду или типу')}
           autoComplete="off"
+          aria-label={uz ? 'Tovar qidirish' : 'Поиск товара'}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          role="combobox"
           style={{ flex: 1 }}
         />
         {value && (
@@ -96,15 +102,39 @@ export default function ProductCombobox({ products, value, onChange, placeholder
       </div>
 
       {open && (
-        <div ref={listRef} style={{
+        <div ref={listRef} role="listbox" style={{
           position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '6px',
           background: '#fff', border: '1px solid var(--border)', borderRadius: '12px',
           boxShadow: '0 12px 32px rgba(26,27,46,.12), 0 4px 8px rgba(26,27,46,.06)',
-          zIndex: 200, maxHeight: '320px', overflowY: 'auto', padding: '4px',
+          zIndex: 200, maxHeight: '340px', overflowY: 'auto', padding: '4px',
         }}>
+          <div style={{
+            padding: '8px 12px', fontSize: 11, fontWeight: 800,
+            color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .6,
+            display: 'flex', justifyContent: 'space-between',
+          }}>
+            <span>{uz ? 'Mahsulotlar' : 'Товары'}</span>
+            <span>{text
+              ? (uz ? `Topildi: ${filtered.length}` : `Найдено: ${filtered.length}`)
+              : (uz ? `Jami: ${products.length}` : `Всего: ${products.length}`)}</span>
+          </div>
           {filtered.length === 0 && (
-            <div style={{ padding: '24px 12px', fontSize: '13px', color: 'var(--text3)', textAlign: 'center' }}>
-              {uz ? 'Hech narsa topilmadi' : 'Ничего не найдено'}
+            <div style={{ padding: '20px 12px', fontSize: '13px', color: 'var(--text2)', textAlign: 'center' }}>
+              <div style={{ fontSize: 28, marginBottom: 6 }}>🔍</div>
+              <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+                {uz ? `«${text}» topilmadi` : `«${text}» не найдено`}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                {uz
+                  ? 'Tekshiring: shtrix-kod, nomi yoki turi'
+                  : 'Попробуйте: часть названия, штрих-код или тип'}
+              </div>
+              {text && (
+                <button type="button" onClick={() => { setText(''); setHighlight(-1); inputRef.current?.focus(); }}
+                  className="btn btn-ghost btn-sm" style={{ marginTop: 10 }}>
+                  {uz ? '× Tozalash' : '× Очистить'}
+                </button>
+              )}
             </div>
           )}
           {filtered.map((p, i) => {

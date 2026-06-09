@@ -5,6 +5,8 @@ import { t } from '../i18n.js';
 import api from '../api.js';
 import JsBarcode from 'jsbarcode';
 import { fmtMoney } from '../utils.js';
+import { loadSavedPaperSize, makeLabelHTML, renderPrintBarcodes as renderBarcodesShared } from '../utils/printLabel.js';
+import PaperSizeControl from '../utils/PaperSizeControl.jsx';
 
 const S = {
   page: {
@@ -105,37 +107,21 @@ const S = {
 
 // HTML for a 58×40mm thermal label.
 // Forces @page size, scales SVG to 54mm wide (2mm margin each side),
-// clamps name to 2 lines max so layout is predictable.
-function makeLabel58x40({ name, price, svgData }) {
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>${name || 'Label'}</title>
-<style>
-  @page { size: 58mm 40mm; margin: 0; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    width: 58mm; height: 40mm; padding: 2mm;
-    font-family: 'Helvetica', 'Arial', sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: space-between;
-    overflow: hidden; background: #fff;
-  }
-  .n {
-    font-size: 9pt; font-weight: 700; text-align: center;
-    line-height: 1.15; max-height: 9mm; overflow: hidden;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    width: 100%; word-break: break-word;
-  }
-  .p { font-size: 11pt; font-weight: 800; text-align: center; margin-top: 1mm; }
-  .bc { width: 100%; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
-  .bc svg { width: 54mm !important; height: auto !important; max-height: 22mm; display: block; }
-  @media print { body { margin: 0; } }
-</style></head>
-<body>
-  ${name ? `<div class="n">${name}</div>` : ''}
-  ${price ? `<div class="p">${price}</div>` : ''}
-  <div class="bc">${svgData}</div>
-  <script>window.onload=()=>setTimeout(()=>window.print(),120);<\/script>
-</body></html>`;
+// Build print HTML for N copies of one label, using the shared printLabel utility.
+// `paperSize` — paper size descriptor (from PAPER_SIZES) or undefined to use saved default.
+function makeLabel58x40({ name, price, barcode, count = 1, paperSize }) {
+  const paper = paperSize || loadSavedPaperSize();
+  return makeLabelHTML({
+    paper,
+    labels: [{ name, price, barcode }],
+    count,
+  });
+}
+
+// Wrapper: pass JsBarcode and current paper size to the shared renderer.
+function renderPrintBarcodes(win, paperSize) {
+  const paper = paperSize || loadSavedPaperSize();
+  renderBarcodesShared(win, JsBarcode, paper);
 }
 
 // simple barcode with external ref for printing
@@ -159,13 +145,15 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
     }
   }, [value]);
 
+  const [printCount, setPrintCount] = useState(1);
+  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
   const handlePrint = () => {
-    const svgEl = ref.current;
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
+    if (!value) return;
     const win = window.open('', '_blank', 'width=300,height=240');
-    win.document.write(makeLabel58x40({ name: productName, svgData }));
+    if (!win) return;
+    win.document.write(makeLabel58x40({ name: productName, barcode: value, count: printCount, paperSize }));
     win.document.close();
+    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
   };
 
   if (!value) return null;
@@ -173,20 +161,42 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
     <div style={{ background: '#fff', borderRadius: '8px', padding: '10px', textAlign: 'center', marginTop: '10px' }}>
       <svg ref={ref} />
       {showPrint && (
-        <button onClick={handlePrint} style={{
-          marginTop: '8px', display: 'flex', alignItems: 'center', gap: '6px',
-          margin: '8px auto 0', padding: '8px 20px',
-          background: '#1e1b4b', color: '#fff', border: 'none', borderRadius: '8px',
-          cursor: 'pointer', fontWeight: 700, fontSize: '13px',
-          fontFamily: "'Nunito', sans-serif",
-        }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" style={{ width: 15, height: 15 }}>
-            <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-            <rect x="6" y="14" width="12" height="8"/>
-          </svg>
-          {lang === 'uz' ? 'Chop etish' : 'Распечатать'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+          <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
+          <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
+          <button onClick={handlePrint} style={{
+            display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 18px',
+            background: '#1e1b4b', color: '#fff', border: 'none', borderRadius: '8px',
+            cursor: 'pointer', fontWeight: 700, fontSize: '13px',
+            fontFamily: "'Nunito', sans-serif",
+          }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" style={{ width: 15, height: 15 }}>
+              <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+              <rect x="6" y="14" width="12" height="8"/>
+            </svg>
+            {lang === 'uz' ? 'Chop etish' : 'Распечатать'} {printCount > 1 && `×${printCount}`}
+          </button>
+        </div>
       )}
+    </div>
+  );
+}
+
+// Reusable count selector for batch print: 1 / 3 / 6 / 9
+function PrintCountSelector({ value, onChange, lang }) {
+  const opts = [1, 3, 6, 9];
+  return (
+    <div style={{ display: 'flex', gap: '3px', background: '#F4F5FA', padding: '3px', borderRadius: '8px' }}>
+      {opts.map(n => (
+        <button key={n} type="button" onClick={() => onChange(n)} style={{
+          padding: '5px 9px', border: 'none', borderRadius: '6px', cursor: 'pointer',
+          fontWeight: 800, fontSize: '12px',
+          background: value === n ? '#fff' : 'transparent',
+          color: value === n ? '#4338ca' : '#6B6F8A',
+          boxShadow: value === n ? '0 1px 3px rgba(26,27,46,.1)' : 'none',
+          fontFamily: "'Nunito', sans-serif",
+        }} title={lang === 'uz' ? `${n} ta nusxa` : `${n} копий`}>×{n}</button>
+      ))}
     </div>
   );
 }
@@ -263,6 +273,91 @@ function CameraScanner({ onScan, onClose }) {
   );
 }
 
+// ─── Webcam Photo Capture (getUserMedia) ──────────────────────────────────────
+// Works on desktop (uses laptop webcam) and mobile (uses phone camera).
+// onCapture(blob) — fires with a JPEG Blob when user clicks "Capture".
+function PhotoCapture({ onCapture, onClose, uz }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [error, setError] = useState('');
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let stopped = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
+          audio: false,
+        });
+        if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.onloadedmetadata = () => setReady(true);
+        }
+      } catch (e) {
+        setError(uz ? 'Kameraga ruxsat yo\'q yoki mavjud emas' : 'Нет доступа к камере или она недоступна');
+      }
+    })();
+    return () => {
+      stopped = true;
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    };
+  }, [uz]);
+
+  const capture = () => {
+    if (!videoRef.current || !ready) return;
+    const v = videoRef.current;
+    if (!v.videoWidth || !v.videoHeight) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => { if (blob) onCapture(blob); }, 'image/jpeg', 0.85);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', zIndex: 1000,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px',
+    }}>
+      <div style={{ position: 'relative', maxWidth: '480px', width: '100%', borderRadius: '14px', overflow: 'hidden', background: '#000' }}>
+        <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', display: 'block' }} />
+        {!ready && !error && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '14px' }}>
+            {uz ? 'Kamera yuklanmoqda...' : 'Загрузка камеры...'}
+          </div>
+        )}
+        {error && (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#f87171', fontSize: '14px', fontWeight: 700 }}>
+            {error}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '18px' }}>
+        <button type="button" onClick={capture} disabled={!ready} style={{
+          padding: '14px 28px', background: ready ? 'linear-gradient(135deg, #4338ca, #5B4FE8)' : '#9EA3BF',
+          color: '#fff', border: 'none', borderRadius: '12px', fontWeight: 800, fontSize: '15px',
+          cursor: ready ? 'pointer' : 'not-allowed', fontFamily: "'Nunito', sans-serif",
+          boxShadow: ready ? '0 4px 15px rgba(67,56,202,.4)' : 'none',
+        }}>
+          📸 {uz ? 'Suratga olish' : 'Снять'}
+        </button>
+        <button type="button" onClick={onClose} style={{
+          padding: '14px 24px', background: 'rgba(255,255,255,.12)', color: '#fff',
+          border: '1.5px solid rgba(255,255,255,.3)', borderRadius: '12px',
+          fontWeight: 700, fontSize: '14px', cursor: 'pointer', fontFamily: "'Nunito', sans-serif",
+        }}>
+          ✕ {uz ? 'Yopish' : 'Закрыть'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Add Product Form ──────────────────────────────────────────────────────────
 function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }) {
   const uz = lang === 'uz';
@@ -272,6 +367,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
     color_size: '', brand: '', barcode: initialBarcode || '', photo_url: '', unit: 'шт',
   });
   const [customUnit, setCustomUnit] = useState('');
+  const [showCamera, setShowCamera] = useState(false);
   const [newType, setNewType] = useState('');
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -297,6 +393,27 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
     setTypes(prev => [...prev, data]);
     setForm(f => ({ ...f, type_id: String(data.id) }));
     setNewType('');
+  };
+
+  // Captured webcam blob → upload as snapshot.jpg
+  const handleCaptured = async (blob) => {
+    setShowCamera(false);
+    if (!blob) return;
+    setUploading(true); setMsg(null);
+    const fd = new FormData();
+    fd.append('photo', blob, `snapshot-${Date.now()}.jpg`);
+    try {
+      const { data } = await api.post('/upload/photo', fd);
+      setForm(f => ({ ...f, photo_url: data.url }));
+    } catch (err) {
+      const status = err.response?.status;
+      const sizeMB = (blob.size / (1024 * 1024)).toFixed(1);
+      const errText = status === 413
+        ? (uz ? `Fayl juda katta (${sizeMB} MB). Max 15 MB.` : `Файл слишком большой (${sizeMB} MB). Макс 15 MB.`)
+        : (err.response?.data?.error || (uz ? 'Yuklashda xato' : 'Ошибка загрузки'));
+      setMsg(errText);
+    }
+    setUploading(false);
   };
 
   const handlePhoto = async (e) => {
@@ -389,6 +506,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
 
   return (
     <form onSubmit={handleSubmit}>
+      {showCamera && <PhotoCapture onCapture={handleCaptured} onClose={() => setShowCamera(false)} uz={uz} />}
       {saved && (
         <div style={{ background: 'rgba(34,197,94,.12)', color: '#16a34a', padding: '10px 12px', borderRadius: '8px', marginBottom: '12px', fontSize: '13px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
           ✓ {uz ? `"${saved}" saqlandi` : `"${saved}" сохранён`}
@@ -591,17 +709,31 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-            {/* Camera */}
-            <label style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              border: '1.5px dashed #E2E4F0', borderRadius: '10px',
-              padding: '14px', textAlign: 'center', cursor: 'pointer', background: '#fafafa',
-            }}>
-              <input type="file" accept="image/*" capture="environment" onChange={handlePhoto} style={{ display: 'none' }} />
-              <span style={{ fontSize: '13px', color: '#6B6F8A', fontWeight: 700 }}>
-                📷 {uz ? 'Kamera' : 'Камера'}
-              </span>
-            </label>
+            {/* Camera — live capture if getUserMedia available, else native input fallback */}
+            {navigator.mediaDevices?.getUserMedia ? (
+              <button type="button" onClick={() => setShowCamera(true)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                  border: '1.5px dashed #E2E4F0', borderRadius: '10px',
+                  padding: '14px', textAlign: 'center', cursor: 'pointer', background: '#fafafa',
+                  fontFamily: "'Nunito', sans-serif",
+                }}>
+                <span style={{ fontSize: '13px', color: '#6B6F8A', fontWeight: 700 }}>
+                  📷 {uz ? 'Kamera' : 'Камера'}
+                </span>
+              </button>
+            ) : (
+              <label style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                border: '1.5px dashed #E2E4F0', borderRadius: '10px',
+                padding: '14px', textAlign: 'center', cursor: 'pointer', background: '#fafafa',
+              }}>
+                <input type="file" accept="image/*" capture="environment" onChange={handlePhoto} style={{ display: 'none' }} />
+                <span style={{ fontSize: '13px', color: '#6B6F8A', fontWeight: 700 }}>
+                  📷 {uz ? 'Kamera' : 'Камера'}
+                </span>
+              </label>
+            )}
             {/* Gallery */}
             <label style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
@@ -699,6 +831,8 @@ function FoundProduct({ product, role, lang, onReset }) {
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
+  const [printCount, setPrintCount] = useState(1);
+  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
   const barcodeRef = useRef(null);
 
   const doAction = async (type) => {
@@ -719,13 +853,13 @@ function FoundProduct({ product, role, lang, onReset }) {
   };
 
   const handlePrint = () => {
-    const svgEl = barcodeRef.current;
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
+    if (!currentProduct.barcode) return;
     const price = currentProduct.price_sell ? `${parseFloat(currentProduct.price_sell).toLocaleString('ru-RU')} UZS` : '';
     const win = window.open('', '_blank', 'width=300,height=240');
-    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, svgData }));
+    if (!win) return;
+    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, barcode: currentProduct.barcode, count: printCount, paperSize }));
     win.document.close();
+    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
   };
 
   const uz = lang === 'uz';
@@ -795,9 +929,13 @@ function FoundProduct({ product, role, lang, onReset }) {
                   <rect x="6" y="14" width="12" height="8"/>
                 </svg>
                 <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>
-                  {uz ? 'Chop' : 'Печать'}
+                  {uz ? 'Chop' : 'Печать'}{printCount > 1 && ` ×${printCount}`}
                 </span>
               </button>
+            </div>
+            <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
+              <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
             </div>
           </div>
         )}
@@ -849,6 +987,8 @@ function CompactProductResult({ product, role, lang, onClear }) {
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
+  const [printCount, setPrintCount] = useState(1);
+  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
   const barcodeRef = useRef(null);
   const uz = lang === 'uz';
   const fmtQty = (v) => parseFloat(parseFloat(v).toFixed(3)).toString();
@@ -871,13 +1011,13 @@ function CompactProductResult({ product, role, lang, onClear }) {
   };
 
   const handlePrint = () => {
-    const svgEl = barcodeRef.current;
-    if (!svgEl) return;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
+    if (!currentProduct.barcode) return;
     const price = currentProduct.price_sell ? `${parseFloat(currentProduct.price_sell).toLocaleString('ru-RU')} UZS` : '';
     const win = window.open('', '_blank', 'width=300,height=240');
-    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, svgData }));
+    if (!win) return;
+    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, barcode: currentProduct.barcode, count: printCount, paperSize }));
     win.document.close();
+    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
   };
 
   const stock = parseFloat(currentProduct.stock);
@@ -920,22 +1060,28 @@ function CompactProductResult({ product, role, lang, onClear }) {
 
       {/* Barcode + print */}
       {currentProduct.barcode && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: '1px solid #F4F5FA' }}>
-          <div style={{ flex: 1, textAlign: 'center' }}>
-            <BarcodeImgRef value={currentProduct.barcode} svgRef={barcodeRef} />
+        <div style={{ padding: '10px 16px', borderBottom: '1px solid #F4F5FA' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ flex: 1, textAlign: 'center' }}>
+              <BarcodeImgRef value={currentProduct.barcode} svgRef={barcodeRef} />
+            </div>
+            <button onClick={handlePrint} style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
+              background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px',
+              cursor: 'pointer', color: '#4338ca', flexShrink: 0,
+            }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 20, height: 20 }}>
+                <polyline points="6 9 6 2 18 2 18 9"/>
+                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                <rect x="6" y="14" width="12" height="8"/>
+              </svg>
+              <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>{uz ? 'Chop' : 'Печать'}{printCount > 1 && ` ×${printCount}`}</span>
+            </button>
           </div>
-          <button onClick={handlePrint} style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
-            background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px',
-            cursor: 'pointer', color: '#4338ca', flexShrink: 0,
-          }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 20, height: 20 }}>
-              <polyline points="6 9 6 2 18 2 18 9"/>
-              <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
-              <rect x="6" y="14" width="12" height="8"/>
-            </svg>
-            <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>{uz ? 'Chop' : 'Печать'}</span>
-          </button>
+          <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
+            <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
+          </div>
         </div>
       )}
 
