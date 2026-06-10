@@ -87,7 +87,10 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
       {yAxis && (
         <div style={{
           display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-          paddingTop: 2, paddingBottom: 16, // align with x-labels row
+          paddingTop: 2,
+          // Reserve space for the x-labels row only when labels are actually rendered,
+          // otherwise the Y-axis ticks would float above the chart bottom.
+          paddingBottom: (labels && labels.length > 0) ? 22 : 2,
           fontSize: 10, fontFamily: "'JetBrains Mono', monospace",
           color: 'var(--text3)', fontWeight: 700, minWidth: 36, textAlign: 'right',
           height,

@@ -61,11 +61,28 @@ const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use('/uploads', express.static(uploadsDir));
 
+// Only allow real image types — extension AND mime must both be in the allow-list.
+// Prevents uploading .html/.svg with embedded JS that would be served as stored XSS
+// from /uploads (which is served as static files).
+const ALLOWED_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const storage = multer.diskStorage({
   destination: uploadsDir,
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeExt = ALLOWED_IMAGE_EXT.has(ext) ? ext : '.jpg';
+    cb(null, Date.now() + '-' + Math.round(Math.random() * 1e9) + safeExt);
+  },
 });
-const upload = multer({ storage, limits: { fileSize: 15 * 1024 * 1024 } });
+const upload = multer({
+  storage,
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_IMAGE_EXT.has(ext) && ALLOWED_IMAGE_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error('Только изображения (jpg, png, webp, gif)'));
+  },
+});
 
 const auth = (roles = []) => (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -775,14 +792,15 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     const periodCashESQL = periodCashISQL;
 
     const [revByMethodQ, cashInByMethodQ, cashOutByMethodQ, allTimeCashInQ] = await Promise.all([
-      // 1) Выручка от продаж за период по способу оплаты
+      // 1) Выручка от продаж за период по способу оплаты + валюте
       pool.query(`
         SELECT COALESCE(so.payment_method, 'cash') AS method,
+               COALESCE(so.currency, 'UZS') AS currency,
                COALESCE(SUM(so.quantity * so.price), 0) AS amount,
                COUNT(*) AS deals
         FROM stock_outcome so
         WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
-        GROUP BY COALESCE(so.payment_method, 'cash')`,
+        GROUP BY COALESCE(so.payment_method, 'cash'), COALESCE(so.currency, 'UZS')`,
         periodParams),
       // 2) Приход в кассу за период по способу + валюте
       pool.query(`
@@ -802,26 +820,30 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
         WHERE branch_id IN ${branchIdsList} ${periodCashESQL}
         GROUP BY COALESCE(payment_method, 'cash'), COALESCE(currency, 'UZS')`,
         periodCashE),
-      // 4) Текущий баланс кассы по способу оплаты (cash_balance) — БЕЗ периода (накопленный)
+      // 4) Текущий баланс кассы по способу оплаты (cash_balance) — БЕЗ периода (накопленный).
+      // DISTINCT берётся по COALESCE-нормализованным значениям — иначе пары (NULL,NULL) и
+      // ('cash','UZS') дают две строки t с одинаковым матчем и баланс считается дважды.
       pool.query(`
         SELECT
-          COALESCE(payment_method, 'cash') AS method,
-          COALESCE(currency, 'UZS') AS currency,
+          t.method,
+          t.currency,
           (
             (SELECT COALESCE(SUM(amount),0) FROM cash_income ci
               WHERE ci.branch_id IN ${branchIdsList} AND ci.is_settled IS NOT FALSE
-                AND COALESCE(ci.payment_method,'cash')=COALESCE(t.payment_method,'cash')
-                AND COALESCE(ci.currency,'UZS')=COALESCE(t.currency,'UZS'))
+                AND COALESCE(ci.payment_method,'cash')=t.method
+                AND COALESCE(ci.currency,'UZS')=t.currency)
             -
             (SELECT COALESCE(SUM(amount),0) FROM cash_expense ce
               WHERE ce.branch_id IN ${branchIdsList}
-                AND COALESCE(ce.payment_method,'cash')=COALESCE(t.payment_method,'cash')
-                AND COALESCE(ce.currency,'UZS')=COALESCE(t.currency,'UZS'))
+                AND COALESCE(ce.payment_method,'cash')=t.method
+                AND COALESCE(ce.currency,'UZS')=t.currency)
           ) AS balance
         FROM (
-          SELECT DISTINCT payment_method, currency FROM cash_income WHERE branch_id IN ${branchIdsList}
+          SELECT DISTINCT COALESCE(payment_method,'cash') AS method, COALESCE(currency,'UZS') AS currency
+          FROM cash_income WHERE branch_id IN ${branchIdsList}
           UNION
-          SELECT DISTINCT payment_method, currency FROM cash_expense WHERE branch_id IN ${branchIdsList}
+          SELECT DISTINCT COALESCE(payment_method,'cash') AS method, COALESCE(currency,'UZS') AS currency
+          FROM cash_expense WHERE branch_id IN ${branchIdsList}
         ) t`),
     ]);
 
@@ -841,9 +863,9 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     const revBuckets = emptyBuckets();
     const dealsBuckets = emptyBuckets();
     for (const r of revByMethodQ.rows) {
-      const m = (r.method || 'cash').toLowerCase();
-      const k = (m === 'card') ? 'card' : (m === 'transfer' || m === 'wire') ? 'transfer' : (m === 'cash' ? 'cash_uzs' : null);
-      // stock_outcome не несёт валюту — всё UZS-эквивалент. cash идёт в cash_uzs.
+      // so.price хранится в UZS-эквиваленте, но валюта оплаты — в so.currency:
+      // наличная продажа в долларах должна попадать в «Доллар», не в «Сум».
+      const k = bucketize(r.method, r.currency);
       if (k) {
         revBuckets[k] += parseFloat(r.amount) || 0;
         dealsBuckets[k] += parseInt(r.deals) || 0;
@@ -1432,6 +1454,12 @@ app.get('/api/products/:id', auth(), async (req, res) => {
   } else {
     stockJoin = `LEFT JOIN (SELECT product_id, SUM(quantity) AS quantity FROM product_stock GROUP BY product_id) ps ON p.id = ps.product_id`;
   }
+  // Tenant isolation: non-admin users only see products of their own company.
+  let companyCond = '';
+  if (req.user.role !== 'admin' && req.user.company_id) {
+    params.push(req.user.company_id);
+    companyCond = ` AND p.company_id = $${params.length}`;
+  }
   const { rows } = await pool.query(`
     SELECT p.*, pt.name_ru AS type_name_ru, c.name_ru AS cat_name_ru,
            COALESCE(ps.quantity, 0) AS stock
@@ -1439,7 +1467,7 @@ app.get('/api/products/:id', auth(), async (req, res) => {
     LEFT JOIN product_types pt ON p.type_id = pt.id
     LEFT JOIN categories c ON p.category_id = c.id
     ${stockJoin}
-    WHERE p.id = $1 AND p.deleted_at IS NULL
+    WHERE p.id = $1 AND p.deleted_at IS NULL${companyCond}
   `, params);
   if (!rows[0]) return res.status(404).json({ error: 'Не найдено' });
   res.json(rows[0]);
@@ -2833,9 +2861,12 @@ app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req,
 });
 
 // === UPLOAD ===
-app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse']), upload.single('photo'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Файл не найден' });
-  res.json({ url: `/uploads/${req.file.filename}` });
+app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse']), (req, res) => {
+  upload.single('photo')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не найден' });
+    res.json({ url: `/uploads/${req.file.filename}` });
+  });
 });
 
 // === ROLE CHANGE LOG ===

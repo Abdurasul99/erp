@@ -33,10 +33,12 @@ function deltaPct(current, prev) {
   return Math.round(((current - prev) / Math.abs(prev)) * 100);
 }
 
-// Метки для разбивки по способу оплаты
+// Метки для разбивки по способу оплаты.
+// Все суммы хранятся в UZS-эквиваленте (конвертация по курсу при продаже),
+// поэтому подпись валюты везде UZS — метка «Доллар» означает способ оплаты, не валюту суммы.
 const METHOD_LABELS = [
   { key: 'cash_uzs', label: 'Сум',         icon: '💵', curr: 'UZS' },
-  { key: 'cash_usd', label: 'Доллар',      icon: '💲', curr: 'USD' },
+  { key: 'cash_usd', label: 'Доллар',      icon: '💲', curr: 'UZS' },
   { key: 'card',     label: 'На карту',    icon: '💳', curr: 'UZS' },
   { key: 'transfer', label: 'На кассу',    icon: '🏦', curr: 'UZS' },
 ];
