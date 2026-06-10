@@ -40,6 +40,8 @@ coverage/
 deploy-*.bat
 deploy-*.ps1
 _deploy*.cjs
+_deploy_tmp/
+_*.cjs
 _e2e*.js
 _runtest*.cjs
 _setenv*.cjs

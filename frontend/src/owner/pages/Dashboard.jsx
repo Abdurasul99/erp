@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
-import { Tile, Card, Badge, AreaChart, Sparkline, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum } from '../ui.jsx';
+import { Tile, Card, Badge, AreaChart, Sparkline, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
 
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -31,6 +31,47 @@ function deltaPct(current, prev) {
   if (prev == null) return null;
   if (prev === 0) return current === 0 ? 0 : 100;
   return Math.round(((current - prev) / Math.abs(prev)) * 100);
+}
+
+// Метки для разбивки по способу оплаты
+const METHOD_LABELS = [
+  { key: 'cash_uzs', label: 'Сум',         icon: '💵', curr: 'UZS' },
+  { key: 'cash_usd', label: 'Доллар',      icon: '💲', curr: 'USD' },
+  { key: 'card',     label: 'На карту',    icon: '💳', curr: 'UZS' },
+  { key: 'transfer', label: 'На кассу',    icon: '🏦', curr: 'UZS' },
+];
+
+// Компактная разбивка по способам оплаты — 4 строки внизу плитки
+// unit: 'money' (по умолчанию, показывает «4 150 000 UZS») | 'count' (показывает «12 шт»)
+function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
+  if (!data) return null;
+  const labelColor = lightOnDark ? 'rgba(255,255,255,.7)' : 'var(--text3)';
+  const valueColor = lightOnDark ? 'rgba(255,255,255,.92)' : 'var(--text)';
+  const dividerColor = lightOnDark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.06)';
+  return (
+    <div style={{
+      marginTop: 10, paddingTop: 8,
+      borderTop: `1px solid ${dividerColor}`,
+      display: 'grid', gridTemplateColumns: '1fr', gap: 2,
+    }}>
+      {METHOD_LABELS.map(m => {
+        const v = parseFloat(data[m.key]) || 0;
+        const isCount = unit === 'count';
+        return (
+          <div key={m.key} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace",
+            opacity: v > 0 ? 1 : 0.55,
+          }}>
+            <span style={{ color: labelColor, fontWeight: 700 }}>{m.icon} {m.label}</span>
+            <span style={{ color: valueColor, fontWeight: 700 }}>
+              {isCount ? fmtNum(v) : fmtMoneyFull(v)} <span style={{ opacity: .6, fontSize: 9 }}>{isCount ? 'шт' : m.curr}</span>
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -63,13 +104,25 @@ export default function Dashboard() {
   const topSellers = data?.top_sellers || [];
   const alerts = data?.alerts || [];
 
+  // breakdown[type] === { cash_uzs, cash_usd, card, transfer }
+  // type: 'revenue' | 'cash_in' | 'cash_out' | 'deals' | 'avg_check'
+  const byMethod = t.by_method || {};
+
   const trendValues = useMemo(() => trend.map(x => x.revenue), [trend]);
   const prevTrendValues = useMemo(() => prevTrend.map(x => x.revenue), [prevTrend]);
   const trendLabels = useMemo(() => {
     if (!trend.length) return [];
     const fmt = (d) => new Date(d).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
     if (trend.length === 1) return [fmt(trend[0].date)];
-    return [fmt(trend[0].date), fmt(trend[Math.floor(trend.length / 2)].date), fmt(trend[trend.length - 1].date)];
+    // 5 меток: первая, четверть, середина, три четверти, последняя
+    const idxs = [
+      0,
+      Math.floor(trend.length * 0.25),
+      Math.floor(trend.length * 0.5),
+      Math.floor(trend.length * 0.75),
+      trend.length - 1,
+    ];
+    return [...new Set(idxs)].map(i => fmt(trend[i].date));
   }, [trend]);
 
   const revDelta = deltaPct(t.sales_revenue, prev.sales_revenue);
@@ -81,11 +134,37 @@ export default function Dashboard() {
     ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `Филиал #${branchId}`) : 'Все филиалы')
     : (role === 'manager' ? 'Мой филиал' : '');
 
+  const periodSum = trendValues.reduce((a, b) => a + b, 0);
+  const periodLabel = PERIOD_OPTIONS.find(p => p.value === period)?.label || '';
+
+  // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/gen_dir — суммарно по всем)
+  const branchSummary = (() => {
+    if (!isOwner && branches.length === 1) {
+      return {
+        title: branches[0].branch_name,
+        sub: `${branches[0].worker_count} сотр · маржа ${branches[0].margin_pct}%`,
+        icon: '🏭',
+      };
+    }
+    if (isOwner && branches.length > 0) {
+      const totalWorkers = branches.reduce((a, b) => a + (b.worker_count || 0), 0);
+      const avgMargin = t.margin_pct || 0;
+      return {
+        title: branchId
+          ? (allBranches.find(x => x.id === branchId)?.name || `Филиал #${branchId}`)
+          : 'Все филиалы',
+        sub: `${totalWorkers} сотр · маржа ${avgMargin}%`,
+        icon: '🏢',
+      };
+    }
+    return null;
+  })();
+
   return (
     <>
       <PageHeader
         title="Главная панель"
-        sub={`${scopeLabel} · ${new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}`}
+        sub={`${scopeLabel} · ${todayLabel()}`}
         actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS} />}
       />
 
@@ -98,7 +177,7 @@ export default function Dashboard() {
       {loading && !data ? (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, marginBottom: 16 }} className="dashboard-hero-row">
-            <div className="card" style={{ minHeight: 200, padding: 28 }}>
+            <div className="card" style={{ minHeight: 280, padding: 28 }}>
               <Skeleton height={14} style={{ width: '40%', marginBottom: 16 }} />
               <Skeleton height={44} style={{ width: '70%', marginBottom: 12 }} />
               <Skeleton height={12} style={{ width: '50%' }} />
@@ -112,6 +191,10 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
+          <div className="card" style={{ padding: 22, marginBottom: 16 }}>
+            <Skeleton height={14} style={{ width: '30%', marginBottom: 16 }} />
+            <Skeleton height={40} />
+          </div>
           <div className="grid-2" style={{ marginBottom: 16 }}>
             <div className="card" style={{ padding: 22 }}>
               <Skeleton height={14} style={{ width: '40%', marginBottom: 16 }} />
@@ -122,49 +205,43 @@ export default function Dashboard() {
               <Skeleton height={140} />
             </div>
           </div>
-          <div className="grid-3">
-            {[0, 1, 2].map(i => (
-              <div key={i} className="card" style={{ padding: 22 }}>
-                <Skeleton height={14} style={{ width: '40%', marginBottom: 16 }} />
-                <Skeleton height={12} style={{ marginBottom: 8 }} />
-                <Skeleton height={12} style={{ marginBottom: 8 }} />
-                <Skeleton height={12} style={{ width: '70%' }} />
-              </div>
-            ))}
-          </div>
         </>
       ) : (
         <>
           {/* Hero row: Выручка (large hero tile) + Касса/Продажи/Чек (compact column) */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, marginBottom: 16 }} className="dashboard-hero-row">
-            {/* Hero tile — Выручка (biggest) */}
+            {/* Hero tile — заголовок «Сегодня» + выручка + breakdown */}
             <div style={{
               background: 'linear-gradient(135deg, #16a34a 0%, #22C55E 60%, #4ade80 100%)',
               borderRadius: 18,
-              padding: '28px 30px',
+              padding: '24px 28px',
               color: '#fff',
               boxShadow: '0 8px 28px rgba(34,197,94,.32)',
               display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-              minHeight: 200,
+              minHeight: 280,
             }}>
               <div>
                 <div style={{ fontSize: 12, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
-                  💰 Выручка за период
+                  📅 {todayLabel()}
                 </div>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 44, fontWeight: 900, lineHeight: 1.05, marginTop: 8, letterSpacing: -1 }}>
-                  {fmtMoney(t.sales_revenue)} <span style={{ fontSize: 18, opacity: .7 }}>UZS</span>
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
+                  💰 ВЫРУЧКА · {periodLabel}
+                </div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 36, fontWeight: 900, lineHeight: 1.05, marginTop: 8, letterSpacing: -0.5 }}>
+                  {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
                 </div>
                 {revDelta != null && (
-                  <div style={{ marginTop: 6, fontSize: 13, fontWeight: 800 }}>
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800 }}>
                     {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
-                    <span style={{ marginLeft: 8, opacity: .65, fontWeight: 600 }}>
-                      ({fmtMoney(prev.sales_revenue)})
+                    <span style={{ marginLeft: 6, opacity: .65, fontWeight: 600 }}>
+                      ({fmtMoneyFull(prev.sales_revenue)})
                     </span>
                   </div>
                 )}
+                <MethodBreakdown data={byMethod.revenue} lightOnDark />
               </div>
               {trendValues.length > 0 && (
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 8 }}>
                   <Sparkline data={trendValues} color="rgba(255,255,255,.85)" />
                 </div>
               )}
@@ -172,38 +249,110 @@ export default function Dashboard() {
 
             {/* Right column: 3 compact tiles stacked */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoney(t.cash_balance)} sub="UZS" color="#0EA5E9" />
-              <CompactTile icon="📦" label="Продаж"        value={fmtNum(t.deals_count)}    sub="за период"
-                delta={dealsDelta} color="#5B4FE8" />
-              <CompactTile icon="🧾" label="Средний чек"   value={fmtMoney(t.avg_check)}    sub="UZS"
-                delta={checkDelta} color="#FF6B2B" />
+              <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум"
+                breakdown={byMethod.cash_in} color="#0EA5E9" />
+              <CompactTile icon="📦" label="Продаж" value={fmtNum(t.deals_count)} sub="за период"
+                breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
+              <CompactTile icon="🧾" label="Средний чек" value={fmtMoneyFull(t.avg_check)} sub="сум"
+                breakdown={byMethod.avg_check} delta={checkDelta} color="#FF6B2B" />
             </div>
           </div>
 
-          {/* Two area charts side by side: period sales + prev comparison */}
+          {/* Денежный поток — ВЫШЕ диаграмм. Слева — филиал/сводка, справа — приход/расход/прибыль/склад */}
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: branchSummary ? 'minmax(180px, 220px) 1fr' : '1fr', gap: 18, alignItems: 'center' }}>
+              {branchSummary && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  paddingRight: 18, borderRight: '1px solid var(--border, #e6e8f2)',
+                }}>
+                  <div style={{
+                    width: 44, height: 44, borderRadius: 12,
+                    background: 'var(--primary-50, rgba(91,79,232,.10))', color: 'var(--primary, #5B4FE8)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22,
+                  }}>{branchSummary.icon}</div>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+                      💸 Денежный поток
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', marginTop: 2 }}>{branchSummary.title}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>{branchSummary.sub}</div>
+                  </div>
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                <div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Приход</div>
+                  <div className="mono" style={{ fontWeight: 800, color: 'var(--green)', fontSize: 18, marginTop: 4 }}>+{fmtMoneyFull(t.cash_income)}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Расход</div>
+                  <div className="mono" style={{ fontWeight: 800, color: 'var(--red)', fontSize: 18, marginTop: 4 }}>−{fmtMoneyFull(t.cash_expense)}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Прибыль</div>
+                  <div className="mono" style={{ fontWeight: 800, color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.gross_profit)}</div>
+                  {profitDelta != null ? (
+                    <div style={{ fontSize: 10, fontWeight: 800, color: profitDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}%
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                  )}
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Склад</div>
+                  <div className="mono" style={{ fontWeight: 800, fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.stock_value)}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Two area charts side by side: period sales + prev comparison. Sum-badge перенесён под заголовок (внутри карты, слева). */}
           <div className="grid-2" style={{ marginBottom: 16 }}>
-            <Card icon="📈" title={`Продажи · ${PERIOD_OPTIONS.find(p => p.value === period)?.label || ''}`}
-              actions={<Badge tone="blue">{fmtMoney(trendValues.reduce((a, b) => a + b, 0))} UZS</Badge>}>
+            <Card icon="📈" title={`Продажи · ${periodLabel}`}>
+              <div style={{
+                fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 18,
+                color: 'var(--primary, #5B4FE8)', marginBottom: 10, marginTop: -4,
+              }}>
+                {fmtMoneyFull(periodSum)} <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>сум · {periodLabel.toLowerCase()}</span>
+              </div>
               <AreaChart data={trendValues} color="#5B4FE8" height={150} labels={trendLabels} />
             </Card>
 
-            <Card icon="📊" title="Сравнение с прошлым периодом"
-              actions={revDelta != null && (
-                <Badge tone={revDelta >= 0 ? 'green' : 'red'}>
-                  {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}%
-                </Badge>
-              )}>
+            <Card icon="📊" title="Сравнение с прошлым периодом">
+              <div style={{
+                fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 18,
+                color: revDelta != null && revDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
+                marginBottom: 10, marginTop: -4,
+              }}>
+                {revDelta != null ? (
+                  <>
+                    {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}%
+                    <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginLeft: 6 }}>
+                      vs предыдущий · {fmtMoneyFull(prev.sales_revenue)} сум
+                    </span>
+                  </>
+                ) : (
+                  <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>
+                    Нет данных за прошлый период
+                  </span>
+                )}
+              </div>
               {prevTrendValues.length > 0 ? (
                 <>
-                  <AreaChart data={trendValues} prevData={prevTrendValues} color="#22C55E" prevColor="#9094B0" height={150} />
+                  <AreaChart data={trendValues} prevData={prevTrendValues} color="#22C55E" prevColor="#9094B0" height={150} labels={trendLabels} />
                   <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ width: 16, height: 3, background: '#22C55E', borderRadius: 2 }} />
-                      <span style={{ color: 'var(--text2)' }}>Сейчас: <strong>{fmtMoney(t.sales_revenue)}</strong></span>
+                      <span style={{ color: 'var(--text2)' }}>Сейчас: <strong>{fmtMoneyFull(t.sales_revenue)}</strong></span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ width: 16, height: 0, borderTop: '2px dashed #9094B0' }} />
-                      <span style={{ color: 'var(--text2)' }}>Раньше: <strong>{fmtMoney(prev.sales_revenue)}</strong></span>
+                      <span style={{ color: 'var(--text2)' }}>Раньше: <strong>{fmtMoneyFull(prev.sales_revenue)}</strong></span>
                     </div>
                   </div>
                 </>
@@ -218,60 +367,6 @@ export default function Dashboard() {
               )}
             </Card>
           </div>
-
-          {/* Cash flow detail (compact) */}
-          <Card icon="💸" title="Денежный поток" style={{ marginBottom: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 16 }}>
-              <div>
-                <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Приход</div>
-                <div className="mono" style={{ fontWeight: 800, color: 'var(--green)', fontSize: 20, marginTop: 4 }}>+{fmtMoney(t.cash_income)}</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Расход</div>
-                <div className="mono" style={{ fontWeight: 800, color: 'var(--red)', fontSize: 20, marginTop: 4 }}>−{fmtMoney(t.cash_expense)}</div>
-              </div>
-              <div>
-                <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Прибыль</div>
-                <div className="mono" style={{ fontWeight: 800, color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 20, marginTop: 4 }}>{fmtMoney(t.gross_profit)}</div>
-                {profitDelta != null && (
-                  <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, color: profitDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}%
-                  </div>
-                )}
-              </div>
-              <div>
-                <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Склад</div>
-                <div className="mono" style={{ fontWeight: 800, fontSize: 20, marginTop: 4 }}>{fmtMoney(t.stock_value)}</div>
-              </div>
-            </div>
-          </Card>
-
-          {/* Manager context: show a "Мой филиал" badge with the branch name when no comparison table is rendered */}
-          {!isOwner && branches.length === 1 && (
-            <Card style={{ marginBottom: 16, borderLeft: '4px solid var(--primary)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: 10,
-                  background: 'var(--primary-50)', color: 'var(--primary)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20,
-                }}>🏭</div>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>Ваш филиал</div>
-                  <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>{branches[0].branch_name}</div>
-                </div>
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 18, fontSize: 12 }}>
-                  <div>
-                    <div style={{ color: 'var(--text3)', fontWeight: 700 }}>Сотрудников</div>
-                    <div className="mono" style={{ fontWeight: 800, fontSize: 16 }}>{branches[0].worker_count}</div>
-                  </div>
-                  <div>
-                    <div style={{ color: 'var(--text3)', fontWeight: 700 }}>Маржа</div>
-                    <div className="mono" style={{ fontWeight: 800, fontSize: 16 }}>{branches[0].margin_pct}%</div>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
 
           {isOwner && branches.length > 1 && (
             <Card icon="🏭" title="Сравнение филиалов"
@@ -298,23 +393,23 @@ export default function Dashboard() {
                           🏭 {b.branch_name}{' '}
                           {b.margin_pct < 10 && b.sales_revenue > 0 && <Badge tone="red">маржа↓</Badge>}
                         </td>
-                        <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(b.sales_revenue)}</td>
-                        <td className="mono" style={{ textAlign: 'right', color: b.gross_profit >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoney(b.gross_profit)}</td>
+                        <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(b.sales_revenue)}</td>
+                        <td className="mono" style={{ textAlign: 'right', color: b.gross_profit >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoneyFull(b.gross_profit)}</td>
                         <td className="mono" style={{ textAlign: 'right' }}>{b.margin_pct}%</td>
                         <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(b.deals_count)}</td>
-                        <td className="mono" style={{ textAlign: 'right', color: b.cash_balance >= 0 ? 'var(--text)' : 'var(--red)' }}>{fmtMoney(b.cash_balance)}</td>
-                        <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(b.stock_value)}</td>
+                        <td className="mono" style={{ textAlign: 'right', color: b.cash_balance >= 0 ? 'var(--text)' : 'var(--red)' }}>{fmtMoneyFull(b.cash_balance)}</td>
+                        <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(b.stock_value)}</td>
                         <td className="mono" style={{ textAlign: 'right' }}>{b.worker_count}</td>
                       </tr>
                     ))}
                     <tr style={{ background: 'rgba(91,79,232,.05)', fontWeight: 800 }}>
                       <td>ИТОГО</td>
-                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(t.sales_revenue)}</td>
-                      <td className="mono" style={{ textAlign: 'right', color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoney(t.gross_profit)}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(t.sales_revenue)}</td>
+                      <td className="mono" style={{ textAlign: 'right', color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoneyFull(t.gross_profit)}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{t.margin_pct}%</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(t.deals_count)}</td>
-                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(t.cash_balance)}</td>
-                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(t.stock_value)}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(t.cash_balance)}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(t.stock_value)}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{t.worker_count}</td>
                     </tr>
                   </tbody>
@@ -357,7 +452,7 @@ export default function Dashboard() {
                       <div className="list-item-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
                       <div className="list-item-sub">{fmtNum(p.qty)} {p.unit}</div>
                     </div>
-                    <div className="mono" style={{ fontWeight: 800, color: 'var(--primary)', fontSize: 12 }}>{fmtMoney(p.revenue)}</div>
+                    <div className="mono" style={{ fontWeight: 800, color: 'var(--primary)', fontSize: 12 }}>{fmtMoneyFull(p.revenue)}</div>
                   </div>
                 ))}
               </div>
@@ -376,7 +471,7 @@ export default function Dashboard() {
                         <div className="list-item-title">{s.name}</div>
                         <div className="list-item-sub">{s.deals} сделок · {s.role}</div>
                       </div>
-                      <div className="mono" style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 12 }}>{fmtMoney(s.revenue)}</div>
+                      <div className="mono" style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 12 }}>{fmtMoneyFull(s.revenue)}</div>
                     </div>
                   );
                 })}
@@ -389,31 +484,38 @@ export default function Dashboard() {
   );
 }
 
-// Compact tile for the right column next to the hero — about 1/3 height of the hero.
-function CompactTile({ icon, label, value, sub, delta, color }) {
+// Compact tile for the right column next to the hero. Now supports breakdown by payment method.
+// countMode — если задан, breakdown показывает счётчик (шт), а не суммы.
+function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMode = null }) {
   return (
     <div style={{
       background: '#fff',
       borderRadius: 14,
-      padding: '14px 16px',
+      padding: '12px 14px',
       border: '1px solid rgba(230,232,242,.6)',
       borderLeft: `4px solid ${color}`,
       boxShadow: 'var(--shadow)',
       flex: 1,
       display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
     }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5 }}>
-        {icon} {label}
+      <div>
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5 }}>
+          {icon} {label}
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+          marginTop: 4,
+        }}>
+          <div className="mono" style={{ fontSize: 19, fontWeight: 900, color, lineHeight: 1.1 }}>{value}</div>
+          {delta != null && (
+            <div style={{ fontSize: 10, fontWeight: 800, color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
+              {delta >= 0 ? '▲' : '▼'} {Math.abs(delta)}%
+            </div>
+          )}
+        </div>
+        {sub && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600, marginTop: 1 }}>{sub}</div>}
       </div>
-      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color, lineHeight: 1.1, marginTop: 4 }}>{value}</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-        {sub && <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>{sub}</div>}
-        {delta != null && (
-          <div style={{ fontSize: 11, fontWeight: 800, color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            {delta >= 0 ? '▲' : '▼'} {Math.abs(delta)}%
-          </div>
-        )}
-      </div>
+      {breakdown && <MethodBreakdown data={breakdown} unit={countMode ? 'count' : 'money'} />}
     </div>
   );
 }

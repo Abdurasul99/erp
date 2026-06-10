@@ -52,13 +52,15 @@ export function Bars({ data, max, color = '#5B4FE8' }) {
 
 // AreaChart — line with gradient fill below.  Supports an optional comparison series.
 // Used on the dashboard for "Продажи за период" + "Сравнение с прошлым".
-export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#9094B0', height = 160, labels = null }) {
+// Поддерживает читаемые оси: yAxis=true рисует 3 метки слева (max / mid / 0).
+export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#9094B0', height = 160, labels = null, yAxis = true }) {
   if (!data || data.length === 0) {
     return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Нет данных за период</div>;
   }
   // Combined max for shared Y-scale
   const allValues = [...data, ...(prevData || [])];
   const max = Math.max(...allValues, 1);
+  const mid = max / 2;
   const W = 100, H = 50;
 
   const polyPath = (xs, useFill) => {
@@ -81,25 +83,44 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
 
   const gradId = 'area-grad-' + Math.random().toString(36).slice(2, 8);
   return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
-            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-        {prevData && prevData.length > 0 && (
-          <path d={polyPath(prevData, false)} fill="none" stroke={prevColor} strokeWidth="1" strokeDasharray="3 2" opacity="0.7" vectorEffect="non-scaling-stroke" />
-        )}
-        <path d={polyPath(data, true)} fill={`url(#${gradId})`} stroke="none" />
-        <path d={polyPath(data, false)} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      </svg>
-      {labels && labels.length > 0 && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>
-          {labels.map((l, i) => <span key={i}>{l}</span>)}
+    <div style={{ display: 'flex', gap: 6 }}>
+      {yAxis && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+          paddingTop: 2, paddingBottom: 16, // align with x-labels row
+          fontSize: 10, fontFamily: "'JetBrains Mono', monospace",
+          color: 'var(--text3)', fontWeight: 700, minWidth: 36, textAlign: 'right',
+          height,
+        }}>
+          <span>{fmtAxis(max)}</span>
+          <span>{fmtAxis(mid)}</span>
+          <span>0</span>
         </div>
       )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {/* Gridlines — 0, mid, max */}
+          <line x1="0" y1={H - 4} x2={W} y2={H - 4} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />
+          <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+          <line x1="0" y1={4} x2={W} y2={4} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+          {prevData && prevData.length > 0 && (
+            <path d={polyPath(prevData, false)} fill="none" stroke={prevColor} strokeWidth="1" strokeDasharray="3 2" opacity="0.7" vectorEffect="non-scaling-stroke" />
+          )}
+          <path d={polyPath(data, true)} fill={`url(#${gradId})`} stroke="none" />
+          <path d={polyPath(data, false)} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        </svg>
+        {labels && labels.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--text3)', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>
+            {labels.map((l, i) => <span key={i}>{l}</span>)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -245,7 +266,30 @@ export const fmtMoney = (v) => {
   return Math.round(n).toString();
 };
 
+// Full money formatting — «4 150 000» вместо «4.15M». Без валютного суффикса.
+// Используется на главной панели и в финансовых отчётах где важна точная цифра.
+export const fmtMoneyFull = (v) => (Math.round(parseFloat(v) || 0)).toLocaleString('ru-RU');
+
+// Полная сумма + валюта
+export const fmtSum = (v, currency = 'сум') => `${fmtMoneyFull(v)} ${currency}`;
+
+// Короткий формат для оси Y графика — «4.2M» / «150K» / «25»
+export const fmtAxis = (v) => {
+  const n = parseFloat(v) || 0;
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return Math.round(n).toString();
+};
+
 export const fmtNum = (v) => (parseFloat(v) || 0).toLocaleString('ru-RU');
+
+// Сегодня в виде «9 июня 2026, вторник»
+export const todayLabel = () => {
+  return new Date().toLocaleDateString('ru-RU', {
+    day: 'numeric', month: 'long', year: 'numeric', weekday: 'long',
+  });
+};
 
 export function shade(hex, percent) {
   const num = parseInt(hex.replace('#', ''), 16);

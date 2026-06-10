@@ -761,6 +761,123 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     totals.margin_pct = totals.sales_revenue > 0 ? Math.round((totals.gross_profit / totals.sales_revenue) * 1000) / 10 : 0;
     totals.avg_check = totals.deals_count > 0 ? Math.round(totals.sales_revenue / totals.deals_count) : 0;
 
+    // --- payment-method breakdown for the dashboard tiles (Phase B) ---
+    // Cash income / sales / avg-check разбиты по 4 категориям:
+    //   cash_uzs (наличные в сум) · cash_usd (наличные в долларах) · card · transfer
+    // Источник: cash_income/cash_expense.payment_method + .currency для cash +
+    //           stock_outcome.payment_method для выручки.
+    // Все запросы scoped через branchIds и периодически (если задан period).
+    const periodCashI = [];
+    let periodCashISQL = '';
+    if (from) { periodCashI.push(from); periodCashISQL += ` AND created_at >= $${periodCashI.length}`; }
+    if (to)   { periodCashI.push(to);   periodCashISQL += ` AND created_at <  $${periodCashI.length}`; }
+    const periodCashE = [...periodCashI];
+    const periodCashESQL = periodCashISQL;
+
+    const [revByMethodQ, cashInByMethodQ, cashOutByMethodQ, allTimeCashInQ] = await Promise.all([
+      // 1) Выручка от продаж за период по способу оплаты
+      pool.query(`
+        SELECT COALESCE(so.payment_method, 'cash') AS method,
+               COALESCE(SUM(so.quantity * so.price), 0) AS amount,
+               COUNT(*) AS deals
+        FROM stock_outcome so
+        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+        GROUP BY COALESCE(so.payment_method, 'cash')`,
+        periodParams),
+      // 2) Приход в кассу за период по способу + валюте
+      pool.query(`
+        SELECT COALESCE(payment_method, 'cash') AS method,
+               COALESCE(currency, 'UZS') AS currency,
+               COALESCE(SUM(amount), 0) AS amount
+        FROM cash_income
+        WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE ${periodCashISQL}
+        GROUP BY COALESCE(payment_method, 'cash'), COALESCE(currency, 'UZS')`,
+        periodCashI),
+      // 3) Расход из кассы за период по способу + валюте
+      pool.query(`
+        SELECT COALESCE(payment_method, 'cash') AS method,
+               COALESCE(currency, 'UZS') AS currency,
+               COALESCE(SUM(amount), 0) AS amount
+        FROM cash_expense
+        WHERE branch_id IN ${branchIdsList} ${periodCashESQL}
+        GROUP BY COALESCE(payment_method, 'cash'), COALESCE(currency, 'UZS')`,
+        periodCashE),
+      // 4) Текущий баланс кассы по способу оплаты (cash_balance) — БЕЗ периода (накопленный)
+      pool.query(`
+        SELECT
+          COALESCE(payment_method, 'cash') AS method,
+          COALESCE(currency, 'UZS') AS currency,
+          (
+            (SELECT COALESCE(SUM(amount),0) FROM cash_income ci
+              WHERE ci.branch_id IN ${branchIdsList} AND ci.is_settled IS NOT FALSE
+                AND COALESCE(ci.payment_method,'cash')=COALESCE(t.payment_method,'cash')
+                AND COALESCE(ci.currency,'UZS')=COALESCE(t.currency,'UZS'))
+            -
+            (SELECT COALESCE(SUM(amount),0) FROM cash_expense ce
+              WHERE ce.branch_id IN ${branchIdsList}
+                AND COALESCE(ce.payment_method,'cash')=COALESCE(t.payment_method,'cash')
+                AND COALESCE(ce.currency,'UZS')=COALESCE(t.currency,'UZS'))
+          ) AS balance
+        FROM (
+          SELECT DISTINCT payment_method, currency FROM cash_income WHERE branch_id IN ${branchIdsList}
+          UNION
+          SELECT DISTINCT payment_method, currency FROM cash_expense WHERE branch_id IN ${branchIdsList}
+        ) t`),
+    ]);
+
+    // Helper — переводит строку (method, currency) → одну из 4 ключей фронтенда
+    function bucketize(method, currency) {
+      const m = (method || 'cash').toLowerCase();
+      const c = (currency || 'UZS').toUpperCase();
+      if (m === 'cash' && c === 'USD') return 'cash_usd';
+      if (m === 'cash') return 'cash_uzs';
+      if (m === 'card') return 'card';
+      if (m === 'transfer' || m === 'wire') return 'transfer';
+      // долги, прочие — не входят в кассовый баланс, исключаем
+      return null;
+    }
+    const emptyBuckets = () => ({ cash_uzs: 0, cash_usd: 0, card: 0, transfer: 0 });
+
+    const revBuckets = emptyBuckets();
+    const dealsBuckets = emptyBuckets();
+    for (const r of revByMethodQ.rows) {
+      const m = (r.method || 'cash').toLowerCase();
+      const k = (m === 'card') ? 'card' : (m === 'transfer' || m === 'wire') ? 'transfer' : (m === 'cash' ? 'cash_uzs' : null);
+      // stock_outcome не несёт валюту — всё UZS-эквивалент. cash идёт в cash_uzs.
+      if (k) {
+        revBuckets[k] += parseFloat(r.amount) || 0;
+        dealsBuckets[k] += parseInt(r.deals) || 0;
+      }
+    }
+    const cashInBuckets = emptyBuckets();
+    for (const r of cashInByMethodQ.rows) {
+      const k = bucketize(r.method, r.currency);
+      if (k) cashInBuckets[k] += parseFloat(r.amount) || 0;
+    }
+    const cashOutBuckets = emptyBuckets();
+    for (const r of cashOutByMethodQ.rows) {
+      const k = bucketize(r.method, r.currency);
+      if (k) cashOutBuckets[k] += parseFloat(r.amount) || 0;
+    }
+    // Накопленный баланс кассы по способу — для плитки «Касса (баланс)»
+    const cashBalBuckets = emptyBuckets();
+    for (const r of allTimeCashInQ.rows) {
+      const k = bucketize(r.method, r.currency);
+      if (k) cashBalBuckets[k] += parseFloat(r.balance) || 0;
+    }
+    // Средний чек по способу = выручка / сделок
+    const avgCheckBuckets = emptyBuckets();
+    for (const k of Object.keys(avgCheckBuckets)) {
+      avgCheckBuckets[k] = dealsBuckets[k] > 0 ? Math.round(revBuckets[k] / dealsBuckets[k]) : 0;
+    }
+    totals.by_method = {
+      revenue:   revBuckets,
+      cash_in:   cashBalBuckets,   // для плитки «Касса (баланс)» показываем накопленный баланс
+      cash_out:  cashOutBuckets,   // период-расход
+      deals:     dealsBuckets,
+      avg_check: avgCheckBuckets,
+    };
+
     // Sales trend covering the selected period (revenue per day).
     // If no period → last 30 days. The frontend draws this as an area chart.
     let trendFromIso = from;
