@@ -64,6 +64,10 @@ _payload.json
 # Personal access / credentials file — NEVER commit
 CREDENTIALS.md
 SECRETS.md
+COLLABORATOR_KEYS.md
 *credentials*.md
 *secret*.md
 *-credentials-*.md
+*_KEYS.md
+*_KEY.md
+KEYS.md
