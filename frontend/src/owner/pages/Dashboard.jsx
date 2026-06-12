@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
-import { Tile, Card, Badge, AreaChart, BarChart, Sparkline, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
+import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
 
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -274,9 +274,32 @@ export default function Dashboard() {
                 )}
                 <MethodBreakdown data={byMethod.revenue} lightOnDark />
               </div>
-              {trendValues.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <Sparkline data={trendValues} color="rgba(255,255,255,.85)" />
+              {/* Мини бар-чарт выручки по дням периода — белые бары на зелёном,
+                  тянется к низу плитки и заполняет высоту (вместо сломанного Sparkline) */}
+              {trendValues.length > 1 && trendValues.some(v => v > 0) && (
+                <div style={{ marginTop: 'auto', paddingTop: 16 }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'flex-end', gap: 2,
+                    height: 110, borderBottom: '1.5px solid rgba(255,255,255,.35)',
+                  }}>
+                    {trendValues.map((v, i) => {
+                      const max = Math.max(...trendValues, 1);
+                      const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
+                      const label = trend[i] ? new Date(trend[i].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '';
+                      return (
+                        <div key={i} title={`${label}: ${fmtMoneyFull(v)} сум`} style={{
+                          flex: 1, minWidth: 0, height: '100%',
+                          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+                        }}>
+                          <div style={{
+                            width: 'min(60%, 10px)', height: `${hPct}%`,
+                            background: 'rgba(255,255,255,.9)', borderRadius: 99,
+                            minHeight: v > 0 ? 3 : 0,
+                          }} />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
