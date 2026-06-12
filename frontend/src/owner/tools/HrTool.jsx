@@ -1,45 +1,118 @@
-import React from 'react';
-import { Card, Tile, Badge, PageHeader, Progress } from '../ui.jsx';
-import { toast } from '../Modal.jsx';
+import React, { useState, useEffect, useContext } from 'react';
+import api from '../../api.js';
+import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
+import { BranchScope } from '../OwnerShell.jsx';
 
-const TEAM = [
-  { n: 'Aziz A.',     r: 'Ген. директор',  kpi: 92, salary: '8.0M',     status: 'on' },
-  { n: 'Anvar S.',    r: 'Старший продавец', kpi: 88, salary: '4.5M + %', status: 'on' },
-  { n: 'Diana K.',    r: 'Продавец',          kpi: 82, salary: '3.5M + %', status: 'on' },
-  { n: 'Bekzod M.',   r: 'Кассир',            kpi: 78, salary: '3.2M',     status: 'off' },
-  { n: 'Sotuvchi P.', r: 'Продавец',          kpi: 91, salary: '3.5M + %', status: 'on' },
-  { n: 'Aziz R.',     r: 'Складовщик',        kpi: 75, salary: '2.8M',     status: 'on' },
-  { n: 'Malika T.',   r: 'Менеджер B2B',      kpi: 84, salary: '4.0M + %', status: 'on' },
-];
+const ROLE_RU = {
+  founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер',
+  cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
+};
+const ROLE_TONE = {
+  founder: 'purple', gen_dir: 'purple', manager: 'blue',
+  cashier: 'cyan', warehouse: 'orange', seller: 'green',
+};
 
 export default function HrTool() {
+  const { branchId } = useContext(BranchScope);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true); setError(null);
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    api.get('/hr/overview', { params })
+      .then(r => { if (!ignore) setData(r.data); })
+      .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [branchId]);
+
+  const employees = data?.employees || [];
+  const sellers = employees.filter(e => e.deals_30d > 0);
+  const newHires = employees.filter(e => (Date.now() - new Date(e.hired_at)) / 86400000 < 60);
+
+  const tenure = (iso) => {
+    const days = Math.floor((Date.now() - new Date(iso)) / 86400000);
+    if (days < 30) return `${days} дн`;
+    if (days < 365) return `${Math.floor(days / 30)} мес`;
+    return `${Math.floor(days / 365)} г ${Math.floor((days % 365) / 30)} мес`;
+  };
+  const lastActive = (iso) => {
+    if (!iso) return '—';
+    const days = Math.floor((Date.now() - new Date(iso)) / 86400000);
+    if (days === 0) return 'сегодня';
+    if (days === 1) return 'вчера';
+    return `${days} дн назад`;
+  };
+
   return (
     <>
-      <PageHeader title="👤 HR · команда" sub="Сотрудники · KPI · зарплаты · смены"
-        actions={<button className="btn btn-primary btn-sm" onClick={() => toast('Форма нового сотрудника')}>+ Сотрудник</button>} />
-      <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="👥" label="Всего" value={TEAM.length} color="#5B4FE8" />
-        <Tile icon="🟢" label="На смене" value={TEAM.filter(t => t.status === 'on').length} color="#22C55E" />
-        <Tile icon="🎯" label="Средний KPI" value={Math.round(TEAM.reduce((s, t) => s + t.kpi, 0) / TEAM.length) + '%'} delta={6} color="#FF6B2B" />
-        <Tile icon="💰" label="ФОТ" value="38.4M" color="#0EA5E9" />
-      </div>
-      <Card>
-        <table>
-          <thead><tr><th></th><th>Сотрудник</th><th>Роль</th><th>KPI</th><th style={{ textAlign: 'right' }}>ЗП</th><th>Статус</th></tr></thead>
-          <tbody>
-            {TEAM.map((u, i) => (
-              <tr key={i}>
-                <td><div className="avatar" style={{ width: 32, height: 32 }}>{u.n.split(' ').map(p => p[0]).join('')}</div></td>
-                <td style={{ fontWeight: 700 }}>{u.n}</td>
-                <td>{u.r}</td>
-                <td><div style={{ width: 100 }}><Progress value={u.kpi} max={100} color={u.kpi >= 85 ? '#22C55E' : u.kpi >= 70 ? '#FF6B2B' : '#EF4444'} /><div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2, fontWeight: 700 }}>{u.kpi}%</div></div></td>
-                <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{u.salary}</td>
-                <td>{u.status === 'on' ? <Badge tone="green">● На смене</Badge> : <Badge tone="gray">○ Off</Badge>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <PageHeader title="👤 Картотека HR" sub="Сотрудники компании · реальная активность" />
+
+      {loading && !data ? (
+        <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={200} /></Card>
+      ) : error ? (
+        <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div></Card>
+      ) : employees.length === 0 ? (
+        <Card><EmptyState icon="👥" title="Сотрудников нет" description="Добавьте сотрудников в разделе «Сотрудники»." /></Card>
+      ) : (
+        <>
+          <div className="grid-4" style={{ marginBottom: 18 }}>
+            <Tile icon="👥" label="Всего в команде" value={fmtNum(employees.length)} sub="сотрудников" color="#9333EA" />
+            <Tile icon="🛒" label="Продавали за 30 дней" value={fmtNum(sellers.length)} sub="активных" color="#22C55E" />
+            <Tile icon="🆕" label="Новички" value={fmtNum(newHires.length)} sub="меньше 2 месяцев" color="#0EA5E9" />
+            <Tile icon="💰" label="Продажи команды 30д" value={fmtMoneyFull(employees.reduce((a, e) => a + e.revenue_30d, 0))} sub="сум" color="#FF6B2B" />
+          </div>
+
+          <Card icon="🗂" title="Все сотрудники">
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Сотрудник</th>
+                    <th>Роль</th>
+                    <th>Филиал</th>
+                    <th>Стаж</th>
+                    <th style={{ textAlign: 'right' }}>Продаж 30д</th>
+                    <th style={{ textAlign: 'right' }}>Выручка 30д</th>
+                    <th>Активность</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employees.map(e => {
+                    const init = (e.name || 'U').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase();
+                    return (
+                      <tr key={e.id}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div className="o-avatar" style={{ width: 30, height: 30, fontSize: 11 }}>{init}</div>
+                            <div>
+                              <div style={{ fontWeight: 700 }}>{e.name}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text3)' }}>@{e.username}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td><Badge tone={ROLE_TONE[e.role] || 'gray'}>{ROLE_RU[e.role] || e.role}</Badge></td>
+                        <td style={{ color: 'var(--text2)' }}>{e.branch || '—'}</td>
+                        <td className="mono">{tenure(e.hired_at)}</td>
+                        <td className="mono" style={{ textAlign: 'right' }}>{e.deals_30d > 0 ? fmtNum(e.deals_30d) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                        <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{e.revenue_30d > 0 ? fmtMoneyFull(e.revenue_30d) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                        <td style={{ fontSize: 12, color: 'var(--text2)' }}>{lastActive(e.last_sale_at)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
+              ℹ️ Активность = продажи, проведённые сотрудником. Управление ролями и доступами — в разделе «Сотрудники».
+            </div>
+          </Card>
+        </>
+      )}
     </>
   );
 }

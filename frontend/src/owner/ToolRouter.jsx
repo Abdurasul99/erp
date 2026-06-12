@@ -54,6 +54,7 @@ import AiAdvisorTool from './tools/AiAdvisorTool.jsx';
 import AutomationTool from './tools/AutomationTool.jsx';
 import MgmtTool from './tools/MgmtTool.jsx';
 import HrTool from './tools/HrTool.jsx';
+import MotivationTool from './tools/MotivationTool.jsx';
 import TrainingTool from './tools/TrainingTool.jsx';
 import IntegrationsTool from './tools/IntegrationsTool.jsx';
 import SecurityTool from './tools/SecurityTool.jsx';
@@ -123,6 +124,7 @@ const RESOLVE = {
     'team-kpi':  { Comp: () => <LiveWrapper title="👥 KPI команды" sub="Продажи, маржа и эффективность сотрудников" Component={TeamKPI} /> },
     users:       { Comp: () => <LiveWrapper title="🧑‍💼 Сотрудники компании" sub="Роли · филиалы · доступ" Component={GenDirUsers} /> },
     training:    { Comp: TrainingTool },
+    motivation:  { Comp: MotivationTool },
     'hr-overview': { Comp: HrTool },
   },
   support: {

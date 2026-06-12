@@ -115,8 +115,8 @@ export const SECTIONS = [
       { id: 'hiring',       icon: '📋', title: 'Найм',               desc: 'Вакансии · кандидаты',         wired: false },
       { id: 'onboarding',   icon: '🎒', title: 'Адаптация',          desc: 'Чек-листы для новых',         wired: false },
       { id: 'training',     icon: '🎬', title: 'Обучение',           desc: 'Курсы · аттестация',           wired: false },
-      { id: 'motivation',   icon: '🏆', title: 'Мотивация',           desc: 'Бонусы · KPI · конкурсы',     wired: false },
-      { id: 'hr-overview',  icon: '👤', title: 'Картотека HR',        desc: 'Сотрудники · ЗП · смены',     wired: false },
+      { id: 'motivation',   icon: '🏆', title: 'Мотивация',           desc: 'Лидерборд продаж · 30 дней',  wired: true  },
+      { id: 'hr-overview',  icon: '👤', title: 'Картотека HR',        desc: 'Сотрудники · активность',     wired: true  },
     ],
   },
 

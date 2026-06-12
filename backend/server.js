@@ -2179,6 +2179,51 @@ app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (
   } catch (e) { console.error('settings/overview err', e); res.status(500).json({ error: e.message }); }
 });
 
+// === HR OVERVIEW (картотека + мотивация — реальные данные) ===
+// Сотрудники компании с реальной активностью: продажи за 30 дней,
+// последняя активность, стаж. Один эндпоинт обслуживает Картотеку и Мотивацию.
+app.get('/api/hr/overview', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ employees: [] });
+    const companyId = req.user.company_id;
+
+    const params = [companyId];
+    let branchCond = '';
+    if (scope.ids) { params.push(scope.ids); branchCond = `AND (u.branch_id = ANY($${params.length}::int[]) OR u.branch_id IS NULL)`; }
+    const { rows } = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.created_at,
+             b.name AS branch_name,
+             s.deals_30d, s.revenue_30d, s.last_sale_at
+      FROM users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS deals_30d,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue_30d,
+               MAX(so.created_at) AS last_sale_at
+        FROM stock_outcome so
+        WHERE so.created_by = u.id AND so.status = 'approved'
+          AND so.created_at >= NOW() - INTERVAL '30 days'
+      ) s ON TRUE
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${branchCond}
+      ORDER BY s.revenue_30d DESC NULLS LAST, u.created_at`, params);
+
+    res.json({
+      employees: rows.map(r => ({
+        id: r.id,
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
+        username: r.username,
+        role: r.role,
+        branch: r.branch_name,
+        hired_at: r.created_at,
+        deals_30d: parseInt(r.deals_30d) || 0,
+        revenue_30d: parseFloat(r.revenue_30d) || 0,
+        last_sale_at: r.last_sale_at,
+      })),
+    });
+  } catch (e) { console.error('hr/overview err', e); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/stock/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier']), async (req, res) => {
   const branchId = getBranchFilter(req.user, req.query);
   const params = [];
