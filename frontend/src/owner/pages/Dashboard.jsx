@@ -371,82 +371,87 @@ export default function Dashboard() {
             </div>
           </Card>
 
-          {/* Два бар-чарта в стиле банковского приложения (референс-фото):
-              метрика крупно слева-сверху · переключатель масштаба справа-сверху ·
-              бары · даты под барами. Один бар = день / неделя / месяц / год. */}
-          <div className="grid-2" style={{ marginBottom: 16 }}>
-            {/* График 1 — Продажи */}
-            <div className="card">
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <div style={{
-                    width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-                    background: 'rgba(37,99,235,.10)', color: '#2563EB',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-                  }}>📈</div>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                      Продажи · {CHART_RANGE_LABEL[chartGran]}
-                    </div>
-                    <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
-                      {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
-                    </div>
+          {/* Динамика продаж — единый переключатель масштаба + две карты-близнеца.
+              Один бар = день / неделя / месяц / год (как в банковских приложениях). */}
+          {(() => {
+            const hasPrev = chartPrevValues.some(v => v > 0);
+            const peak = chartValues.length ? Math.max(...chartValues) : 0;
+            const peakIdx = chartValues.indexOf(peak);
+            const peakLabel = peakIdx >= 0 ? (chartLabels[peakIdx] || '') : '';
+            // Заголовок шапки карты — единая высота (иконка + подпись + крупная цифра)
+            const ChartHead = ({ icon, iconBg, iconColor, label, children }) => (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14, minHeight: 44 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  background: iconBg, color: iconColor,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+                }}>{icon}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {label}
                   </div>
+                  {children}
                 </div>
-                <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
               </div>
-              {chartLoading && !chart ? (
-                <Skeleton height={150} />
-              ) : (
-                <BarChart data={chartValues} labels={chartLabels} color="#2563EB" height={150} />
-              )}
-            </div>
+            );
+            return (
+              <>
+                {/* Тулбар: заголовок секции слева, переключатель масштаба справа */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 Динамика продаж</div>
+                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
+                </div>
 
-            {/* График 2 — Сравнение бар-к-бару с предыдущим аналогичным диапазоном */}
-            <div className="card">
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <div style={{
-                    width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-                    background: 'rgba(34,197,94,.10)', color: '#16a34a',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-                  }}>📊</div>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                      Сравнение · {CHART_RANGE_LABEL[chartGran]} vs предыдущие
+                <div className="grid-2 dashboard-charts-row" style={{ marginBottom: 16, alignItems: 'stretch' }}>
+                  {/* Карта 1 — Продажи */}
+                  <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+                    <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
+                      label={`Продажи · ${CHART_RANGE_LABEL[chartGran]}`}>
+                      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
+                        {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
+                      </div>
+                    </ChartHead>
+                    {chartLoading && !chart ? <Skeleton height={150} /> : (
+                      <BarChart data={chartValues} labels={chartLabels} color="#2563EB" height={150} />
+                    )}
+                    {/* Футер для выравнивания высоты с правой картой */}
+                    <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text2)', minHeight: 18 }}>
+                      {peak > 0 && <>Пик: <strong className="mono">{fmtMoneyFull(peak)} сум</strong> · {peakLabel}</>}
                     </div>
-                    <div className="mono" style={{
-                      fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
-                      color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
-                    }}>
-                      {chartDelta != null
-                        ? <>{chartDelta >= 0 ? '▲' : '▼'} {Math.abs(chartDelta)}%</>
-                        : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+                  </div>
+
+                  {/* Карта 2 — Сравнение с предыдущим аналогичным диапазоном */}
+                  <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+                    <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
+                      label={`Сравнение · ${CHART_RANGE_LABEL[chartGran]}`}>
+                      <div className="mono" style={{
+                        fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
+                        color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
+                      }}>
+                        {chartDelta != null
+                          ? <>{chartDelta >= 0 ? '▲' : '▼'} {Math.abs(chartDelta)}%</>
+                          : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+                      </div>
+                    </ChartHead>
+                    {chartLoading && !chart ? <Skeleton height={150} /> : (
+                      <BarChart data={chartValues} prevData={hasPrev ? chartPrevValues : undefined} labels={chartLabels}
+                        color="#22C55E" prevColor="#C3C8D4" height={150} />
+                    )}
+                    <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, flexWrap: 'wrap', minHeight: 18 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
+                        <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(chartTotal)} сум</strong></span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
+                        <span style={{ color: 'var(--text2)' }}>Предыдущие: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} сум</strong></span>
+                      </div>
                     </div>
                   </div>
                 </div>
-                <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
-              </div>
-              {chartLoading && !chart ? (
-                <Skeleton height={150} />
-              ) : (
-                <>
-                  <BarChart data={chartValues} prevData={chartPrevValues} labels={chartLabels}
-                    color="#22C55E" prevColor="#C3C8D4" height={150} />
-                  <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
-                      <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(chartTotal)} сум</strong></span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
-                      <span style={{ color: 'var(--text2)' }}>Предыдущие {CHART_RANGE_LABEL[chartGran]}: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} сум</strong></span>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+              </>
+            );
+          })()}
 
           {isOwner && branches.length > 1 && (
             <Card icon="🏭" title="Сравнение филиалов"
