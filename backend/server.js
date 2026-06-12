@@ -1103,6 +1103,90 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
   }
 });
 
+// === SALES CHART (банковский стиль: бар = день/неделя/месяц/год) ===
+// granularity задаёт МАСШТАБ бара, а не просто диапазон:
+//   day   → 30 баров по дням      week → 12 баров по неделям (Пн-старт)
+//   month → 12 баров по месяцам   year → 5 баров по годам
+// prev_buckets — аналогичный диапазон сразу ДО текущего (для сравнения бар-к-бару).
+app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const scopedBranch = isManager ? req.user.branch_id : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    const gran = ['day', 'week', 'month', 'year'].includes(req.query.granularity) ? req.query.granularity : 'day';
+
+    let bq;
+    if (isManager) {
+      bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [req.user.branch_id, companyId]);
+    } else if (scopedBranch) {
+      bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [scopedBranch, companyId]);
+    } else {
+      bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    }
+    const ids = bq.rows.map(r => r.id);
+    if (!ids.length) return res.json({ granularity: gran, buckets: [], prev_buckets: [], total: 0, prev_total: 0 });
+
+    const COUNT = { day: 30, week: 12, month: 12, year: 5 }[gran];
+
+    // Старты бакетов текущего диапазона (локальный календарь сервера = календарь БД)
+    const now = new Date();
+    const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const shift = (base, i) => {
+      const d = new Date(base);
+      if (gran === 'day') d.setDate(d.getDate() + i);
+      else if (gran === 'week') d.setDate(d.getDate() + i * 7);
+      else if (gran === 'month') return new Date(base.getFullYear(), base.getMonth() + i, 1);
+      else return new Date(base.getFullYear() + i, 0, 1);
+      return d;
+    };
+    let base;
+    if (gran === 'day') base = startOf(now);
+    else if (gran === 'week') { base = startOf(now); base.setDate(base.getDate() - ((base.getDay() + 6) % 7)); }
+    else if (gran === 'month') base = new Date(now.getFullYear(), now.getMonth(), 1);
+    else base = new Date(now.getFullYear(), 0, 1);
+
+    const starts = [];
+    for (let i = COUNT - 1; i >= 0; i--) starts.push(shift(base, -i));
+    const prevStarts = starts.map(s => shift(s, -COUNT));
+    const rangeFrom = prevStarts[0]; // одним SQL берём prev + current
+
+    // gran из белого списка — интерполяция безопасна
+    const q = await pool.query(`
+      SELECT to_char(date_trunc('${gran}', so.created_at), 'YYYY-MM-DD') AS k,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COUNT(*) AS deals
+      FROM stock_outcome so
+      WHERE so.status = 'approved' AND so.branch_id = ANY($1::int[])
+        AND so.created_at >= $2
+      GROUP BY k`,
+      [ids, rangeFrom.toISOString()]);
+    const byKey = new Map(q.rows.map(r => [r.k, { revenue: parseFloat(r.revenue) || 0, deals: parseInt(r.deals) || 0 }]));
+
+    const keyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const labelOf = (d) => {
+      if (gran === 'year') return String(d.getFullYear());
+      if (gran === 'month') {
+        const m = d.toLocaleDateString('ru-RU', { month: 'short' }).replace('.', '');
+        return d.getMonth() === 0 ? `${m} ${String(d.getFullYear()).slice(2)}` : m;
+      }
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+    };
+    const toBuckets = (arr) => arr.map(d => {
+      const v = byKey.get(keyOf(d)) || { revenue: 0, deals: 0 };
+      return { date: keyOf(d), label: labelOf(d), revenue: v.revenue, deals: v.deals };
+    });
+
+    const buckets = toBuckets(starts);
+    const prev_buckets = toBuckets(prevStarts);
+    const total = buckets.reduce((a, b) => a + b.revenue, 0);
+    const prev_total = prev_buckets.reduce((a, b) => a + b.revenue, 0);
+    res.json({ granularity: gran, buckets, prev_buckets, total, prev_total });
+  } catch (e) {
+    console.error('sales-chart error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // === AUTH ===
 // In-memory rate limiter for login attempts: 5 fails per 15 min per (IP+username)
 const loginAttempts = new Map(); // key → { count, firstAt }

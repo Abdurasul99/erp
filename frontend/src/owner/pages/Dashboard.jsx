@@ -85,6 +85,17 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
   );
 }
 
+// Масштаб графика продаж (как в банковских приложениях): бар = день/неделя/месяц/год
+const CHART_GRAN_OPTIONS = [
+  { value: 'day',   label: 'День' },
+  { value: 'week',  label: 'Неделя' },
+  { value: 'month', label: 'Месяц' },
+  { value: 'year',  label: 'Год' },
+];
+const CHART_RANGE_LABEL = {
+  day: 'последние 30 дней', week: '12 недель', month: '12 месяцев', year: '5 лет',
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const { branchId, isOwner, role, branches: allBranches } = useContext(BranchScope);
@@ -92,6 +103,10 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // График продаж живёт на своей гранулярности (независимо от периода плиток)
+  const [chartGran, setChartGran] = useState('day');
+  const [chart, setChart] = useState(null);
+  const [chartLoading, setChartLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -105,6 +120,16 @@ export default function Dashboard() {
       .catch(e => setError(e.response?.data?.error || e.message))
       .finally(() => setLoading(false));
   }, [period, branchId]);
+
+  useEffect(() => {
+    setChartLoading(true);
+    const params = { granularity: chartGran };
+    if (branchId) params.branch_id = branchId;
+    api.get('/company/sales-chart', { params })
+      .then(r => setChart(r.data))
+      .catch(() => setChart(null))
+      .finally(() => setChartLoading(false));
+  }, [chartGran, branchId]);
 
   const t = data?.totals || {};
   const prev = data?.prev_totals || {};
@@ -120,11 +145,14 @@ export default function Dashboard() {
   const byMethod = t.by_method || {};
 
   const trendValues = useMemo(() => trend.map(x => x.revenue), [trend]);
-  const prevTrendValues = useMemo(() => prevTrend.map(x => x.revenue), [prevTrend]);
-  // Метки дат для КАЖДОГО бара (формат 08.06) — BarChart сам решает какие показать
-  const trendLabels = useMemo(() =>
-    trend.map(x => new Date(x.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })),
-  [trend]);
+
+  // Данные бар-чарта с бэкенда: бакеты уже агрегированы по chartGran (день/неделя/месяц/год)
+  const chartValues = useMemo(() => (chart?.buckets || []).map(b => b.revenue), [chart]);
+  const chartPrevValues = useMemo(() => (chart?.prev_buckets || []).map(b => b.revenue), [chart]);
+  const chartLabels = useMemo(() => (chart?.buckets || []).map(b => b.label), [chart]);
+  const chartTotal = chart?.total || 0;
+  const chartPrevTotal = chart?.prev_total || 0;
+  const chartDelta = deltaPct(chartTotal, chartPrevTotal);
 
   const revDelta = deltaPct(t.sales_revenue, prev.sales_revenue);
   const profitDelta = deltaPct(t.gross_profit, prev.gross_profit);
@@ -135,7 +163,6 @@ export default function Dashboard() {
     ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `Филиал #${branchId}`) : 'Все филиалы')
     : (role === 'manager' ? 'Мой филиал' : '');
 
-  const periodSum = trendValues.reduce((a, b) => a + b, 0);
   const periodLabel = PERIOD_OPTIONS.find(p => p.value === period)?.label || '';
 
   // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/gen_dir — суммарно по всем)
@@ -321,74 +348,79 @@ export default function Dashboard() {
             </div>
           </Card>
 
-          {/* Два бар-чарта в стиле банковского приложения:
-              метрика крупно слева-сверху · бары · даты под барами (см. референс-фото) */}
+          {/* Два бар-чарта в стиле банковского приложения (референс-фото):
+              метрика крупно слева-сверху · переключатель масштаба справа-сверху ·
+              бары · даты под барами. Один бар = день / неделя / месяц / год. */}
           <div className="grid-2" style={{ marginBottom: 16 }}>
-            {/* График 1 — Продажи за период */}
+            {/* График 1 — Продажи */}
             <div className="card">
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-                  background: 'rgba(37,99,235,.10)', color: '#2563EB',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-                }}>📈</div>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                    Продажи · {periodLabel}
-                  </div>
-                  <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
-                    {fmtMoneyFull(periodSum)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                    background: 'rgba(37,99,235,.10)', color: '#2563EB',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+                  }}>📈</div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+                      Продажи · {CHART_RANGE_LABEL[chartGran]}
+                    </div>
+                    <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
+                      {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
+                    </div>
                   </div>
                 </div>
+                <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
               </div>
-              <BarChart data={trendValues} labels={trendLabels} color="#2563EB" height={150} />
+              {chartLoading && !chart ? (
+                <Skeleton height={150} />
+              ) : (
+                <BarChart data={chartValues} labels={chartLabels} color="#2563EB" height={150} />
+              )}
             </div>
 
-            {/* График 2 — Сравнение с прошлым периодом */}
+            {/* График 2 — Сравнение бар-к-бару с предыдущим аналогичным диапазоном */}
             <div className="card">
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-                  background: 'rgba(34,197,94,.10)', color: '#16a34a',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-                }}>📊</div>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                    Сравнение с прошлым периодом
-                  </div>
-                  <div className="mono" style={{
-                    fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
-                    color: revDelta == null ? 'var(--text3)' : revDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
-                  }}>
-                    {revDelta != null
-                      ? <>{revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}%</>
-                      : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                    background: 'rgba(34,197,94,.10)', color: '#16a34a',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+                  }}>📊</div>
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+                      Сравнение · {CHART_RANGE_LABEL[chartGran]} vs предыдущие
+                    </div>
+                    <div className="mono" style={{
+                      fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
+                      color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
+                    }}>
+                      {chartDelta != null
+                        ? <>{chartDelta >= 0 ? '▲' : '▼'} {Math.abs(chartDelta)}%</>
+                        : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+                    </div>
                   </div>
                 </div>
+                <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
               </div>
-              {prevTrendValues.length > 0 ? (
+              {chartLoading && !chart ? (
+                <Skeleton height={150} />
+              ) : (
                 <>
-                  <BarChart data={trendValues} prevData={prevTrendValues} labels={trendLabels}
+                  <BarChart data={chartValues} prevData={chartPrevValues} labels={chartLabels}
                     color="#22C55E" prevColor="#C3C8D4" height={150} />
-                  <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12 }}>
+                  <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
-                      <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(t.sales_revenue)} сум</strong></span>
+                      <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(chartTotal)} сум</strong></span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
-                      <span style={{ color: 'var(--text2)' }}>Прошлый: <strong className="mono">{fmtMoneyFull(prev.sales_revenue)} сум</strong></span>
+                      <span style={{ color: 'var(--text2)' }}>Предыдущие {CHART_RANGE_LABEL[chartGran]}: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} сум</strong></span>
                     </div>
                   </div>
                 </>
-              ) : (
-                <EmptyState
-                  icon="📅"
-                  title="Сравнение недоступно"
-                  description={period === 'all'
-                    ? 'Для периода «Всё» нет предыдущего периода. Переключитесь на Неделя/Месяц/Год.'
-                    : 'Сравнение появится для периодов Неделя/Месяц/Год — там есть предыдущий период.'}
-                />
               )}
             </div>
           </div>
