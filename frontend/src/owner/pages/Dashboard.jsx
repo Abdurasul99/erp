@@ -95,8 +95,8 @@ function HeroAreaChart({ points, labels }) {
   const peakXPct = ((peakIdx + 0.5) / n) * 100;
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 120, paddingTop: 26 }}>
-      {/* Чип со значением пика — над самым высоким баром */}
+    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 40 }}>
+      {/* Чип со значением пика — над самым высоким баром, с воздухом до бара */}
       <div style={{
         position: 'absolute', top: 0,
         left: `${Math.min(Math.max(peakXPct, 12), 88)}%`,
