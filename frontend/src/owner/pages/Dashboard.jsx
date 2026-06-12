@@ -85,6 +85,71 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
   );
 }
 
+// Плавный area-чарт для хиро-плитки (стиль банковских приложений):
+// сглаженная кривая + белый градиент под ней + точка пика со значением.
+// Smooth-кривая держит спайковые данные мягче, чем бары.
+function HeroAreaChart({ points, labels }) {
+  const W = 100, H = 42;
+  const max = Math.max(...points, 1);
+  const n = points.length;
+  if (n < 2) return null;
+  const pts = points.map((v, i) => ({
+    x: (i / (n - 1)) * W,
+    y: H - (v / max) * (H - 8) - 2,
+  }));
+  let line = `M ${pts[0].x},${pts[0].y}`;
+  for (let i = 1; i < n; i++) {
+    const mx = (pts[i - 1].x + pts[i].x) / 2;
+    line += ` C ${mx},${pts[i - 1].y} ${mx},${pts[i].y} ${pts[i].x},${pts[i].y}`;
+  }
+  const fill = `${line} L ${W},${H} L 0,${H} Z`;
+  const peakIdx = points.indexOf(Math.max(...points));
+  const peakXPct = pts[peakIdx].x;
+  const peakYPct = (pts[peakIdx].y / H) * 100;
+  const chipBelow = peakYPct < 22; // пик у самого верха → подпись под точкой
+
+  return (
+    <div style={{ position: 'relative', flex: 1, minHeight: 120 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}>
+        <defs>
+          <linearGradient id="hero-area-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.38" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        <path d={fill} fill="url(#hero-area-grad)" />
+        <path d={line} fill="none" stroke="rgba(255,255,255,.95)" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+      {/* Точка пика + значение */}
+      <div style={{
+        position: 'absolute', left: `${peakXPct}%`, top: `${peakYPct}%`,
+        transform: 'translate(-50%,-50%)', width: 10, height: 10, borderRadius: '50%',
+        background: '#fff', boxShadow: '0 0 0 4px rgba(255,255,255,.28)',
+      }} />
+      <div style={{
+        position: 'absolute',
+        left: `${Math.min(Math.max(peakXPct, 12), 88)}%`,
+        top: `${peakYPct}%`,
+        transform: chipBelow ? 'translate(-50%, 12px)' : 'translate(-50%, calc(-100% - 12px))',
+        background: 'rgba(255,255,255,.95)', color: '#15803d',
+        borderRadius: 8, padding: '3px 9px', fontSize: 11, fontWeight: 800,
+        fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap',
+        boxShadow: '0 4px 12px rgba(0,0,0,.12)',
+      }}>
+        {fmtMoneyFull(points[peakIdx])}
+      </div>
+      {/* Невидимые hover-колонки с подсказками по дням */}
+      <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+        {points.map((v, i) => (
+          <div key={i} title={`${labels[i] || ''}: ${fmtMoneyFull(v)} сум`} style={{ flex: 1, minWidth: 0 }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Шапка карты графика — вынесена в module scope, чтобы НЕ пересоздаваться
 // на каждый рендер Dashboard (иначе React ремонтирует DOM шапки каждый раз).
 function ChartHead({ icon, iconBg, iconColor, label, children }) {
@@ -262,91 +327,69 @@ export default function Dashboard() {
         </>
       ) : (
         <>
-          {/* Hero row: Выручка (large hero tile) + Касса/Продажи/Чек (compact column) */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, marginBottom: 16 }} className="dashboard-hero-row">
-            {/* Hero tile — ГОРИЗОНТАЛЬНЫЙ layout: цифры слева, бар-чарт заполняет
-                правую часть на ВСЮ высоту плитки. Никакой пустоты — чарт растёт
-                вместе с плиткой, как в банковских приложениях. */}
-            <div style={{
-              background: 'linear-gradient(135deg, #16a34a 0%, #22C55E 60%, #4ade80 100%)',
-              borderRadius: 18,
-              padding: '22px 26px',
-              color: '#fff',
-              boxShadow: '0 8px 28px rgba(34,197,94,.32)',
-              display: 'flex', gap: 24, minHeight: 260, flexWrap: 'wrap',
-            }}>
-              {/* Левая колонка — дата, выручка, breakdown */}
-              <div style={{ flex: '0 1 290px', minWidth: 240, display: 'flex', flexDirection: 'column' }}>
-                <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
-                  📅 {todayLabel()}
+          {/* Hero — БАННЕР на всю ширину с фиксированной высотой (не растягивается
+              под соседние колонки → нет пустоты). Слева цифры, справа плавная
+              area-кривая с точкой пика. Плитки — отдельным рядом ниже. */}
+          <div style={{
+            background: 'linear-gradient(135deg, #16a34a 0%, #22C55E 60%, #4ade80 100%)',
+            borderRadius: 18,
+            padding: '22px 26px',
+            color: '#fff',
+            boxShadow: '0 8px 28px rgba(34,197,94,.32)',
+            display: 'flex', gap: 28, flexWrap: 'wrap',
+            marginBottom: 14,
+          }}>
+            {/* Левая колонка — дата, выручка, breakdown */}
+            <div style={{ flex: '0 1 300px', minWidth: 250, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
+                📅 {todayLabel()}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
+                💰 ВЫРУЧКА · {periodLabel}
+              </div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5 }}>
+                {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
+              </div>
+              {revDelta != null ? (
+                <div style={{ fontSize: 11.5, fontWeight: 800 }}>
+                  {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
                 </div>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 6 }}>
-                  💰 ВЫРУЧКА · {periodLabel}
-                </div>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 34, fontWeight: 900, lineHeight: 1.05, marginTop: 6, letterSpacing: -0.5 }}>
-                  {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
-                </div>
-                {revDelta != null ? (
-                  <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 800 }}>
-                    {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
+              ) : (
+                data?.prev_totals != null && (
+                  <div style={{ fontSize: 11, fontWeight: 700, opacity: .75 }}>
+                    Прошлый период пуст — сравнение появится позже
                   </div>
-                ) : (
-                  data?.prev_totals != null && (
-                    <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, opacity: .75 }}>
-                      Прошлый период пуст — сравнение появится позже
-                    </div>
-                  )
-                )}
-                <div style={{ marginTop: 'auto' }}>
-                  <MethodBreakdown data={byMethod.revenue} lightOnDark />
+                )
+              )}
+              <div style={{ marginTop: 8 }}>
+                <MethodBreakdown data={byMethod.revenue} lightOnDark />
+              </div>
+            </div>
+
+            {/* Правая колонка — плавная кривая, фикс. высота */}
+            {trendValues.length > 1 && trendValues.some(v => v > 0) && (
+              <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
+                <HeroAreaChart
+                  points={trendValues}
+                  labels={trend.map(x => new Date(x.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }))}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, fontWeight: 700, opacity: .75, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {[0, Math.floor(trend.length / 2), trend.length - 1].map((idx, k) => (
+                    <span key={k}>{trend[idx] ? new Date(trend[idx].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : ''}</span>
+                  ))}
                 </div>
               </div>
+            )}
+          </div>
 
-              {/* Правая колонка — бар-чарт на всю высоту плитки */}
-              {trendValues.length > 1 && trendValues.some(v => v > 0) && (
-                <div style={{ flex: '1 1 300px', minWidth: 260, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'flex-end', gap: 2,
-                    flex: 1, minHeight: 140,
-                    borderBottom: '1.5px solid rgba(255,255,255,.35)',
-                  }}>
-                    {trendValues.map((v, i) => {
-                      const max = Math.max(...trendValues, 1);
-                      const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
-                      const label = trend[i] ? new Date(trend[i].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '';
-                      return (
-                        <div key={i} title={`${label}: ${fmtMoneyFull(v)} сум`} style={{
-                          flex: 1, minWidth: 0, height: '100%',
-                          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-                        }}>
-                          <div style={{
-                            width: 'min(65%, 12px)', height: `${hPct}%`,
-                            background: 'rgba(255,255,255,.92)', borderRadius: 99,
-                            minHeight: v > 0 ? 3 : 0,
-                          }} />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Даты под барами: первая · середина · последняя */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, fontWeight: 700, opacity: .75, fontFamily: "'JetBrains Mono', monospace" }}>
-                    {[0, Math.floor(trend.length / 2), trend.length - 1].map((idx, k) => (
-                      <span key={k}>{trend[idx] ? new Date(trend[idx].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : ''}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right column: 3 compact tiles stacked */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум · остаток на сейчас"
-                breakdown={byMethod.cash_in} color="#0EA5E9" />
-              <CompactTile icon="📦" label="Продаж" value={fmtNum(t.deals_count)} sub="за период"
-                breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
-              <CompactTile icon="🧾" label="Средний чек" value={fmtMoneyFull(t.avg_check)} sub="сум"
-                breakdown={byMethod.avg_check} delta={checkDelta} color="#FF6B2B" />
-            </div>
+          {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
+          <div className="grid-3" style={{ marginBottom: 16 }}>
+            <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум · остаток на сейчас"
+              breakdown={byMethod.cash_in} color="#0EA5E9" />
+            <CompactTile icon="📦" label="Продаж" value={fmtNum(t.deals_count)} sub="за период"
+              breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
+            <CompactTile icon="🧾" label="Средний чек" value={fmtMoneyFull(t.avg_check)} sub="сум"
+              breakdown={byMethod.avg_check} delta={checkDelta} color="#FF6B2B" />
           </div>
 
           {/* Денежный поток — ВЫШЕ диаграмм. Слева — филиал/сводка, справа — приход/расход/прибыль/склад */}
