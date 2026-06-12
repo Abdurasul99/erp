@@ -25,7 +25,7 @@ export const SECTIONS = [
       { id: 'pnl',            icon: '📊', title: 'P&L отчёт',            desc: 'Выручка · маржа · прибыль',  wired: true  },
       { id: 'pricing',        icon: '🏷️', title: 'Ценообразование',      desc: 'Себестоимость · маржа',     wired: true  },
       { id: 'cashflow',       icon: '💸', title: 'Cash Flow',             desc: 'Движение денег по дням',    wired: false },
-      { id: 'modeling',       icon: '🎰', title: 'Что-если симулятор',   desc: 'Цена · скидка · закупка',   wired: false },
+      { id: 'modeling',       icon: '🎰', title: 'Что-если симулятор',   desc: 'Цена · маржа · прогноз',    wired: true  },
       { id: 'fin-model',      icon: '📈', title: 'Финансовая модель',    desc: 'Прогноз · бюджет',           wired: false },
       { id: 'break-even',     icon: '⚖️', title: 'Точка безубыточности', desc: 'Когда выходишь в плюс',     wired: false },
     ],
