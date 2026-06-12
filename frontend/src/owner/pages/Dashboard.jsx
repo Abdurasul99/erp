@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
-import { Tile, Card, Badge, AreaChart, Sparkline, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
+import { Tile, Card, Badge, AreaChart, BarChart, Sparkline, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
 
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -27,11 +27,20 @@ function periodRange(p) {
   return { from: from ? from.toISOString() : null, to: null };
 }
 
+// Дельта к прошлому периоду. Если прошлый период пуст (0) — процент роста
+// не имеет смысла («▲100% от нуля» вводит в заблуждение) → возвращаем null,
+// и UI показывает «нет данных за прошлый период».
 function deltaPct(current, prev) {
   if (prev == null) return null;
-  if (prev === 0) return current === 0 ? 0 : 100;
+  if (prev === 0) return current === 0 ? 0 : null;
   return Math.round(((current - prev) / Math.abs(prev)) * 100);
 }
+
+// Русские названия ролей для списков сотрудников
+const ROLE_RU = {
+  seller: 'продавец', cashier: 'кассир', warehouse: 'складовщик',
+  manager: 'менеджер', gen_dir: 'ген. директор', founder: 'учредитель', admin: 'админ',
+};
 
 // Метки для разбивки по способу оплаты.
 // Все суммы хранятся в UZS-эквиваленте (конвертация по курсу при продаже),
@@ -112,20 +121,10 @@ export default function Dashboard() {
 
   const trendValues = useMemo(() => trend.map(x => x.revenue), [trend]);
   const prevTrendValues = useMemo(() => prevTrend.map(x => x.revenue), [prevTrend]);
-  const trendLabels = useMemo(() => {
-    if (!trend.length) return [];
-    const fmt = (d) => new Date(d).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-    if (trend.length === 1) return [fmt(trend[0].date)];
-    // 5 меток: первая, четверть, середина, три четверти, последняя
-    const idxs = [
-      0,
-      Math.floor(trend.length * 0.25),
-      Math.floor(trend.length * 0.5),
-      Math.floor(trend.length * 0.75),
-      trend.length - 1,
-    ];
-    return [...new Set(idxs)].map(i => fmt(trend[i].date));
-  }, [trend]);
+  // Метки дат для КАЖДОГО бара (формат 08.06) — BarChart сам решает какие показать
+  const trendLabels = useMemo(() =>
+    trend.map(x => new Date(x.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })),
+  [trend]);
 
   const revDelta = deltaPct(t.sales_revenue, prev.sales_revenue);
   const profitDelta = deltaPct(t.gross_profit, prev.gross_profit);
@@ -232,13 +231,19 @@ export default function Dashboard() {
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 36, fontWeight: 900, lineHeight: 1.05, marginTop: 8, letterSpacing: -0.5 }}>
                   {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
                 </div>
-                {revDelta != null && (
+                {revDelta != null ? (
                   <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800 }}>
                     {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
                     <span style={{ marginLeft: 6, opacity: .65, fontWeight: 600 }}>
-                      ({fmtMoneyFull(prev.sales_revenue)})
+                      (было {fmtMoneyFull(prev.sales_revenue)} сум)
                     </span>
                   </div>
+                ) : (
+                  data?.prev_totals != null && (
+                    <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 700, opacity: .75 }}>
+                      За прошлый период продаж не было — сравнение появится позже
+                    </div>
+                  )
                 )}
                 <MethodBreakdown data={byMethod.revenue} lightOnDark />
               </div>
@@ -251,7 +256,7 @@ export default function Dashboard() {
 
             {/* Right column: 3 compact tiles stacked */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум"
+              <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум · остаток на сейчас"
                 breakdown={byMethod.cash_in} color="#0EA5E9" />
               <CompactTile icon="📦" label="Продаж" value={fmtNum(t.deals_count)} sub="за период"
                 breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
@@ -283,78 +288,96 @@ export default function Dashboard() {
                 </div>
               )}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                {/* Приход/Расход — за выбранный период (синхронно с выручкой).
+                    Валовая прибыль — продажи минус себестоимость за период.
+                    Склад — текущая стоимость остатков (не зависит от периода). */}
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Приход</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Приход · {periodLabel}</div>
                   <div className="mono" style={{ fontWeight: 800, color: 'var(--green)', fontSize: 18, marginTop: 4 }}>+{fmtMoneyFull(t.cash_income)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · в кассу</div>
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Расход</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Расход · {periodLabel}</div>
                   <div className="mono" style={{ fontWeight: 800, color: 'var(--red)', fontSize: 18, marginTop: 4 }}>−{fmtMoneyFull(t.cash_expense)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · из кассы</div>
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Прибыль</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Валовая прибыль</div>
                   <div className="mono" style={{ fontWeight: 800, color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.gross_profit)}</div>
                   {profitDelta != null ? (
                     <div style={{ fontSize: 10, fontWeight: 800, color: profitDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}%
+                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}% к прошлому
                     </div>
                   ) : (
-                    <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                    <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · продажи − себестоимость</div>
                   )}
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Склад</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Склад · сейчас</div>
                   <div className="mono" style={{ fontWeight: 800, fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.stock_value)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · стоимость остатков</div>
                 </div>
               </div>
             </div>
           </Card>
 
-          {/* Two area charts side by side: period sales + prev comparison. Sum-badge перенесён под заголовок (внутри карты, слева). */}
+          {/* Два бар-чарта в стиле банковского приложения:
+              метрика крупно слева-сверху · бары · даты под барами (см. референс-фото) */}
           <div className="grid-2" style={{ marginBottom: 16 }}>
-            <Card icon="📈" title={`Продажи · ${periodLabel}`}>
-              <div style={{
-                fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 18,
-                color: 'var(--primary, #5B4FE8)', marginBottom: 10, marginTop: -4,
-              }}>
-                {fmtMoneyFull(periodSum)} <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>сум · {periodLabel.toLowerCase()}</span>
+            {/* График 1 — Продажи за период */}
+            <div className="card">
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  background: 'rgba(37,99,235,.10)', color: '#2563EB',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+                }}>📈</div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+                    Продажи · {periodLabel}
+                  </div>
+                  <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
+                    {fmtMoneyFull(periodSum)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
+                  </div>
+                </div>
               </div>
-              <AreaChart data={trendValues} color="#5B4FE8" height={150} labels={trendLabels} />
-            </Card>
+              <BarChart data={trendValues} labels={trendLabels} color="#2563EB" height={150} />
+            </div>
 
-            <Card icon="📊" title="Сравнение с прошлым периодом">
-              <div style={{
-                fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: 18,
-                color: revDelta != null && revDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
-                marginBottom: 10, marginTop: -4,
-              }}>
-                {revDelta != null ? (
-                  <>
-                    {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}%
-                    <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginLeft: 6 }}>
-                      vs предыдущий · {fmtMoneyFull(prev.sales_revenue)} сум
-                    </span>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>
-                    Нет данных за прошлый период
-                  </span>
-                )}
+            {/* График 2 — Сравнение с прошлым периодом */}
+            <div className="card">
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  background: 'rgba(34,197,94,.10)', color: '#16a34a',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+                }}>📊</div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+                    Сравнение с прошлым периодом
+                  </div>
+                  <div className="mono" style={{
+                    fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
+                    color: revDelta == null ? 'var(--text3)' : revDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
+                  }}>
+                    {revDelta != null
+                      ? <>{revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}%</>
+                      : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+                  </div>
+                </div>
               </div>
               {prevTrendValues.length > 0 ? (
                 <>
-                  <AreaChart data={trendValues} prevData={prevTrendValues} color="#22C55E" prevColor="#9094B0" height={150} labels={trendLabels} />
+                  <BarChart data={trendValues} prevData={prevTrendValues} labels={trendLabels}
+                    color="#22C55E" prevColor="#C3C8D4" height={150} />
                   <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 16, height: 3, background: '#22C55E', borderRadius: 2 }} />
-                      <span style={{ color: 'var(--text2)' }}>Сейчас: <strong>{fmtMoneyFull(t.sales_revenue)}</strong></span>
+                      <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
+                      <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(t.sales_revenue)} сум</strong></span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ width: 16, height: 0, borderTop: '2px dashed #9094B0' }} />
-                      <span style={{ color: 'var(--text2)' }}>Раньше: <strong>{fmtMoneyFull(prev.sales_revenue)}</strong></span>
+                      <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
+                      <span style={{ color: 'var(--text2)' }}>Прошлый: <strong className="mono">{fmtMoneyFull(prev.sales_revenue)} сум</strong></span>
                     </div>
                   </div>
                 </>
@@ -363,11 +386,11 @@ export default function Dashboard() {
                   icon="📅"
                   title="Сравнение недоступно"
                   description={period === 'all'
-                    ? 'Для периода «Всё» нет предыдущего периода для сравнения. Переключитесь на Неделя/Месяц/Год.'
+                    ? 'Для периода «Всё» нет предыдущего периода. Переключитесь на Неделя/Месяц/Год.'
                     : 'Сравнение появится для периодов Неделя/Месяц/Год — там есть предыдущий период.'}
                 />
               )}
-            </Card>
+            </div>
           </div>
 
           {isOwner && branches.length > 1 && (
@@ -471,7 +494,7 @@ export default function Dashboard() {
                       <div className="o-avatar" style={{ width: 28, height: 28, fontSize: 11 }}>{init}</div>
                       <div style={{ flex: 1 }}>
                         <div className="list-item-title">{s.name}</div>
-                        <div className="list-item-sub">{s.deals} сделок · {s.role}</div>
+                        <div className="list-item-sub">{s.deals} {s.deals % 10 === 1 && s.deals % 100 !== 11 ? 'сделка' : (s.deals % 10 >= 2 && s.deals % 10 <= 4 && (s.deals % 100 < 12 || s.deals % 100 > 14) ? 'сделки' : 'сделок')} · {ROLE_RU[s.role] || s.role}</div>
                       </div>
                       <div className="mono" style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 12 }}>{fmtMoneyFull(s.revenue)}</div>
                     </div>

@@ -710,9 +710,17 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       return res.json({ company_id: companyId, branches: [], totals: {}, sales_trend: [], top_products: [], top_sellers: [], alerts: [] });
     }
 
-    // Per-branch KPIs — single set of grouped queries
+    // Per-branch KPIs — single set of grouped queries.
+    // ВАЖНО (бизнес-логика): приход/расход кассы фильтруются ВЫБРАННЫМ ПЕРИОДОМ,
+    // чтобы «Денежный поток» был сопоставим с выручкой за тот же период.
+    // Баланс кассы — накопленный (за всё время): это остаток, а не оборот.
     const branchIdsList = `(${branchIds.join(',')})`;
-    const [salesAgg, cashIAgg, cashEAgg, stockAgg, workersAgg] = await Promise.all([
+    // Период для cash-таблиц (колонка created_at без алиаса)
+    const cashPeriodParams = [];
+    let cashPeriodSQL = '';
+    if (from) { cashPeriodParams.push(from); cashPeriodSQL += ` AND created_at >= $${cashPeriodParams.length}`; }
+    if (to)   { cashPeriodParams.push(to);   cashPeriodSQL += ` AND created_at <  $${cashPeriodParams.length}`; }
+    const [salesAgg, cashIAgg, cashEAgg, cashBalAgg, stockAgg, workersAgg] = await Promise.all([
       pool.query(`
         SELECT so.branch_id,
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
@@ -724,9 +732,19 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
         GROUP BY so.branch_id`,
         periodParams),
       pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) AS t FROM cash_income
-                  WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE GROUP BY branch_id`),
+                  WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE ${cashPeriodSQL} GROUP BY branch_id`,
+        cashPeriodParams),
       pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) AS t FROM cash_expense
-                  WHERE branch_id IN ${branchIdsList} GROUP BY branch_id`),
+                  WHERE branch_id IN ${branchIdsList} ${cashPeriodSQL} GROUP BY branch_id`,
+        cashPeriodParams),
+      // Накопленный баланс кассы (всё время) — отдельно от периодных оборотов
+      pool.query(`
+        SELECT b.branch_id, COALESCE(i.t,0) - COALESCE(e.t,0) AS bal FROM
+          (SELECT unnest(ARRAY[${branchIds.join(',')}]::int[]) AS branch_id) b
+          LEFT JOIN (SELECT branch_id, SUM(amount) AS t FROM cash_income
+                     WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE GROUP BY branch_id) i USING (branch_id)
+          LEFT JOIN (SELECT branch_id, SUM(amount) AS t FROM cash_expense
+                     WHERE branch_id IN ${branchIdsList} GROUP BY branch_id) e USING (branch_id)`),
       pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity * COALESCE(p.price_sell,0)),0) AS value
                   FROM product_stock ps JOIN products p ON p.id = ps.product_id
                   WHERE ps.branch_id IN ${branchIdsList} GROUP BY ps.branch_id`),
@@ -736,6 +754,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     const idx = (rows, key = 't') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[key]) || 0]));
     const cashIByB = idx(cashIAgg.rows);
     const cashEByB = idx(cashEAgg.rows);
+    const cashBalByB = idx(cashBalAgg.rows, 'bal');
     const stockByB = idx(stockAgg.rows, 'value');
     const workersByB = idx(workersAgg.rows, 'c');
     const salesByB = Object.fromEntries(salesAgg.rows.map(r => [r.branch_id, {
@@ -752,7 +771,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
         branch_name: b.name,
         cash_income: ci,
         cash_expense: ce,
-        cash_balance: ci - ce,
+        cash_balance: cashBalByB[b.id] || 0,
         sales_revenue: s.revenue,
         sales_cost: s.cost,
         gross_profit: s.revenue - s.cost,
@@ -1026,13 +1045,20 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
 
     // Simple rule-based alerts
     const alerts = [];
+    // Русская плюрализация: plural(3, 'товар','товара','товаров') → 'товара'
+    const plural = (n, one, few, many) => {
+      const m10 = n % 10, m100 = n % 100;
+      if (m10 === 1 && m100 !== 11) return one;
+      if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+      return many;
+    };
     // Low stock alert — count products with stock < 5
     const lowStockQ = await pool.query(`
       SELECT COUNT(*) AS c FROM product_stock ps
       WHERE ps.branch_id IN ${branchIdsList} AND ps.quantity > 0 AND ps.quantity < 5`);
     const lowStock = parseInt(lowStockQ.rows[0]?.c || 0);
     if (lowStock > 0) {
-      alerts.push({ tone: 'red', title: `Низкий остаток: ${lowStock} товаров`, sub: 'Меньше 5 единиц на складе — рискуете остаться без продаж' });
+      alerts.push({ tone: 'red', title: `Низкий остаток: ${lowStock} ${plural(lowStock, 'товар', 'товара', 'товаров')}`, sub: 'Меньше 5 единиц на складе — рискуете остаться без продаж' });
     }
     // Pending outcomes (unconfirmed sales)
     const pendingQ = await pool.query(`
@@ -1040,7 +1066,11 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       WHERE so.status='pending' AND so.branch_id IN ${branchIdsList}`);
     const pending = parseInt(pendingQ.rows[0]?.c || 0);
     if (pending > 0) {
-      alerts.push({ tone: 'yellow', title: `${pending} сделок ждут подтверждения`, sub: 'Менеджер должен подтвердить' });
+      alerts.push({
+        tone: 'yellow',
+        title: `${pending} ${plural(pending, 'сделка ждёт', 'сделки ждут', 'сделок ждут')} подтверждения`,
+        sub: 'Менеджер или складовщик должен подтвердить',
+      });
     }
     // Branch underperforming — if branch revenue < 50% of the company avg
     if (perBranch.length > 1) {
@@ -2079,20 +2109,27 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
       // CASH BOOKING — only the amount the customer ACTUALLY paid, never the full revenue.
       // Debt sales (payment_status='debt' or 'partial') leave the unpaid portion to be booked later
       // when the customer settles via POST /api/sales/:id/pay or PUT /api/stock/outcome/:id/pay.
-      // Also: card/transfer/wire payments do NOT touch the cash till — only 'cash' does.
+      // Все способы оплаты (нал/карта/перевод) фиксируются в кассовом журнале
+      // с payment_method — так же, как делает прямой флоу продажи (autoApprove).
+      // Раньше карта/перевод тут пропускались → продажи через подтверждение
+      // складовщиком не попадали в кассовые отчёты и breakdown по способам оплаты.
       const total = parseFloat(rows[0].quantity) * parseFloat(rows[0].price || 0);
       const paid = parseFloat(rows[0].paid_amount);
       const cashAmount = Number.isFinite(paid) ? Math.min(paid, total) : (rows[0].payment_status === 'paid' ? total : 0);
       const pmethod = rows[0].payment_method || 'cash';
-      const touchesCash = pmethod === 'cash';
-      if (cashAmount > 0 && touchesCash) {
+      if (cashAmount > 0) {
         const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [rows[0].product_id]);
         const desc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${rows[0].quantity}`;
         const sellerRoleQ = await client.query('SELECT role FROM users WHERE id=$1', [rows[0].created_by]);
-        const isSettled = sellerRoleQ.rows[0]?.role !== 'seller';
+        // Наличные от продавца требуют сдачи кассиру (settlement);
+        // карта/перевод приходят на счёт напрямую — сдавать нечего, сразу settled.
+        const isSettled = pmethod !== 'cash' || sellerRoleQ.rows[0]?.role !== 'seller';
         await client.query(
-          'INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING',
-          [cashAmount, desc, rows[0].created_by, rows[0].branch_id, rows[0].id, isSettled, pmethod]
+          `INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method, currency, original_amount, exchange_rate)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+          [cashAmount, desc, rows[0].created_by, rows[0].branch_id, rows[0].id, isSettled, pmethod,
+           rows[0].currency || 'UZS', cashAmount / (parseFloat(rows[0].exchange_rate) || 1),
+           parseFloat(rows[0].exchange_rate) || 1]
         );
       }
     }

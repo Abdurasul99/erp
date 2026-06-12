@@ -128,6 +128,84 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
   );
 }
 
+// BarChart — стиль «банковского приложения» (как на референс-фото):
+// тонкие закруглённые бары, светлая базовая линия, даты под барами,
+// без Y-оси (значение каждого бара видно по hover-подсказке).
+// prevData — опциональная серая серия рядом для сравнения периодов.
+export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor = '#C3C8D4', height = 160, maxLabels = 6 }) {
+  if (!data || data.length === 0) {
+    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Нет данных за период</div>;
+  }
+  const allValues = [...data, ...(prevData || [])];
+  const max = Math.max(...allValues, 1);
+
+  // Какие индексы подписать: если ненулевых баров мало — подписываем их,
+  // иначе равномерно распределяем maxLabels меток.
+  const labelIdx = new Set();
+  if (labels && labels.length) {
+    const nonZero = data.map((v, i) => (v > 0 ? i : -1)).filter(i => i >= 0);
+    if (nonZero.length > 0 && nonZero.length <= maxLabels) {
+      nonZero.forEach(i => labelIdx.add(i));
+    } else {
+      const n = Math.min(maxLabels, data.length);
+      for (let k = 0; k < n; k++) labelIdx.add(Math.round((k / Math.max(n - 1, 1)) * (data.length - 1)));
+    }
+  }
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: 2,
+        height, borderBottom: '1.5px solid var(--border, #E6E8F2)',
+        paddingBottom: 0,
+      }}>
+        {data.map((v, i) => {
+          const hPct = Math.max((v / max) * 100, v > 0 ? 3 : 0);
+          const pv = prevData ? (prevData[i] || 0) : null;
+          const phPct = pv != null ? Math.max((pv / max) * 100, pv > 0 ? 3 : 0) : null;
+          const tip = (labels && labels[i] ? labels[i] + ': ' : '') + fmtMoneyFull(v) +
+            (pv != null ? ` (прошлый: ${fmtMoneyFull(pv)})` : '');
+          return (
+            <div key={i} title={tip} style={{
+              flex: 1, minWidth: 0, height: '100%',
+              display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 1,
+              cursor: 'default',
+            }}>
+              {phPct != null && (
+                <div style={{
+                  width: prevData ? 'min(40%, 8px)' : 0, height: `${phPct}%`,
+                  background: prevColor, borderRadius: 99,
+                  minHeight: pv > 0 ? 3 : 0,
+                }} />
+              )}
+              <div style={{
+                width: prevData ? 'min(40%, 8px)' : 'min(60%, 14px)', height: `${hPct}%`,
+                background: color, borderRadius: 99,
+                minHeight: v > 0 ? 3 : 0,
+                transition: 'height .25s ease',
+              }} />
+            </div>
+          );
+        })}
+      </div>
+      {labels && labels.length > 0 && (
+        <div style={{ display: 'flex', gap: 2, marginTop: 6 }}>
+          {data.map((_, i) => (
+            <div key={i} style={{
+              flex: 1, minWidth: 0, textAlign: 'center',
+              fontSize: 10, color: 'var(--text3)', fontWeight: 700,
+              fontFamily: "'JetBrains Mono', monospace",
+              overflow: 'visible', whiteSpace: 'nowrap',
+            }}>
+              {labelIdx.has(i) ? labels[i] : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Sparkline({ data, color = '#5B4FE8' }) {
   if (!data || data.length < 2) {
     return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" />;
