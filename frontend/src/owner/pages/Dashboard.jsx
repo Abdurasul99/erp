@@ -264,49 +264,51 @@ export default function Dashboard() {
         <>
           {/* Hero row: Выручка (large hero tile) + Касса/Продажи/Чек (compact column) */}
           <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 14, marginBottom: 16 }} className="dashboard-hero-row">
-            {/* Hero tile — заголовок «Сегодня» + выручка + breakdown */}
+            {/* Hero tile — ГОРИЗОНТАЛЬНЫЙ layout: цифры слева, бар-чарт заполняет
+                правую часть на ВСЮ высоту плитки. Никакой пустоты — чарт растёт
+                вместе с плиткой, как в банковских приложениях. */}
             <div style={{
               background: 'linear-gradient(135deg, #16a34a 0%, #22C55E 60%, #4ade80 100%)',
               borderRadius: 18,
-              padding: '24px 28px',
+              padding: '22px 26px',
               color: '#fff',
               boxShadow: '0 8px 28px rgba(34,197,94,.32)',
-              display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-              minHeight: 280,
+              display: 'flex', gap: 24, minHeight: 260, flexWrap: 'wrap',
             }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
+              {/* Левая колонка — дата, выручка, breakdown */}
+              <div style={{ flex: '0 1 290px', minWidth: 240, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
                   📅 {todayLabel()}
                 </div>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 6 }}>
                   💰 ВЫРУЧКА · {periodLabel}
                 </div>
-                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 36, fontWeight: 900, lineHeight: 1.05, marginTop: 8, letterSpacing: -0.5 }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 34, fontWeight: 900, lineHeight: 1.05, marginTop: 6, letterSpacing: -0.5 }}>
                   {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
                 </div>
                 {revDelta != null ? (
-                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800 }}>
+                  <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 800 }}>
                     {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
-                    <span style={{ marginLeft: 6, opacity: .65, fontWeight: 600 }}>
-                      (было {fmtMoneyFull(prev.sales_revenue)} сум)
-                    </span>
                   </div>
                 ) : (
                   data?.prev_totals != null && (
-                    <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 700, opacity: .75 }}>
-                      За прошлый период продаж не было — сравнение появится позже
+                    <div style={{ marginTop: 6, fontSize: 11, fontWeight: 700, opacity: .75 }}>
+                      Прошлый период пуст — сравнение появится позже
                     </div>
                   )
                 )}
-                <MethodBreakdown data={byMethod.revenue} lightOnDark />
+                <div style={{ marginTop: 'auto' }}>
+                  <MethodBreakdown data={byMethod.revenue} lightOnDark />
+                </div>
               </div>
-              {/* Мини бар-чарт выручки по дням периода — белые бары на зелёном,
-                  тянется к низу плитки и заполняет высоту (вместо сломанного Sparkline) */}
+
+              {/* Правая колонка — бар-чарт на всю высоту плитки */}
               {trendValues.length > 1 && trendValues.some(v => v > 0) && (
-                <div style={{ marginTop: 'auto', paddingTop: 16 }}>
+                <div style={{ flex: '1 1 300px', minWidth: 260, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
                   <div style={{
                     display: 'flex', alignItems: 'flex-end', gap: 2,
-                    height: 110, borderBottom: '1.5px solid rgba(255,255,255,.35)',
+                    flex: 1, minHeight: 140,
+                    borderBottom: '1.5px solid rgba(255,255,255,.35)',
                   }}>
                     {trendValues.map((v, i) => {
                       const max = Math.max(...trendValues, 1);
@@ -318,13 +320,19 @@ export default function Dashboard() {
                           display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
                         }}>
                           <div style={{
-                            width: 'min(60%, 10px)', height: `${hPct}%`,
-                            background: 'rgba(255,255,255,.9)', borderRadius: 99,
+                            width: 'min(65%, 12px)', height: `${hPct}%`,
+                            background: 'rgba(255,255,255,.92)', borderRadius: 99,
                             minHeight: v > 0 ? 3 : 0,
                           }} />
                         </div>
                       );
                     })}
+                  </div>
+                  {/* Даты под барами: первая · середина · последняя */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, fontWeight: 700, opacity: .75, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {[0, Math.floor(trend.length / 2), trend.length - 1].map((idx, k) => (
+                      <span key={k}>{trend[idx] ? new Date(trend[idx].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : ''}</span>
+                    ))}
                   </div>
                 </div>
               )}

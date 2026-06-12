@@ -1,51 +1,84 @@
-import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
-import { toast } from '../Modal.jsx';
+import React, { useState, useEffect } from 'react';
+import api from '../../api.js';
+import { Card, Tile, Badge, PageHeader, Skeleton, fmtNum } from '../ui.jsx';
 
-const INIT = [
-  { ic: '📱', n: 'Telegram Bot', stat: 'on', d: 'Уведомления, отчёты' },
-  { ic: '💱', n: 'Курсы валют ЦБ', stat: 'on', d: 'USD/RUB/EUR ежедневно' },
-  { ic: '💬', n: 'WhatsApp Cloud', stat: 'wait', d: 'Двусторонняя переписка' },
-  { ic: '📧', n: 'Email (Gmail)', stat: 'on', d: 'Рассылки, КП' },
-  { ic: '🔔', n: 'SMS UZ (Eskiz.uz)', stat: 'on', d: 'SMS уведомления' },
-  { ic: '💳', n: 'Click', stat: 'on', d: 'Онлайн-оплата' },
-  { ic: '💎', n: 'Payme', stat: 'on', d: 'Онлайн-оплата' },
-  { ic: '🏦', n: 'Банк-клиент', stat: 'wait', d: 'Авто-разнесение выписки' },
-  { ic: '📊', n: 'Google Analytics', stat: 'off', d: 'Источники трафика' },
-  { ic: '🛒', n: 'OZON / WB', stat: 'off', d: 'Синхронизация остатков' },
-  { ic: '🚚', n: 'Yandex.Delivery', stat: 'wait', d: 'Курьеры API' },
-  { ic: '📦', n: '1C Бухгалтерия', stat: 'off', d: 'Выгрузка бухгалтеру' },
+// Честные статусы интеграций: «Активна» — только то, что РЕАЛЬНО работает
+// на сервере (проверяется backend-ом). Остальное — план развития, не фейк.
+const CATALOG = [
+  { key: 'deepseek',      ic: '🤖', n: 'AI-консультант (DeepSeek)', d: 'Чат · анализ финансов · рекомендации' },
+  { key: 'eskiz_sms',     ic: '🔔', n: 'SMS UZ (Eskiz.uz)',         d: 'SMS-уведомления клиентам' },
+  { key: 'telegram',      ic: '📱', n: 'Telegram Bot',              d: 'Уведомления и отчёты в Telegram' },
+  { key: 'click',         ic: '💳', n: 'Click',                     d: 'Онлайн-оплата' },
+  { key: 'payme',         ic: '💠', n: 'Payme',                     d: 'Онлайн-оплата' },
+  { key: 'bank_client',   ic: '🏦', n: 'Банк-клиент',               d: 'Авто-разнесение выписки' },
+  { key: 'accounting_1c', ic: '📦', n: '1С Бухгалтерия',            d: 'Выгрузка бухгалтеру' },
+  { key: 'marketplaces',  ic: '🛒', n: 'OZON / Wildberries',        d: 'Синхронизация остатков' },
 ];
 
 export default function IntegrationsTool() {
-  const [list, setList] = useState(INIT);
-  const toggle = (n) => setList(l => l.map(x => x.n === n ? { ...x, stat: x.stat === 'on' ? 'off' : 'on' } : x));
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let ignore = false;
+    api.get('/settings/overview')
+      .then(r => { if (!ignore) setData(r.data); })
+      .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, []);
+
+  const integrations = data?.integrations || {};
+  const activeCount = Object.values(integrations).filter(Boolean).length;
+
   return (
     <>
-      <PageHeader title="🔌 Интеграции" sub="12 систем · API · webhooks" />
-      <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="🔌" label="Активных" value={list.filter(x => x.stat === 'on').length} sub="из " color="#5B4FE8" />
-        <Tile icon="📡" label="Запросов API" value="48K" sub="за месяц" color="#FF6B2B" />
-        <Tile icon="⚠️" label="Ошибок" value="2" sub="за неделю" color="#EF4444" />
-      </div>
-      <div className="grid-3">
-        {list.map(i => (
-          <Card key={i.n} style={{ padding: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <div style={{ fontSize: 28 }}>{i.ic}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 800, fontSize: 14 }}>{i.n}</div>
-                <Badge tone={i.stat === 'on' ? 'green' : i.stat === 'wait' ? 'yellow' : 'gray'}>{i.stat === 'on' ? 'Активна' : i.stat === 'wait' ? 'Скоро' : 'Не подключена'}</Badge>
-              </div>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.5 }}>{i.d}</div>
-            <button className="btn btn-ghost btn-sm" style={{ width: '100%' }}
-              onClick={() => { toggle(i.n); toast(i.n + ': ' + (i.stat === 'on' ? 'отключена' : 'подключена')); }}>
-              {i.stat === 'on' ? '🔴 Отключить' : '🟢 Подключить'}
-            </button>
-          </Card>
-        ))}
-      </div>
+      <PageHeader title="🔌 Интеграции" sub="Реальный статус подключений · без макетов" />
+
+      {loading && !data ? (
+        <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={160} /></Card>
+      ) : error ? (
+        <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div></Card>
+      ) : (
+        <>
+          <div className="grid-3" style={{ marginBottom: 18 }}>
+            <Tile icon="🔌" label="Активных" value={fmtNum(activeCount)} sub={`из ${CATALOG.length} в каталоге`} color="#22C55E" />
+            <Tile icon="🤖" label="AI-запросов" value={fmtNum(data.ai_requests_30d)} sub="за 30 дней" color="#5B4FE8" />
+            <Tile icon="🧮" label="AI-токенов" value={fmtNum(data.ai_tokens_30d)} sub="за 30 дней" color="#0EA5E9" />
+          </div>
+
+          <div className="grid-3">
+            {CATALOG.map(it => {
+              const active = !!integrations[it.key];
+              return (
+                <Card key={it.key} style={{ padding: 18 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 24 }} aria-hidden="true">{it.ic}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14 }}>{it.n}</div>
+                    </div>
+                    <Badge tone={active ? 'green' : 'gray'}>{active ? 'Активна' : 'Не подключена'}</Badge>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text2)', marginBottom: 10 }}>{it.d}</div>
+                  {active ? (
+                    <div style={{ fontSize: 12, color: 'var(--green)', fontWeight: 700 }}>✓ Работает на сервере</div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                      Подключается администратором системы — напишите нам, если нужна в первую очередь.
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+
+          <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text3)' }}>
+            ℹ️ Статус «Активна» означает, что интеграция реально работает на сервере прямо сейчас —
+            здесь нет демонстрационных переключателей.
+          </div>
+        </>
+      )}
     </>
   );
 }

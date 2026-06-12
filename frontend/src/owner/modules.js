@@ -147,9 +147,9 @@ export const SECTIONS = [
     metrics: [],
     roles: ['founder', 'gen_dir'],
     tools: [
-      { id: 'integrations', icon: '🔌', title: 'Интеграции', desc: 'Telegram · банк · CRM',     wired: false, roles: ['founder', 'gen_dir'] },
-      { id: 'security',     icon: '🔐', title: 'Безопасность', desc: 'Роли · бэкапы · audit', wired: false, roles: ['founder', 'gen_dir'] },
-      { id: 'scaling',      icon: '🌍', title: 'Масштабирование', desc: 'Филиалы · валюты',    wired: false, roles: ['founder', 'gen_dir'] },
+      { id: 'integrations', icon: '🔌', title: 'Интеграции', desc: 'Реальный статус подключений', wired: true, roles: ['founder', 'gen_dir'] },
+      { id: 'security',     icon: '🔐', title: 'Безопасность', desc: 'Роли · права · доступы',  wired: true, roles: ['founder', 'gen_dir'] },
+      { id: 'scaling',      icon: '🌍', title: 'Масштабирование', desc: 'Филиалы · валюты',     wired: true, roles: ['founder', 'gen_dir'] },
     ],
   },
 ];

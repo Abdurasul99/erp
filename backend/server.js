@@ -2135,6 +2135,50 @@ app.get('/api/finance/model', auth(['admin', 'founder', 'gen_dir', 'manager']), 
   } catch (e) { console.error('fin-model err', e); res.status(500).json({ error: e.message }); }
 });
 
+// === SETTINGS OVERVIEW (реальные данные для раздела «Настройки») ===
+// Интеграции: честные статусы (env-based) — фейковых «Активна» больше нет.
+// Безопасность: реальные пользователи по ролям, смены ролей, AI-запросы.
+// Масштабирование: реальные филиалы и валюты из транзакций.
+app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const [companyQ, branchesQ, usersQ, roleChangesQ, aiUsageQ, currenciesQ] = await Promise.all([
+      companyId ? pool.query('SELECT id, name FROM companies WHERE id=$1', [companyId]) : Promise.resolve({ rows: [] }),
+      pool.query('SELECT id, name, created_at FROM branches WHERE company_id=$1 ORDER BY id', [companyId]),
+      pool.query('SELECT role, COUNT(*) c FROM users WHERE company_id=$1 GROUP BY role', [companyId]),
+      pool.query(`SELECT COUNT(*) c FROM role_change_log rcl JOIN users u ON u.id = rcl.user_id
+                  WHERE u.company_id=$1 AND rcl.changed_at >= NOW() - INTERVAL '30 days'`, [companyId]),
+      pool.query(`SELECT COUNT(*) c, COALESCE(SUM(prompt_tokens+completion_tokens),0) tokens
+                  FROM ai_chat_log WHERE company_id=$1 AND created_at >= NOW() - INTERVAL '30 days'`, [companyId]),
+      pool.query(`
+        SELECT currency, COUNT(*) c, MAX(exchange_rate) last_rate FROM (
+          SELECT COALESCE(ci.currency,'UZS') currency, ci.exchange_rate
+          FROM cash_income ci JOIN branches b ON b.id = ci.branch_id WHERE b.company_id = $1
+          UNION ALL
+          SELECT COALESCE(so.currency,'UZS'), so.exchange_rate
+          FROM stock_outcome so JOIN branches b ON b.id = so.branch_id WHERE b.company_id = $1
+        ) t GROUP BY currency ORDER BY c DESC`, [companyId]),
+    ]);
+    res.json({
+      company: companyQ.rows[0] || null,
+      branches: branchesQ.rows,
+      users_by_role: Object.fromEntries(usersQ.rows.map(r => [r.role, parseInt(r.c)])),
+      users_total: usersQ.rows.reduce((a, r) => a + parseInt(r.c), 0),
+      role_changes_30d: parseInt(roleChangesQ.rows[0]?.c || 0),
+      ai_requests_30d: parseInt(aiUsageQ.rows[0]?.c || 0),
+      ai_tokens_30d: parseInt(aiUsageQ.rows[0]?.tokens || 0),
+      currencies: currenciesQ.rows.map(r => ({ currency: r.currency, tx_count: parseInt(r.c), last_rate: r.last_rate ? parseFloat(r.last_rate) : null })),
+      languages: ['RU', 'UZ'],
+      integrations: {
+        // Честные статусы: активна = реально работает в коде сервера
+        deepseek: !!process.env.DEEPSEEK_API_KEY,
+        eskiz_sms: false, telegram: false, click: false, payme: false,
+        bank_client: false, accounting_1c: false, marketplaces: false,
+      },
+    });
+  } catch (e) { console.error('settings/overview err', e); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/stock/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier']), async (req, res) => {
   const branchId = getBranchFilter(req.user, req.query);
   const params = [];
