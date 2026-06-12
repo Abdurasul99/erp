@@ -39,6 +39,8 @@ import BundlesTool from './tools/BundlesTool.jsx';
 import LogisticsTool from './tools/LogisticsTool.jsx';
 import AuditTool from './tools/AuditTool.jsx';
 import CashflowTool from './tools/CashflowTool.jsx';
+import BreakEvenTool from './tools/BreakEvenTool.jsx';
+import FinModelTool from './tools/FinModelTool.jsx';
 import ModelingTool from './tools/ModelingTool.jsx';
 import MktOverviewTool from './tools/MktOverviewTool.jsx';
 import Strategy3yTool from './tools/Strategy3yTool.jsx';
@@ -78,6 +80,8 @@ const RESOLVE = {
     pnl:         { Comp: () => <LiveWrapper title="📊 P&L отчёт" sub="Выручка · себестоимость · маржа · прибыль" Component={CashProfit} /> },
     pricing:     { Comp: PricingTool },
     cashflow:    { Comp: CashflowTool },
+    'break-even':{ Comp: BreakEvenTool },
+    'fin-model': { Comp: FinModelTool },
     modeling:    { Comp: ModelingTool },
   },
   marketing: {

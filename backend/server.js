@@ -1911,6 +1911,230 @@ app.get('/api/sales/history', auth(['admin', 'founder', 'gen_dir', 'manager']), 
   }
 });
 
+// ===================================================================
+// === ФИНАНСОВАЯ АНАЛИТИКА (Cash Flow / Break-even / Финмодель) ===
+// Всё считается из РЕАЛЬНЫХ данных (cash_income/expense + продажи).
+// Helper-функции переиспользуются GET-эндпоинтами И AI-агентом (/api/ai/analyze),
+// чтобы AI анализировал ровно те же реальные цифры, что видит пользователь.
+// ===================================================================
+
+function branchArrayCond(scope, params, col = 'branch_id') {
+  if (scope.ids) { params.push(scope.ids); return `${col} = ANY($${params.length}::int[])`; }
+  return '1=1';
+}
+
+// — Cash Flow: приход/расход/сальдо + по дням + 7-дневный трендовый прогноз
+async function computeCashflow(scope, fromIso, toIso) {
+  const toD = toIso ? new Date(toIso) : new Date();
+  const fromD = fromIso ? new Date(fromIso) : (() => { const d = new Date(toD); d.setDate(d.getDate() - 29); d.setHours(0,0,0,0); return d; })();
+  const from = fromD.toISOString(), to = toD.toISOString();
+  const periodMs = new Date(to) - new Date(from);
+  const prevFrom = new Date(new Date(from) - periodMs).toISOString();
+
+  const ip = []; const ic = branchArrayCond(scope, ip);
+  const ep = []; const ec = branchArrayCond(scope, ep);
+  // by_day: $1 = branch ids (если есть), затем from/to для generate_series.
+  const bp = scope.ids ? [scope.ids] : [];
+  const branchSub = scope.ids ? `AND branch_id = ANY($1::int[])` : '';
+  const fi = bp.length + 1, ti = bp.length + 2;
+  bp.push(from, to);
+  const [inc, exp, prevInc, prevExp, byDayQ] = await Promise.all([
+    pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_income WHERE ${ic} AND is_settled IS NOT FALSE AND created_at>=$${ip.length+1} AND created_at<$${ip.length+2}`, [...ip, from, to]),
+    pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]),
+    pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_income WHERE ${ic} AND is_settled IS NOT FALSE AND created_at>=$${ip.length+1} AND created_at<$${ip.length+2}`, [...ip, prevFrom, from]),
+    pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, prevFrom, from]),
+    pool.query(`
+      SELECT d::date AS day,
+        COALESCE((SELECT SUM(amount) FROM cash_income WHERE is_settled IS NOT FALSE AND created_at::date = d::date ${branchSub}),0) AS income,
+        COALESCE((SELECT SUM(amount) FROM cash_expense WHERE created_at::date = d::date ${branchSub}),0) AS expense
+      FROM generate_series($${fi}::date, $${ti}::date, '1 day') d`, bp),
+  ]);
+  const income = parseFloat(inc.rows[0].t) || 0;
+  const expense = parseFloat(exp.rows[0].t) || 0;
+  const prevBalance = (parseFloat(prevInc.rows[0].t) || 0) - (parseFloat(prevExp.rows[0].t) || 0);
+  const balance = income - expense;
+  const by_day = byDayQ.rows.map(r => ({
+    day: new Date(r.day).toISOString().slice(0, 10),
+    income: parseFloat(r.income) || 0,
+    expense: parseFloat(r.expense) || 0,
+    net: (parseFloat(r.income) || 0) - (parseFloat(r.expense) || 0),
+  }));
+  // Прогноз: средний чистый поток за последние 7 дней с данными → проекция на 7 дней вперёд
+  const last7 = by_day.slice(-7);
+  const avgNet = last7.length ? last7.reduce((a, b) => a + b.net, 0) / last7.length : 0;
+  let running = balance;
+  const forecast_7d = [];
+  const lastDay = by_day.length ? new Date(by_day[by_day.length - 1].day) : new Date();
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(lastDay); d.setDate(d.getDate() + i);
+    running += avgNet;
+    forecast_7d.push({ day: d.toISOString().slice(0, 10), projected_balance: Math.round(running) });
+  }
+  return {
+    period: { from, to },
+    income, expense, balance,
+    prev_balance: prevBalance,
+    balance_delta_pct: prevBalance !== 0 ? Math.round(((balance - prevBalance) / Math.abs(prevBalance)) * 100) : null,
+    by_day,
+    forecast_avg_net: Math.round(avgNet),
+    forecast_7d,
+    forecast_end_balance: forecast_7d.length ? forecast_7d[forecast_7d.length - 1].projected_balance : balance,
+  };
+}
+
+// — Точка безубыточности: постоянные расходы / маржинальность
+async function computeBreakEven(scope, fromIso, toIso) {
+  // По умолчанию — текущий календарный месяц
+  const now = new Date();
+  const fromD = fromIso ? new Date(fromIso) : new Date(now.getFullYear(), now.getMonth(), 1);
+  const toD = toIso ? new Date(toIso) : now;
+  const from = fromD.toISOString(), to = toD.toISOString();
+
+  const sp = []; const sc = branchArrayCond(scope, sp, 'so.branch_id');
+  const salesQ = await pool.query(`
+    SELECT COALESCE(SUM(so.quantity*so.price),0) revenue,
+           COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs,
+           COUNT(*) deals
+    FROM stock_outcome so JOIN products p ON p.id=so.product_id
+    WHERE so.status='approved' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
+    [...sp, from, to]);
+  const ep = []; const ec = branchArrayCond(scope, ep);
+  const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
+
+  const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
+  const cogs = parseFloat(salesQ.rows[0].cogs) || 0;
+  const deals = parseInt(salesQ.rows[0].deals) || 0;
+  const fixedCosts = parseFloat(expQ.rows[0].t) || 0;   // постоянные/операционные расходы (касса)
+  const grossProfit = revenue - cogs;
+  const marginRatio = revenue > 0 ? grossProfit / revenue : 0;   // маржинальность (доля)
+  const breakEvenRevenue = marginRatio > 0 ? fixedCosts / marginRatio : null;
+  const aboveBreakEven = breakEvenRevenue != null && revenue >= breakEvenRevenue;
+  // Темп: дней прошло в месяце, дневная выручка, прогноз на конец месяца
+  const daysInMonth = new Date(toD.getFullYear(), toD.getMonth() + 1, 0).getDate();
+  const dayOfMonth = Math.max(1, toD.getDate());
+  const dailyRevenue = revenue / dayOfMonth;
+  const projectedMonthRevenue = dailyRevenue * daysInMonth;
+  // На какой день месяца выходим в плюс (по текущему темпу)
+  let breakEvenDay = null;
+  if (breakEvenRevenue != null && dailyRevenue > 0) {
+    breakEvenDay = Math.ceil(breakEvenRevenue / dailyRevenue);
+    if (breakEvenDay > daysInMonth) breakEvenDay = null; // не успеваем в этом месяце
+  }
+  const safetyMarginPct = (breakEvenRevenue && revenue > 0) ? Math.round(((revenue - breakEvenRevenue) / revenue) * 100) : null;
+  const remainingToBreakEven = (breakEvenRevenue != null && !aboveBreakEven) ? breakEvenRevenue - revenue : 0;
+  const avgCheck = deals > 0 ? revenue / deals : 0;
+  const salesNeeded = (remainingToBreakEven > 0 && avgCheck > 0) ? Math.ceil(remainingToBreakEven / avgCheck) : 0;
+
+  return {
+    period: { from, to },
+    revenue, cogs, gross_profit: grossProfit,
+    margin_ratio: Math.round(marginRatio * 1000) / 10,    // в процентах
+    fixed_costs: fixedCosts,
+    break_even_revenue: breakEvenRevenue != null ? Math.round(breakEvenRevenue) : null,
+    above_break_even: aboveBreakEven,
+    remaining_to_break_even: Math.round(remainingToBreakEven),
+    sales_needed: salesNeeded,
+    avg_check: Math.round(avgCheck),
+    break_even_day: breakEvenDay,
+    days_in_month: daysInMonth,
+    day_of_month: dayOfMonth,
+    daily_revenue: Math.round(dailyRevenue),
+    projected_month_revenue: Math.round(projectedMonthRevenue),
+    safety_margin_pct: safetyMarginPct,
+    net_profit: grossProfit - fixedCosts,
+  };
+}
+
+// — Финансовая модель: помесячный P&L за 6 мес + проекция на 3 мес
+async function computeFinModel(scope) {
+  const sp = []; const sc = branchArrayCond(scope, sp, 'so.branch_id');
+  const salesByMonth = await pool.query(`
+    SELECT to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS m,
+           COALESCE(SUM(so.quantity*so.price),0) revenue,
+           COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
+    FROM stock_outcome so JOIN products p ON p.id=so.product_id
+    WHERE so.status='approved' AND ${sc} AND so.created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+    GROUP BY m`, sp);
+  const ep = []; const ec = branchArrayCond(scope, ep);
+  const expByMonth = await pool.query(`
+    SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS m, COALESCE(SUM(amount),0) opex
+    FROM cash_expense WHERE ${ec} AND created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+    GROUP BY m`, ep);
+  const salesMap = new Map(salesByMonth.rows.map(r => [r.m, r]));
+  const expMap = new Map(expByMonth.rows.map(r => [r.m, parseFloat(r.opex) || 0]));
+
+  const months = [];
+  const base = new Date();
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const s = salesMap.get(key);
+    const revenue = s ? parseFloat(s.revenue) || 0 : 0;
+    const cogs = s ? parseFloat(s.cogs) || 0 : 0;
+    const opex = expMap.get(key) || 0;
+    const grossProfit = revenue - cogs;
+    months.push({
+      month: key,
+      label: d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }),
+      revenue, cogs, gross_profit: grossProfit, opex, net_profit: grossProfit - opex,
+    });
+  }
+  // Темп роста выручки (среднемесячный, по месяцам с данными)
+  const withData = months.filter(m => m.revenue > 0);
+  let growth = 0;
+  if (withData.length >= 2) {
+    const ratios = [];
+    for (let i = 1; i < withData.length; i++) {
+      if (withData[i - 1].revenue > 0) ratios.push(withData[i].revenue / withData[i - 1].revenue - 1);
+    }
+    growth = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
+  }
+  growth = Math.max(-0.5, Math.min(0.5, growth)); // ограничиваем разумным диапазоном
+  // Средние доли для проекции
+  const lastReal = withData[withData.length - 1] || months[months.length - 1];
+  const cogsRatio = lastReal.revenue > 0 ? lastReal.cogs / lastReal.revenue : 0.6;
+  const avgOpex = withData.length ? withData.reduce((a, b) => a + b.opex, 0) / withData.length : (lastReal.opex || 0);
+  const projection = [];
+  let projRev = lastReal.revenue || 0;
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
+    projRev = projRev * (1 + growth);
+    const cogs = projRev * cogsRatio;
+    const grossProfit = projRev - cogs;
+    projection.push({
+      month: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }),
+      revenue: Math.round(projRev), cogs: Math.round(cogs), gross_profit: Math.round(grossProfit),
+      opex: Math.round(avgOpex), net_profit: Math.round(grossProfit - avgOpex), projected: true,
+    });
+  }
+  return { months, projection, growth_pct: Math.round(growth * 1000) / 10 };
+}
+
+app.get('/api/finance/cashflow', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ income: 0, expense: 0, balance: 0, by_day: [], forecast_7d: [] });
+    res.json(await computeCashflow(scope, req.query.from, req.query.to));
+  } catch (e) { console.error('cashflow err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/finance/break-even', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ revenue: 0, fixed_costs: 0, break_even_revenue: null });
+    res.json(await computeBreakEven(scope, req.query.from, req.query.to));
+  } catch (e) { console.error('break-even err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/finance/model', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ months: [], projection: [] });
+    res.json(await computeFinModel(scope));
+  } catch (e) { console.error('fin-model err', e); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/stock/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier']), async (req, res) => {
   const branchId = getBranchFilter(req.user, req.query);
   const params = [];
@@ -5378,6 +5602,58 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), async (req, res) => {
 });
 
 // Suggest follow-up questions based on a prior assistant reply. Stateless — quick second LLM call.
+// AI-агент анализа финансов: пересчитывает РЕАЛЬНЫЕ цифры на сервере
+// (те же helper'ы, что и GET-эндпоинты — не доверяем данным от клиента),
+// затем просит DeepSeek дать короткий разбор + 2-3 конкретных действия.
+const FIN_TOPICS = {
+  cashflow:    { name: 'Денежный поток (Cash Flow)', fn: computeCashflow },
+  'break-even':{ name: 'Точка безубыточности',       fn: computeBreakEven },
+  model:       { name: 'Финансовая модель',          fn: computeFinModel },
+};
+app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
+  try {
+    const topic = req.body?.topic;
+    const meta = FIN_TOPICS[topic];
+    if (!meta) return res.status(400).json({ error: 'Unknown topic' });
+    if (!process.env.DEEPSEEK_API_KEY) {
+      return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
+    }
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ analysis: 'Нет данных для анализа — у вас нет доступных филиалов.' });
+
+    // Реальные цифры (server-side, доверенные)
+    const data = meta.fn === computeFinModel ? await meta.fn(scope) : await meta.fn(scope, null, null);
+    const fmtN = (n) => Math.round(parseFloat(n) || 0).toLocaleString('ru-RU');
+
+    let factSheet = '';
+    if (topic === 'cashflow') {
+      factSheet = `Приход за период: ${fmtN(data.income)} сум\nРасход за период: ${fmtN(data.expense)} сум\nСальдо (баланс): ${fmtN(data.balance)} сум\nИзменение к прошлому периоду: ${data.balance_delta_pct ?? 'н/д'}%\nСредний чистый поток/день: ${fmtN(data.forecast_avg_net)} сум\nПрогноз баланса через 7 дней: ${fmtN(data.forecast_end_balance)} сум`;
+    } else if (topic === 'break-even') {
+      factSheet = `Выручка (месяц): ${fmtN(data.revenue)} сум\nСебестоимость: ${fmtN(data.cogs)} сум\nМаржинальность: ${data.margin_ratio}%\nПостоянные расходы: ${fmtN(data.fixed_costs)} сум\nТочка безубыточности: ${data.break_even_revenue != null ? fmtN(data.break_even_revenue) + ' сум' : 'не определена'}\nСтатус: ${data.above_break_even ? 'выше точки безубыточности (в плюсе)' : 'ниже точки безубыточности'}\nЕщё нужно продать на: ${fmtN(data.remaining_to_break_even)} сум (≈${data.sales_needed} продаж)\nЗапас прочности: ${data.safety_margin_pct ?? 'н/д'}%\nЧистая прибыль: ${fmtN(data.net_profit)} сум`;
+    } else {
+      const rows = [...data.months, ...data.projection].map(m => `${m.label}${m.projected ? ' (прогноз)' : ''}: выручка ${fmtN(m.revenue)}, валовая прибыль ${fmtN(m.gross_profit)}, чистая ${fmtN(m.net_profit)}`).join('\n');
+      factSheet = `Среднемесячный рост выручки: ${data.growth_pct}%\n${rows}`;
+    }
+
+    const sys = `Ты — финансовый аналитик ERP-системы для розничного бизнеса в Узбекистане. Отвечай по-русски, кратко и по делу. На основе реальных цифр компании дай: (1) короткий вывод о состоянии (2-3 предложения), (2) 2-3 конкретных действия. Без воды, без общих фраз. Суммы в сумах. Используй ТОЛЬКО приведённые цифры, не выдумывай.`;
+    const userMsg = `Раздел: ${meta.name}\n\nРеальные данные компании:\n${factSheet}\n\nДай разбор и рекомендации.`;
+
+    const r = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
+      body: JSON.stringify({ model: 'deepseek-chat', stream: false, temperature: 0.4, max_tokens: 500,
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }] }),
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); console.error('deepseek analyze non-ok', r.status, t.slice(0, 200)); return res.status(502).json({ error: 'AI временно недоступен, попробуйте позже.' }); }
+    const j = await r.json();
+    const analysis = j?.choices?.[0]?.message?.content || '';
+    const usage = j?.usage || {};
+    pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, 'deepseek-chat', null]).catch(() => {});
+    res.json({ analysis, facts: factSheet });
+  } catch (e) { console.error('ai/analyze err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
+});
+
 app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
   try {
     if (!process.env.DEEPSEEK_API_KEY) return res.json({ questions: [] });
