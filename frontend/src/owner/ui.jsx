@@ -246,12 +246,27 @@ export function PageHeader({ title, sub, actions }) {
   );
 }
 
-export function Pills({ value, onChange, options }) {
+export function Pills({ value, onChange, options, label = 'Выбор' }) {
+  // Стрелками ←/→ переключаемся между пилюлями (как radiogroup), не теряя фокус
+  const onKey = (e, idx) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const next = e.key === 'ArrowRight'
+      ? (idx + 1) % options.length
+      : (idx - 1 + options.length) % options.length;
+    onChange(options[next].value);
+    // Переместить фокус на новую активную пилюлю
+    const btns = e.currentTarget.parentElement?.querySelectorAll('button');
+    btns?.[next]?.focus();
+  };
   return (
-    <div className="pills">
-      {options.map(o => (
-        <button key={o.value} className={'pill' + (o.value === value ? ' active' : '')}
-          onClick={() => onChange(o.value)}>{o.label}</button>
+    <div className="pills" role="group" aria-label={label}>
+      {options.map((o, i) => (
+        <button key={o.value} type="button"
+          className={'pill' + (o.value === value ? ' active' : '')}
+          aria-pressed={o.value === value}
+          onClick={() => onChange(o.value)}
+          onKeyDown={(e) => onKey(e, i)}>{o.label}</button>
       ))}
     </div>
   );
@@ -301,10 +316,13 @@ export function EmptyState({ icon = '📭', title, description, action }) {
 }
 
 export function Tooltip({ text, children }) {
+  const id = React.useRef('tt-' + Math.random().toString(36).slice(2, 8)).current;
+  // aria-describedby связывает триггер с подсказкой для скринридеров;
+  // tabIndex делает её доступной с клавиатуры (CSS показывает на :focus-within)
   return (
-    <span className="tooltip-host" tabIndex={0}>
+    <span className="tooltip-host" tabIndex={0} aria-describedby={id}>
       {children}
-      <span className="tooltip-bubble" role="tooltip">{text}</span>
+      <span className="tooltip-bubble" role="tooltip" id={id}>{text}</span>
     </span>
   );
 }

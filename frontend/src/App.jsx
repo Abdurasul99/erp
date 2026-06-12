@@ -1,13 +1,15 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import InterfaceSelect from './pages/InterfaceSelect.jsx';
-import Desktop from './pages/Desktop.jsx';
-import Mobile from './pages/Mobile.jsx';
-import SellerView from './pages/SellerView.jsx';
 import SellerBranchPicker from './pages/SellerBranchPicker.jsx';
-import OwnerShell from './owner/OwnerShell.jsx';
-import AdminShell from './admin/AdminShell.jsx';
+// Тяжёлые «оболочки» грузятся лениво — каждая роль качает только свой код:
+// касса/продавец не тянут owner+admin бандл и наоборот. Уменьшает первый бандл.
+const Desktop    = lazy(() => import('./pages/Desktop.jsx'));
+const Mobile     = lazy(() => import('./pages/Mobile.jsx'));
+const SellerView = lazy(() => import('./pages/SellerView.jsx'));
+const OwnerShell = lazy(() => import('./owner/OwnerShell.jsx'));
+const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
 import { getLang, setLang } from './i18n.js';
 import api from './api.js';
 
@@ -165,17 +167,19 @@ export default function App() {
     <AuthContext.Provider value={{ user, login, logout }}>
       <LangContext.Provider value={{ lang, changeLang }}>
         <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={user ? <RootRedirect /> : <Login />} />
-            <Route path="/select" element={<RequireAuth><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireAuth>} />
-            <Route path="/desktop" element={<RequireAuth><RequireNonSeller><RequireNotOwner><Desktop /></RequireNotOwner></RequireNonSeller></RequireAuth>} />
-            <Route path="/mobile" element={<RequireAuth><RequireNonSeller><Mobile /></RequireNonSeller></RequireAuth>} />
-            <Route path="/select-branch" element={<RequireAuth><SellerBranchPicker /></RequireAuth>} />
-            <Route path="/sell" element={<RequireAuth><RequireSellerBranch><SellerView /></RequireSellerBranch></RequireAuth>} />
-            <Route path="/owner/*" element={<RequireAuth><RequireNonSeller><OwnerShell /></RequireNonSeller></RequireAuth>} />
-            <Route path="/admin/*" element={<RequireAuth><RequireAdmin><AdminShell /></RequireAdmin></RequireAuth>} />
-            <Route path="*" element={<RootRedirect />} />
-          </Routes>
+          <Suspense fallback={<Splash />}>
+            <Routes>
+              <Route path="/login" element={user ? <RootRedirect /> : <Login />} />
+              <Route path="/select" element={<RequireAuth><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireAuth>} />
+              <Route path="/desktop" element={<RequireAuth><RequireNonSeller><RequireNotOwner><Desktop /></RequireNotOwner></RequireNonSeller></RequireAuth>} />
+              <Route path="/mobile" element={<RequireAuth><RequireNonSeller><Mobile /></RequireNonSeller></RequireAuth>} />
+              <Route path="/select-branch" element={<RequireAuth><SellerBranchPicker /></RequireAuth>} />
+              <Route path="/sell" element={<RequireAuth><RequireSellerBranch><SellerView /></RequireSellerBranch></RequireAuth>} />
+              <Route path="/owner/*" element={<RequireAuth><RequireNonSeller><OwnerShell /></RequireNonSeller></RequireAuth>} />
+              <Route path="/admin/*" element={<RequireAuth><RequireAdmin><AdminShell /></RequireAdmin></RequireAuth>} />
+              <Route path="*" element={<RootRedirect />} />
+            </Routes>
+          </Suspense>
         </BrowserRouter>
       </LangContext.Provider>
     </AuthContext.Provider>

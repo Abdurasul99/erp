@@ -85,6 +85,26 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
   );
 }
 
+// Шапка карты графика — вынесена в module scope, чтобы НЕ пересоздаваться
+// на каждый рендер Dashboard (иначе React ремонтирует DOM шапки каждый раз).
+function ChartHead({ icon, iconBg, iconColor, label, children }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14, minHeight: 44 }}>
+      <div style={{
+        width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+        background: iconBg, color: iconColor,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
+      }} aria-hidden="true">{icon}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {label}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // Масштаб графика продаж (как в банковских приложениях): бар = день/неделя/месяц/год
 const CHART_GRAN_OPTIONS = [
   { value: 'day',   label: 'День' },
@@ -109,6 +129,9 @@ export default function Dashboard() {
   const [chartLoading, setChartLoading] = useState(true);
 
   useEffect(() => {
+    // ignore-флаг: при быстром переключении периода старый ответ не должен
+    // перезаписать свежий (защита от out-of-order ответов).
+    let ignore = false;
     setLoading(true); setError(null);
     const { from, to } = periodRange(period);
     const params = {};
@@ -116,19 +139,22 @@ export default function Dashboard() {
     if (to) params.to = to;
     if (branchId) params.branch_id = branchId;
     api.get('/company/dashboard', { params })
-      .then(r => setData(r.data))
-      .catch(e => setError(e.response?.data?.error || e.message))
-      .finally(() => setLoading(false));
+      .then(r => { if (!ignore) setData(r.data); })
+      .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
   }, [period, branchId]);
 
   useEffect(() => {
+    let ignore = false;
     setChartLoading(true);
     const params = { granularity: chartGran };
     if (branchId) params.branch_id = branchId;
     api.get('/company/sales-chart', { params })
-      .then(r => setChart(r.data))
-      .catch(() => setChart(null))
-      .finally(() => setChartLoading(false));
+      .then(r => { if (!ignore) setChart(r.data); })
+      .catch(() => { if (!ignore) setChart(null); })
+      .finally(() => { if (!ignore) setChartLoading(false); });
+    return () => { ignore = true; };
   }, [chartGran, branchId]);
 
   const t = data?.totals || {};
@@ -193,7 +219,7 @@ export default function Dashboard() {
       <PageHeader
         title="Главная панель"
         sub={`${scopeLabel} · ${todayLabel()}`}
-        actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS} />}
+        actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS} label="Период панели" />}
       />
 
       {error && (
@@ -378,28 +404,12 @@ export default function Dashboard() {
             const peak = chartValues.length ? Math.max(...chartValues) : 0;
             const peakIdx = chartValues.indexOf(peak);
             const peakLabel = peakIdx >= 0 ? (chartLabels[peakIdx] || '') : '';
-            // Заголовок шапки карты — единая высота (иконка + подпись + крупная цифра)
-            const ChartHead = ({ icon, iconBg, iconColor, label, children }) => (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14, minHeight: 44 }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-                  background: iconBg, color: iconColor,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-                }}>{icon}</div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {label}
-                  </div>
-                  {children}
-                </div>
-              </div>
-            );
             return (
               <>
                 {/* Тулбар: заголовок секции слева, переключатель масштаба справа */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 Динамика продаж</div>
-                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} />
+                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} label="Масштаб графика" />
                 </div>
 
                 <div className="grid-2 dashboard-charts-row" style={{ marginBottom: 16, alignItems: 'stretch' }}>

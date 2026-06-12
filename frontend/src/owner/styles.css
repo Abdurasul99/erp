@@ -253,6 +253,14 @@
 .owner-shell .flow-step::after { content: '→'; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 18px; font-weight: 700; }
 .owner-shell .flow-step:last-child::after { content: ''; }
 
+/* Badge (новый компонент ui.jsx использует .badge + .badge-<tone>).
+   Базовый .badge + tone-варианты green/red/blue/yellow раньше отсутствовали —
+   бейджи этих цветов рендерились без оформления (без фона, без формы-пилюли). */
+.owner-shell .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
+.owner-shell .badge-green  { background: rgba(34,197,94,.14);  color: #15803d; }
+.owner-shell .badge-red    { background: rgba(239,68,68,.14);  color: #b91c1c; }
+.owner-shell .badge-yellow { background: rgba(245,158,11,.14); color: #b45309; }
+.owner-shell .badge-blue   { background: rgba(91,79,232,.14);  color: var(--primary); }
 .owner-shell .badge-cyan   { background: rgba(14,165,233,.14); color: #0369a1; }
 .owner-shell .badge-purple { background: rgba(124,58,237,.14); color: #7c3aed; }
 .owner-shell .badge-orange { background: rgba(255,107,43,.14); color: var(--orange); }
