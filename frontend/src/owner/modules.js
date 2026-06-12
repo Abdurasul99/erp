@@ -92,8 +92,8 @@ export const SECTIONS = [
     desc: 'Управление работой магазинов · B2C касса · B2B сделки · риски',
     metrics: ['deals', 'avg_check', 'revenue'],
     tools: [
-      { id: 'sales-history',   icon: '📋', title: 'История продаж',     desc: 'Все чеки и сделки',          wired: false },
-      { id: 'pos',             icon: '🛒', title: 'Касса B2C',          desc: 'Сканер · корзина · чек',    wired: false },
+      { id: 'sales-history',   icon: '📋', title: 'История продаж',     desc: 'Все продажи · фильтры',      wired: true  },
+      { id: 'pos',             icon: '🛒', title: 'Касса · монитор',    desc: 'Смена в реальном времени',   wired: true  },
       { id: 'b2b',             icon: '🏢', title: 'B2B / B2G',          desc: 'Pipeline · сделки',          wired: false },
       { id: 'commercial-offer',icon: '📄', title: 'Коммерческое предл.', desc: 'Генератор КП',              wired: false },
       { id: 'scripts',         icon: '📞', title: 'Скрипты продаж',     desc: 'Cold call · возражения',    wired: false },

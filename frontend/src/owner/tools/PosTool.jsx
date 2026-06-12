@@ -1,158 +1,120 @@
-import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
-import { Modal, toast } from '../Modal.jsx';
-import { PRODUCTS, fmt } from '../data.js';
+import React, { useState, useEffect, useContext } from 'react';
+import api from '../../api.js';
+import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
+import { BranchScope } from '../OwnerShell.jsx';
+
+// «Касса B2C» в окне руководителя — это НЕ терминал продажи (продажи ведут
+// кассиры/продавцы в своём приложении). Здесь руководитель видит РЕАЛЬНЫЙ
+// монитор смены: что продано сегодня, на какую сумму, какими способами оплаты.
+const PM_LABEL = {
+  cash: '💵 Наличные', card: '💳 Карта', transfer: '🏦 Перевод', wire: '🏛 Перечисление', debt: '📋 В долг',
+};
+const PM_COLOR = { cash: '#22C55E', card: '#5B4FE8', transfer: '#0EA5E9', wire: '#7c3aed', debt: '#FF6B2B' };
 
 export default function PosTool() {
-  const [cart, setCart] = useState([]);
-  const [pm, setPm] = useState('cash');
-  const [search, setSearch] = useState('');
-  const [discount, setDiscount] = useState(0);
-  const [paid, setPaid] = useState(false);
+  const { branchId } = useContext(BranchScope);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const filtered = search ? PRODUCTS.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.includes(search)).slice(0, 5) : [];
-  const total = cart.reduce((s, i) => s + i.qty * i.sell, 0);
-  const finalTotal = Math.max(0, total - discount);
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true); setError(null);
+    const today = new Date();
+    const from = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
+    const params = { from };
+    if (branchId) params.branch_id = branchId;
+    api.get('/sales/history', { params })
+      .then(r => { if (!ignore) setData(r.data); })
+      .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [branchId]);
 
-  const addToCart = (p) => {
-    setCart(c => {
-      const ex = c.find(i => i.id === p.id);
-      if (ex) return c.map(i => i.id === p.id ? { ...i, qty: i.qty + 1 } : i);
-      return [...c, { ...p, qty: 1 }];
-    });
-    setSearch('');
-  };
-  const changeQty = (id, d) => setCart(c => c.map(i => i.id === id ? { ...i, qty: Math.max(1, i.qty + d) } : i));
-  const remove = (id) => setCart(c => c.filter(i => i.id !== id));
-  const complete = () => {
-    if (cart.length === 0) { toast('Корзина пустая', 'error'); return; }
-    setPaid(true);
-  };
-  const newSale = () => { setCart([]); setDiscount(0); setPaid(false); setPm('cash'); };
+  const kpi = data?.kpi || {};
+  const rows = data?.rows || [];
+
+  // Разбивка выручки по способам оплаты (из реальных строк за сегодня)
+  const byPm = {};
+  for (const r of rows) {
+    if (r.payment_status === 'paid' || r.pm !== 'debt') {
+      byPm[r.pm] = (byPm[r.pm] || 0) + r.total;
+    }
+  }
+  const pmEntries = Object.entries(byPm).sort((a, b) => b[1] - a[1]);
+  const todaySum = kpi.today_sum || 0;
+
+  const fmtTime = (iso) => new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
   return (
     <>
-      <PageHeader title="🛒 Касса B2C" sub="Розничная продажа · сканер · корзина · оплата"
-        actions={<button className="btn btn-orange btn-sm" onClick={() => toast('Смена закрыта · отчёт сформирован', 'info')}>🔒 Закрыть смену</button>} />
+      <PageHeader title="🛒 Касса · монитор смены" sub="Реальные продажи за сегодня · режим наблюдения" />
+
+      <Card style={{ marginBottom: 16, borderLeft: '4px solid var(--primary)' }}>
+        <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.5 }}>
+          ℹ️ Это <strong>монитор для руководителя</strong> — здесь видно, что продаётся в реальном времени.
+          Сами продажи кассиры и продавцы проводят в своём приложении (POS на телефоне).
+          Цифры ниже — настоящие, обновляются по мере продаж.
+        </div>
+      </Card>
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label="Чеков" value="84" sub="за смену" color="#5B4FE8" />
-        <Tile icon="💰" label="Выручка" value="28.4M" sub="UZS" color="#22C55E" />
-        <Tile icon="💳" label="Безнал" value="42%" color="#0EA5E9" />
-        <Tile icon="↩️" label="Возвратов" value="2" color="#EF4444" />
+        <Tile icon="🧾" label="Чеков сегодня" value={fmtNum(kpi.today_count || 0)} sub="за смену" color="#5B4FE8" />
+        <Tile icon="💰" label="Выручка сегодня" value={fmtMoneyFull(kpi.today_sum || 0)} sub="сум" color="#22C55E" />
+        <Tile icon="🧮" label="Средний чек" value={fmtMoneyFull(kpi.avg_check || 0)} sub="сум · за период" color="#FF6B2B" />
+        <Tile icon="📋" label="В долг" value={fmtNum(kpi.debt_count || 0)} sub="непогашено" color={kpi.debt_count > 0 ? '#EF4444' : '#9094B0'} />
       </div>
 
-      <div className="grid-2">
-        <Card icon="🔍" title="Поиск товара" actions={<Badge tone="green">Сканер готов</Badge>}>
-          <input className="input" placeholder="Название или штрих-код..." value={search}
-            onChange={e => setSearch(e.target.value)} autoFocus
-            style={{ fontSize: 15, padding: '12px 14px' }} />
-          {filtered.length > 0 && (
-            <div style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
-              {filtered.map(p => (
-                <div key={p.id} onClick={() => addToCart(p)} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
-                  cursor: 'pointer', borderBottom: '1px solid var(--border)',
-                }} onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
-                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--bg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>{p.photo}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text3)' }}>{p.stock} {p.unit} · {fmt(p.sell)} UZS</div>
+      <div className="grid-2" style={{ marginBottom: 16 }}>
+        {/* Разбивка по способам оплаты — реальная */}
+        <Card icon="💳" title="Выручка по способам оплаты">
+          {loading && !data ? (
+            <div>{[0, 1, 2].map(i => <Skeleton key={i} height={28} style={{ marginBottom: 8 }} />)}</div>
+          ) : pmEntries.length === 0 ? (
+            <EmptyState icon="💤" title="Сегодня продаж ещё не было" description="Как только кассир проведёт продажу — она появится здесь." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+              {pmEntries.map(([method, sum]) => {
+                const pct = todaySum > 0 ? Math.round((sum / todaySum) * 100) : 0;
+                return (
+                  <div key={method}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                      <span style={{ fontWeight: 700 }}>{PM_LABEL[method] || method}</span>
+                      <span className="mono" style={{ fontWeight: 800 }}>{fmtMoneyFull(sum)} сум · {pct}%</span>
+                    </div>
+                    <div style={{ height: 8, background: 'var(--bg-2)', borderRadius: 6, overflow: 'hidden' }}>
+                      <div style={{ width: pct + '%', height: '100%', background: PM_COLOR[method] || '#5B4FE8', borderRadius: 6 }} />
+                    </div>
                   </div>
-                  <button className="btn btn-primary btn-sm">+</button>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Последние продажи смены — реальные */}
+        <Card icon="🕐" title="Последние продажи">
+          {loading && !data ? (
+            <div>{[0, 1, 2, 3].map(i => <Skeleton key={i} height={32} style={{ marginBottom: 8 }} />)}</div>
+          ) : error ? (
+            <div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div>
+          ) : rows.length === 0 ? (
+            <EmptyState icon="🧾" title="Пока пусто" description="Продажи смены появятся здесь в реальном времени." />
+          ) : (
+            <div className="list">
+              {rows.slice(0, 8).map(s => (
+                <div key={s.id} className="list-item">
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="list-item-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.product}</div>
+                    <div className="list-item-sub">{fmtTime(s.date)} · {PM_LABEL[s.pm] || s.pm}{s.customer ? ' · ' + s.customer : ''}</div>
+                  </div>
+                  <div className="mono" style={{ fontWeight: 800, color: 'var(--primary)', fontSize: 13 }}>{fmtMoneyFull(s.total)}</div>
                 </div>
               ))}
             </div>
           )}
-
-          <div style={{ marginTop: 14 }}>
-            <div className="label">Способ оплаты</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {[
-                { k: 'cash', l: '💵 Нал' },
-                { k: 'card', l: '💳 Карта' },
-                { k: 'transfer', l: '🏦 Перевод' },
-                { k: 'wire', l: '📑 Перечисление' },
-                { k: 'debt', l: '📒 В долг' },
-              ].map(o => (
-                <button key={o.k} onClick={() => setPm(o.k)}
-                  style={{ padding: '8px 14px', borderRadius: 20, border: `1.5px solid ${pm===o.k?'#5B4FE8':'#E6E8F2'}`, background: pm===o.k?'rgba(91,79,232,.08)':'#fff', color: pm===o.k?'#5B4FE8':'#5C6080', fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>{o.l}</button>
-              ))}
-            </div>
-          </div>
-        </Card>
-
-        <Card icon="🧾" title={`Корзина · ${cart.length} поз.`} actions={cart.length > 0 && <button className="btn btn-ghost btn-sm" onClick={() => setCart([])}>🧹 Очистить</button>}>
-          {cart.length === 0 ? (
-            <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text3)' }}>
-              <div style={{ fontSize: 40 }}>🛒</div>
-              <div style={{ marginTop: 10, fontWeight: 700 }}>Корзина пустая</div>
-              <div style={{ fontSize: 12, marginTop: 4 }}>Найдите товар слева и добавьте</div>
-            </div>
-          ) : (
-            <>
-              <div style={{ maxHeight: 280, overflowY: 'auto' }}>
-                {cart.map(i => (
-                  <div key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: 'var(--bg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>{i.photo}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{i.name}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text3)' }}>{fmt(i.sell)} UZS / {i.unit}</div>
-                    </div>
-                    <button onClick={() => changeQty(i.id, -1)} style={{ width: 26, height: 26, border: '1px solid var(--border)', borderRadius: 6, background: '#fff', cursor: 'pointer', fontWeight: 700 }}>−</button>
-                    <span className="mono" style={{ minWidth: 24, textAlign: 'center', fontWeight: 800 }}>{i.qty}</span>
-                    <button onClick={() => changeQty(i.id, +1)} style={{ width: 26, height: 26, border: 'none', borderRadius: 6, background: 'var(--primary)', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>+</button>
-                    <div className="mono" style={{ minWidth: 80, textAlign: 'right', fontWeight: 800, color: 'var(--primary)' }}>{fmt(i.qty * i.sell)}</div>
-                    <button onClick={() => remove(i.id)} style={{ width: 24, height: 24, border: 'none', borderRadius: 6, background: 'transparent', color: '#dc2626', cursor: 'pointer', fontSize: 16 }}>×</button>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: 14 }}>
-                <label className="label">Скидка (UZS)</label>
-                <input className="input mono" type="number" value={discount} onChange={e => setDiscount(+e.target.value || 0)} style={{ textAlign: 'right' }} />
-              </div>
-
-              <div style={{ background: 'var(--bg-2)', borderRadius: 12, padding: 14, marginTop: 12 }}>
-                <Row label="Сумма" value={fmt(total) + ' UZS'} />
-                {discount > 0 && <Row label="Скидка" value={'−' + fmt(discount) + ' UZS'} mute />}
-                <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
-                <Row label="К ОПЛАТЕ" value={fmt(finalTotal) + ' UZS'} big />
-              </div>
-
-              <button className="btn btn-primary" style={{ width: '100%', marginTop: 12, padding: 14, fontSize: 16 }}
-                onClick={complete}>💰 Оформить продажу</button>
-            </>
-          )}
         </Card>
       </div>
-
-      <Modal open={paid} onClose={newSale} title="✓ Продажа завершена" icon="🎉"
-        footer={<><button className="btn btn-ghost" onClick={() => toast('Чек отправлен на принтер', 'info')}>🖨️ Печать чека</button><button className="btn btn-primary" onClick={newSale}>+ Новая продажа</button></>}>
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{ fontSize: 60 }}>✅</div>
-          <div style={{ fontSize: 26, fontWeight: 900, color: 'var(--green)', marginTop: 10 }}>{fmt(finalTotal)} UZS</div>
-          <div style={{ color: 'var(--text3)', marginTop: 6 }}>{cart.length} позиций · оплата: <strong>{ {cash:'наличными', card:'картой', transfer:'переводом', wire:'перечислением', debt:'в долг'}[pm] }</strong></div>
-        </div>
-        <div style={{ marginTop: 14, background: 'var(--bg-2)', borderRadius: 10, padding: 12 }}>
-          {cart.map(i => (
-            <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
-              <span>{i.name} × {i.qty}</span>
-              <span className="mono" style={{ fontWeight: 700 }}>{fmt(i.qty * i.sell)}</span>
-            </div>
-          ))}
-        </div>
-      </Modal>
     </>
-  );
-}
-
-function Row({ label, value, big, mute }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: big ? 16 : 13, fontWeight: big ? 900 : 600, color: mute ? 'var(--text3)' : 'var(--text)' }}>
-      <span>{label}</span>
-      <span className="mono" style={{ color: big ? 'var(--primary)' : 'inherit' }}>{value}</span>
-    </div>
   );
 }

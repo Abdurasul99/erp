@@ -1774,6 +1774,11 @@ app.get('/api/stock/outcome-list', auth(), async (req, res) => {
   const params = [];
   const conds = [];
   if (branchId) { conds.push(`so.branch_id = $${params.length+1}`); params.push(branchId); }
+  // Tenant isolation: non-admin без branch-фильтра всё равно ограничен своей компанией
+  // (иначе founder/gen_dir по «Все филиалы» видел бы продажи чужих компаний).
+  if (req.user.role !== 'admin' && req.user.company_id) {
+    conds.push(`p.company_id = $${params.length+1}`); params.push(req.user.company_id);
+  }
   // Sellers see ONLY their own sales — enforced server-side
   if (req.user.role === 'seller') { conds.push(`so.created_by = $${params.length+1}`); params.push(req.user.id); }
   const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
@@ -1798,6 +1803,112 @@ app.get('/api/stock/outcome-list', auth(), async (req, res) => {
     ORDER BY so.created_at DESC LIMIT 200
   `, params);
   res.json(rows);
+});
+
+// === SALES HISTORY (для окна руководителя — реальные продажи, read-only) ===
+// Каждая строка stock_outcome = продажа N единиц одного товара (чек-группировки
+// в текущей схеме нет, поэтому показываем построчно). Фильтры: период, филиал,
+// способ оплаты, тип (B2B = есть клиент в базе / B2C = розница без клиента), поиск.
+app.get('/api/sales/history', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) {
+      return res.json({ kpi: { today_count: 0, today_sum: 0, period_count: 0, period_sum: 0, avg_check: 0, b2b_count: 0, b2b_share: 0, returns_count: 0 }, rows: [] });
+    }
+    const companyId = req.user.company_id;
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    const pm = req.query.pm && ['cash', 'card', 'transfer', 'wire', 'debt'].includes(req.query.pm) ? req.query.pm : null;
+    const type = ['b2b', 'b2c'].includes(req.query.type) ? req.query.type : null;
+    const search = (req.query.search || '').trim();
+
+    const params = [];
+    const conds = [`so.status = 'approved'`];
+    if (scope.ids) { params.push(scope.ids); conds.push(`so.branch_id = ANY($${params.length}::int[])`); }
+    if (req.user.role !== 'admin' && companyId) { params.push(companyId); conds.push(`p.company_id = $${params.length}`); }
+    if (from) { params.push(from); conds.push(`so.created_at >= $${params.length}`); }
+    if (to)   { params.push(to);   conds.push(`so.created_at <  $${params.length}`); }
+    if (pm)   { params.push(pm);   conds.push(`COALESCE(so.payment_method,'cash') = $${params.length}`); }
+    if (type === 'b2b') conds.push(`so.customer_id IS NOT NULL`);
+    if (type === 'b2c') conds.push(`so.customer_id IS NULL`);
+    if (search) { params.push('%' + search + '%'); conds.push(`(p.name_ru ILIKE $${params.length} OR c.name ILIKE $${params.length} OR CAST(so.id AS TEXT) = ${"'" + search.replace(/'/g, '') + "'"})`); }
+    const where = 'WHERE ' + conds.join(' AND ');
+
+    const listQ = await pool.query(`
+      SELECT so.id, so.created_at, so.quantity, so.price, so.payment_method, so.payment_status,
+             so.paid_amount, so.currency, so.customer_id,
+             p.name_ru, p.unit,
+             c.name AS customer_name,
+             b.name AS branch_name,
+             COALESCE(NULLIF(TRIM(u.first_name || ' ' || COALESCE(u.last_name,'')), ''), u.username) AS seller_name,
+             u.role AS seller_role
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      LEFT JOIN customers c ON c.id = so.customer_id
+      LEFT JOIN branches b ON b.id = so.branch_id
+      LEFT JOIN users u ON u.id = so.created_by
+      ${where}
+      ORDER BY so.created_at DESC
+      LIMIT 300`, params);
+
+    // KPI-агрегаты по тому же scope (без фильтров pm/type/search — общая картина периода)
+    const kpiParams = [];
+    const kpiConds = [`so.status = 'approved'`];
+    if (scope.ids) { kpiParams.push(scope.ids); kpiConds.push(`so.branch_id = ANY($${kpiParams.length}::int[])`); }
+    if (req.user.role !== 'admin' && companyId) { kpiParams.push(companyId); kpiConds.push(`p.company_id = $${kpiParams.length}`); }
+    if (from) { kpiParams.push(from); kpiConds.push(`so.created_at >= $${kpiParams.length}`); }
+    if (to)   { kpiParams.push(to);   kpiConds.push(`so.created_at <  $${kpiParams.length}`); }
+    const kpiWhere = 'WHERE ' + kpiConds.join(' AND ');
+    const kpiQ = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE so.created_at::date = CURRENT_DATE) AS today_count,
+        COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.created_at::date = CURRENT_DATE), 0) AS today_sum,
+        COUNT(*) AS period_count,
+        COALESCE(SUM(so.quantity * so.price), 0) AS period_sum,
+        COUNT(*) FILTER (WHERE so.customer_id IS NOT NULL) AS b2b_count,
+        COUNT(*) FILTER (WHERE so.payment_status <> 'paid') AS debt_count
+      FROM stock_outcome so JOIN products p ON p.id = so.product_id
+      ${kpiWhere}`, kpiParams);
+    const k = kpiQ.rows[0] || {};
+    const periodCount = parseInt(k.period_count) || 0;
+    const periodSum = parseFloat(k.period_sum) || 0;
+    const b2bCount = parseInt(k.b2b_count) || 0;
+
+    res.json({
+      kpi: {
+        today_count: parseInt(k.today_count) || 0,
+        today_sum: parseFloat(k.today_sum) || 0,
+        period_count: periodCount,
+        period_sum: periodSum,
+        avg_check: periodCount > 0 ? Math.round(periodSum / periodCount) : 0,
+        b2b_count: b2bCount,
+        b2b_share: periodCount > 0 ? Math.round((b2bCount / periodCount) * 100) : 0,
+        debt_count: parseInt(k.debt_count) || 0,
+      },
+      rows: listQ.rows.map(r => ({
+        id: r.id,
+        date: r.created_at,
+        product: r.name_ru,
+        unit: r.unit,
+        qty: parseFloat(r.quantity) || 0,
+        price: parseFloat(r.price) || 0,
+        total: (parseFloat(r.quantity) || 0) * (parseFloat(r.price) || 0),
+        pm: r.payment_method || 'cash',
+        payment_status: r.payment_status || 'paid',
+        currency: r.currency || 'UZS',
+        customer: r.customer_name,
+        type: r.customer_id ? 'B2B' : 'B2C',
+        branch: r.branch_name,
+        seller: r.seller_name,
+        seller_role: r.seller_role,
+      })),
+    });
+  } catch (e) {
+    console.error('sales/history error', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/stock/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier']), async (req, res) => {

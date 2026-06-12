@@ -1,48 +1,157 @@
-import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
-import { fmt } from '../data.js';
+import React, { useState, useEffect, useContext } from 'react';
+import api from '../../api.js';
+import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
+import { BranchScope } from '../OwnerShell.jsx';
 
-const SALES = Array.from({ length: 20 }, (_, i) => ({
-  id: 'S-' + (1000 + i),
-  date: '2026-05-' + (10 + (i % 20)),
-  time: ['09:14', '10:30', '11:45', '13:22', '14:08', '15:55', '16:40', '17:12'][i % 8],
-  client: ['Алишер К.', 'Дилшод У.', 'TashTrade', 'ЧП Барс', 'Меркурий', 'Розница', 'Бахтиёр К.', 'Khorezm M.'][i % 8],
-  pm: ['cash', 'card', 'transfer', 'wire'][i % 4],
-  items: (i % 5) + 1,
-  total: ((i * 137 + 240) * 1000) % 5000000 + 100000,
-  type: i % 5 === 0 ? 'B2B' : 'B2C',
-}));
+const PERIODS = [
+  { value: 'today', label: 'Сегодня' },
+  { value: 'week',  label: 'Неделя' },
+  { value: 'month', label: 'Месяц' },
+  { value: 'all',   label: 'Всё' },
+];
+const PM_LABEL = {
+  cash: '💵 Нал', card: '💳 Карта', transfer: '🏦 Перевод', wire: '🏛 Перечисление', debt: '📋 В долг',
+};
+const PM_FILTERS = [
+  { value: 'all', label: 'Все оплаты' },
+  { value: 'cash', label: '💵 Нал' },
+  { value: 'card', label: '💳 Карта' },
+  { value: 'transfer', label: '🏦 Перевод' },
+  { value: 'wire', label: '🏛 Перечисление' },
+];
+const TYPE_FILTERS = [
+  { value: 'all', label: 'Все типы' },
+  { value: 'b2c', label: '🛍 Розница' },
+  { value: 'b2b', label: '🏢 B2B' },
+];
+
+function periodFrom(p) {
+  const now = new Date();
+  if (p === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  if (p === 'week')  { const d = new Date(now); d.setDate(d.getDate() - 7); return d.toISOString(); }
+  if (p === 'month') { const d = new Date(now); d.setMonth(d.getMonth() - 1); return d.toISOString(); }
+  return null;
+}
 
 export default function SalesHistoryTool() {
+  const { branchId } = useContext(BranchScope);
+  const [period, setPeriod] = useState('month');
+  const [pm, setPm] = useState('all');
+  const [type, setType] = useState('all');
   const [search, setSearch] = useState('');
-  const filtered = SALES.filter(s => !search || s.client.toLowerCase().includes(search.toLowerCase()) || s.id.includes(search));
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true); setError(null);
+    const params = {};
+    const from = periodFrom(period);
+    if (from) params.from = from;
+    if (pm !== 'all') params.pm = pm;
+    if (type !== 'all') params.type = type;
+    if (search.trim()) params.search = search.trim();
+    if (branchId) params.branch_id = branchId;
+    api.get('/sales/history', { params })
+      .then(r => { if (!ignore) setData(r.data); })
+      .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
+      .finally(() => { if (!ignore) setLoading(false); });
+    return () => { ignore = true; };
+  }, [period, pm, type, search, branchId]);
+
+  const kpi = data?.kpi || {};
+  const rows = data?.rows || [];
+
+  const fmtDate = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + ' ' +
+           d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  };
+
   return (
     <>
-      <PageHeader title="📋 История продаж" sub="Все чеки и B2B сделки" />
+      <PageHeader
+        title="📋 История продаж"
+        sub="Все продажи компании · реальные данные"
+        actions={<Pills value={period} onChange={setPeriod} options={PERIODS} label="Период" />}
+      />
+
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label="Сегодня" value={SALES.filter(s => s.date.endsWith('-30')).length} color="#5B4FE8" />
-        <Tile icon="💰" label="Сумма дня" value={fmt(SALES.filter(s => s.date.endsWith('-30')).reduce((a, s) => a + s.total, 0))} color="#22C55E" />
-        <Tile icon="📅" label="За месяц" value={SALES.length} color="#FF6B2B" />
-        <Tile icon="🏢" label="B2B доля" value={Math.round(SALES.filter(s => s.type === 'B2B').length / SALES.length * 100) + '%'} color="#0EA5E9" />
+        <Tile icon="🧾" label="Чеков сегодня" value={fmtNum(kpi.today_count || 0)} sub={`${fmtMoneyFull(kpi.today_sum || 0)} сум`} color="#5B4FE8" />
+        <Tile icon="💰" label="Сумма за период" value={fmtMoneyFull(kpi.period_sum || 0)} sub="сум" color="#22C55E" />
+        <Tile icon="🧮" label="Средний чек" value={fmtMoneyFull(kpi.avg_check || 0)} sub="сум" color="#FF6B2B" />
+        <Tile icon="🏢" label="B2B доля" value={(kpi.b2b_share || 0) + '%'} sub={`${fmtNum(kpi.b2b_count || 0)} сделок`} color="#0EA5E9" />
       </div>
+
+      {kpi.debt_count > 0 && (
+        <Card style={{ marginBottom: 14, borderLeft: '4px solid var(--orange)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>
+            ⚠️ {fmtNum(kpi.debt_count)} продаж с непогашенным долгом — проверьте раздел «Долги клиентов»
+          </div>
+        </Card>
+      )}
+
       <Card>
-        <input className="input" placeholder="🔍 Клиент или № чека..." value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 14, maxWidth: 400 }} />
-        <table>
-          <thead><tr><th>#</th><th>Дата</th><th>Клиент</th><th>Тип</th><th>Оплата</th><th style={{ textAlign: 'right' }}>Поз.</th><th style={{ textAlign: 'right' }}>Сумма</th></tr></thead>
-          <tbody>
-            {filtered.map(s => (
-              <tr key={s.id}>
-                <td className="mono" style={{ color: 'var(--text3)' }}>{s.id}</td>
-                <td style={{ fontSize: 12 }}>{s.date}<br/><span style={{ color: 'var(--text3)' }}>{s.time}</span></td>
-                <td style={{ fontWeight: 700 }}>{s.client}</td>
-                <td><Badge tone={s.type === 'B2B' ? 'purple' : 'blue'}>{s.type}</Badge></td>
-                <td><Badge tone="gray">{ {cash:'💵 Нал', card:'💳 Карта', transfer:'🏦 Перевод', wire:'📑 Перечисл.'}[s.pm] }</Badge></td>
-                <td className="mono" style={{ textAlign: 'right' }}>{s.items}</td>
-                <td className="mono" style={{ textAlign: 'right', fontWeight: 800, color: 'var(--primary)' }}>{fmt(s.total)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
+          <input className="input" placeholder="🔍 Товар, клиент или № продажи…"
+            value={search} onChange={e => setSearch(e.target.value)}
+            style={{ flex: '1 1 240px', maxWidth: 360 }} aria-label="Поиск по продажам" />
+          <Pills value={pm} onChange={setPm} options={PM_FILTERS} label="Способ оплаты" />
+          <Pills value={type} onChange={setType} options={TYPE_FILTERS} label="Тип продажи" />
+        </div>
+
+        {loading && !data ? (
+          <div>{[0, 1, 2, 3, 4].map(i => <Skeleton key={i} height={40} style={{ marginBottom: 8 }} />)}</div>
+        ) : error ? (
+          <div style={{ color: 'var(--red)', padding: 16, fontWeight: 600 }}>⚠️ {error}</div>
+        ) : rows.length === 0 ? (
+          <EmptyState icon="🧾" title="Продаж не найдено"
+            description="За выбранный период и фильтры продаж нет. Измените период или сбросьте фильтры." />
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>№</th>
+                  <th>Дата</th>
+                  <th>Товар</th>
+                  <th style={{ textAlign: 'right' }}>Кол-во</th>
+                  <th style={{ textAlign: 'right' }}>Сумма</th>
+                  <th>Оплата</th>
+                  <th>Клиент</th>
+                  <th>Тип</th>
+                  <th>Филиал</th>
+                  <th>Продавец</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(s => (
+                  <tr key={s.id}>
+                    <td className="mono" style={{ color: 'var(--text3)' }}>#{s.id}</td>
+                    <td className="mono" style={{ whiteSpace: 'nowrap' }}>{fmtDate(s.date)}</td>
+                    <td style={{ fontWeight: 600 }}>{s.product}</td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(s.qty)} {s.unit}</td>
+                    <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(s.total)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {PM_LABEL[s.pm] || s.pm}
+                      {s.payment_status !== 'paid' && <Badge tone="orange">долг</Badge>}
+                    </td>
+                    <td>{s.customer || <span style={{ color: 'var(--text3)' }}>розница</span>}</td>
+                    <td><Badge tone={s.type === 'B2B' ? 'purple' : 'blue'}>{s.type}</Badge></td>
+                    <td style={{ color: 'var(--text2)' }}>{s.branch || '—'}</td>
+                    <td style={{ color: 'var(--text2)' }}>{s.seller || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rows.length >= 300 && (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text3)' }}>
+                Показаны последние 300 продаж. Уточните период или фильтры для более точного среза.
+              </div>
+            )}
+          </div>
+        )}
       </Card>
     </>
   );
