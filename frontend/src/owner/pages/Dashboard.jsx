@@ -85,54 +85,22 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
   );
 }
 
-// Плавный area-чарт для хиро-плитки (стиль банковских приложений):
-// сглаженная кривая + белый градиент под ней + точка пика со значением.
-// Smooth-кривая держит спайковые данные мягче, чем бары.
+// Бар-чарт для хиро-плитки: закруглённые белые бары + чип со значением пика.
+// (Кривую-«кардиограмму» убрали по фидбеку — бары читаются привычнее.)
 function HeroAreaChart({ points, labels }) {
-  const W = 100, H = 42;
   const max = Math.max(...points, 1);
   const n = points.length;
   if (n < 2) return null;
-  const pts = points.map((v, i) => ({
-    x: (i / (n - 1)) * W,
-    y: H - (v / max) * (H - 8) - 2,
-  }));
-  let line = `M ${pts[0].x},${pts[0].y}`;
-  for (let i = 1; i < n; i++) {
-    const mx = (pts[i - 1].x + pts[i].x) / 2;
-    line += ` C ${mx},${pts[i - 1].y} ${mx},${pts[i].y} ${pts[i].x},${pts[i].y}`;
-  }
-  const fill = `${line} L ${W},${H} L 0,${H} Z`;
   const peakIdx = points.indexOf(Math.max(...points));
-  const peakXPct = pts[peakIdx].x;
-  const peakYPct = (pts[peakIdx].y / H) * 100;
-  const chipBelow = peakYPct < 22; // пик у самого верха → подпись под точкой
+  const peakXPct = ((peakIdx + 0.5) / n) * 100;
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 120 }}>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}>
-        <defs>
-          <linearGradient id="hero-area-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.38" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-        <path d={fill} fill="url(#hero-area-grad)" />
-        <path d={line} fill="none" stroke="rgba(255,255,255,.95)" strokeWidth="2.5"
-          strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      </svg>
-      {/* Точка пика + значение */}
+    <div style={{ position: 'relative', flex: 1, minHeight: 120, paddingTop: 26 }}>
+      {/* Чип со значением пика — над самым высоким баром */}
       <div style={{
-        position: 'absolute', left: `${peakXPct}%`, top: `${peakYPct}%`,
-        transform: 'translate(-50%,-50%)', width: 10, height: 10, borderRadius: '50%',
-        background: '#fff', boxShadow: '0 0 0 4px rgba(255,255,255,.28)',
-      }} />
-      <div style={{
-        position: 'absolute',
+        position: 'absolute', top: 0,
         left: `${Math.min(Math.max(peakXPct, 12), 88)}%`,
-        top: `${peakYPct}%`,
-        transform: chipBelow ? 'translate(-50%, 12px)' : 'translate(-50%, calc(-100% - 12px))',
+        transform: 'translateX(-50%)',
         background: 'rgba(255,255,255,.95)', color: '#15803d',
         borderRadius: 8, padding: '3px 9px', fontSize: 11, fontWeight: 800,
         fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap',
@@ -140,11 +108,25 @@ function HeroAreaChart({ points, labels }) {
       }}>
         {fmtMoneyFull(points[peakIdx])}
       </div>
-      {/* Невидимые hover-колонки с подсказками по дням */}
-      <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
-        {points.map((v, i) => (
-          <div key={i} title={`${labels[i] || ''}: ${fmtMoneyFull(v)} сум`} style={{ flex: 1, minWidth: 0 }} />
-        ))}
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: 2,
+        height: '100%', borderBottom: '1.5px solid rgba(255,255,255,.35)',
+      }}>
+        {points.map((v, i) => {
+          const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
+          return (
+            <div key={i} title={`${labels[i] || ''}: ${fmtMoneyFull(v)} сум`} style={{
+              flex: 1, minWidth: 0, height: '100%',
+              display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+            }}>
+              <div style={{
+                width: 'min(65%, 12px)', height: `${hPct}%`,
+                background: i === peakIdx ? '#ffffff' : 'rgba(255,255,255,.85)',
+                borderRadius: 99, minHeight: v > 0 ? 3 : 0,
+              }} />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
