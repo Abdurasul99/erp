@@ -52,7 +52,8 @@ export default function FinModelTool() {
           <Card icon="📊" title="Выручка по месяцам (факт + прогноз)" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 170, borderBottom: '1.5px solid var(--border, #e6e8f2)', paddingTop: 10 }}>
               {all.map((m, i) => (
-                <div key={i} title={`${m.label}: ${fmtMoneyFull(m.revenue)} сум${m.projected ? ' (прогноз)' : ''}`}
+                <div key={i} className="chart-col"
+                  data-tip={`${m.label}${m.projected ? ' (прогноз)' : ''} · ${fmtMoneyFull(m.revenue)} сум`}
                   style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center' }}>
                   <div style={{
                     width: '70%', height: `${(m.revenue / maxRev) * 100}%`,

@@ -253,6 +253,55 @@
 .owner-shell .flow-step::after { content: '→'; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 18px; font-weight: 700; }
 .owner-shell .flow-step:last-child::after { content: ''; }
 
+/* Кастомный тултип для колонок чартов — вместо уродливого нативного title.
+   Использование: <div class="chart-col" data-tip="27.05 · 4 000 сум">…бар…</div>
+   Тёмный чип над колонкой + стрелка. Поддерживает многострочность (\n в data-tip). */
+.owner-shell .chart-col { position: relative; cursor: default; }
+.owner-shell .chart-col:hover { background: rgba(127,127,127,.08); border-radius: 6px; }
+.owner-shell .chart-col::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #1e1b4b;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: pre;
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s ease, transform .15s ease;
+  z-index: 40;
+}
+.owner-shell .chart-col::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #1e1b4b;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s ease;
+  z-index: 40;
+}
+.owner-shell .chart-col:hover::after { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+.owner-shell .chart-col:hover::before { opacity: 1; visibility: visible; }
+/* Крайние колонки — прижимаем чип к краю, чтобы не обрезался картой */
+.owner-shell .chart-col:first-child::after { left: 0; transform: translateX(0) translateY(4px); }
+.owner-shell .chart-col:first-child:hover::after { transform: translateX(0) translateY(0); }
+.owner-shell .chart-col:last-child::after { left: auto; right: 0; transform: translateX(0) translateY(4px); }
+.owner-shell .chart-col:last-child:hover::after { transform: translateX(0) translateY(0); }
+
 /* Badge (новый компонент ui.jsx использует .badge + .badge-<tone>).
    Базовый .badge + tone-варианты green/red/blue/yellow раньше отсутствовали —
    бейджи этих цветов рендерились без оформления (без фона, без формы-пилюли). */

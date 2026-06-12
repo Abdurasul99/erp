@@ -115,7 +115,7 @@ function HeroAreaChart({ points, labels }) {
         {points.map((v, i) => {
           const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
           return (
-            <div key={i} title={`${labels[i] || ''}: ${fmtMoneyFull(v)} сум`} style={{
+            <div key={i} className="chart-col" data-tip={`${labels[i] || ''} · ${fmtMoneyFull(v)} сум`} style={{
               flex: 1, minWidth: 0, height: '100%',
               display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
             }}>

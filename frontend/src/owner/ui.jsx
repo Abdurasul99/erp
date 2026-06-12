@@ -163,13 +163,12 @@ export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor 
           const hPct = Math.max((v / max) * 100, v > 0 ? 3 : 0);
           const pv = prevData ? (prevData[i] || 0) : null;
           const phPct = pv != null ? Math.max((pv / max) * 100, pv > 0 ? 3 : 0) : null;
-          const tip = (labels && labels[i] ? labels[i] + ': ' : '') + fmtMoneyFull(v) +
-            (pv != null ? ` (прошлый: ${fmtMoneyFull(pv)})` : '');
+          const tip = (labels && labels[i] ? labels[i] + ' · ' : '') + fmtMoneyFull(v) +
+            (pv != null ? `\nпрошлый · ${fmtMoneyFull(pv)}` : '');
           return (
-            <div key={i} title={tip} style={{
+            <div key={i} className="chart-col" data-tip={tip} style={{
               flex: 1, minWidth: 0, height: '100%',
               display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 1,
-              cursor: 'default',
             }}>
               {phPct != null && (
                 <div style={{

@@ -52,7 +52,8 @@ export default function CashflowTool() {
           <Card icon="📊" title="Движение по дням" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 180, borderBottom: '1.5px solid var(--border, #e6e8f2)', paddingTop: 10 }}>
               {byDay.map((d, i) => (
-                <div key={i} title={`${fmtDay(d.day)}\nПриход: ${fmtMoneyFull(d.income)}\nРасход: ${fmtMoneyFull(d.expense)}\nИтого: ${fmtMoneyFull(d.net)}`}
+                <div key={i} className="chart-col"
+                  data-tip={`${fmtDay(d.day)}\n+${fmtMoneyFull(d.income)} · −${fmtMoneyFull(d.expense)}\nитого ${fmtMoneyFull(d.net)}`}
                   style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 1 }}>
                   <div style={{ width: '40%', height: `${(d.income / maxFlow) * 100}%`, background: '#22C55E', borderRadius: '3px 3px 0 0', minHeight: d.income > 0 ? 2 : 0 }} />
                   <div style={{ width: '40%', height: `${(d.expense / maxFlow) * 100}%`, background: '#EF4444', borderRadius: '3px 3px 0 0', minHeight: d.expense > 0 ? 2 : 0 }} />
