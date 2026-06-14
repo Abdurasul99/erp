@@ -3,6 +3,7 @@ import { useParams, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
 import { getSectionsForRole } from './modules.js';
 import { Card, PageHeader, ComingSoon, Badge } from './ui.jsx';
+import { useTt } from './tt.js';
 
 // Live wareapp components — wrap these so owner-shell tools can use real data.
 import WarehouseBalance from '../components/WarehouseBalance.jsx';
@@ -64,9 +65,10 @@ import ScalingTool from './tools/ScalingTool.jsx';
 
 // Wrap a legacy live component so it slots into the owner shell layout.
 function LiveWrapper({ Component, title, sub }) {
+  const { tt } = useTt();
   return (
     <>
-      {title && <PageHeader title={title} sub={sub} actions={<Badge tone="green">Готов</Badge>} />}
+      {title && <PageHeader title={tt(title)} sub={tt(sub)} actions={<Badge tone="green">{tt('Готов')}</Badge>} />}
       <div className="card" style={{ padding: 20 }}>
         <Component />
       </div>
@@ -146,6 +148,7 @@ const RESOLVE = {
 
 export default function ToolRouter() {
   const { user } = useContext(AuthContext);
+  const { tt } = useTt();
   const { sectionId, toolId } = useParams();
   const navigate = useNavigate();
   const sections = getSectionsForRole(user?.role);
@@ -157,15 +160,15 @@ export default function ToolRouter() {
 
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-      <button onClick={() => navigate('/owner/' + section.id)} className="btn btn-ghost btn-sm" title="Назад к секции">
-        ← Назад
+      <button onClick={() => navigate('/owner/' + section.id)} className="btn btn-ghost btn-sm" title={tt('Назад')}>
+        {tt('← Назад')}
       </button>
       <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .5 }}>
         <span style={{ cursor: 'pointer', color: 'var(--primary)' }} onClick={() => navigate('/owner/' + section.id)}>
-          {section.icon} {section.title}
+          {section.icon} {tt(section.title)}
         </span>
         <span style={{ margin: '0 6px' }}>›</span>
-        <span style={{ color: 'var(--text2)' }}>{tool.title}</span>
+        <span style={{ color: 'var(--text2)' }}>{tt(tool.title)}</span>
       </div>
     </div>
   );
@@ -174,9 +177,9 @@ export default function ToolRouter() {
     return (
       <>
         {header}
-        <ComingSoon icon={tool.icon} title={tool.title}>
-          <div>{tool.desc}</div>
-          <div style={{ marginTop: 14, fontSize: 12 }}>Этот инструмент будет реализован в следующих обновлениях. Если он критичен — напишите, поднимем приоритет.</div>
+        <ComingSoon icon={tool.icon} title={tt(tool.title)}>
+          <div>{tt(tool.desc)}</div>
+          <div style={{ marginTop: 14, fontSize: 12 }}>{tt('Этот инструмент будет реализован в следующих обновлениях. Если он критичен — напишите, поднимем приоритет.')}</div>
         </ComingSoon>
       </>
     );

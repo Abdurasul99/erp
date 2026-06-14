@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -55,6 +56,7 @@ const METHOD_LABELS = [
 // Компактная разбивка по способам оплаты — 4 строки внизу плитки
 // unit: 'money' (по умолчанию, показывает «4 150 000 UZS») | 'count' (показывает «12 шт»)
 function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
+  const { tt } = useTt();
   if (!data) return null;
   const labelColor = lightOnDark ? 'rgba(255,255,255,.7)' : 'var(--text3)';
   const valueColor = lightOnDark ? 'rgba(255,255,255,.92)' : 'var(--text)';
@@ -74,9 +76,9 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
             fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace",
             opacity: v > 0 ? 1 : 0.55,
           }}>
-            <span style={{ color: labelColor, fontWeight: 700 }}>{m.icon} {m.label}</span>
+            <span style={{ color: labelColor, fontWeight: 700 }}>{m.icon} {tt(m.label)}</span>
             <span style={{ color: valueColor, fontWeight: 700 }}>
-              {isCount ? fmtNum(v) : fmtMoneyFull(v)} <span style={{ opacity: .6, fontSize: 9 }}>{isCount ? 'шт' : m.curr}</span>
+              {isCount ? fmtNum(v) : fmtMoneyFull(v)} <span style={{ opacity: .6, fontSize: 9 }}>{isCount ? tt('шт') : m.curr}</span>
             </span>
           </div>
         );
@@ -165,6 +167,7 @@ const CHART_RANGE_LABEL = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { tt } = useTt();
   const { branchId, isOwner, role, branches: allBranches } = useContext(BranchScope);
   const [period, setPeriod] = useState('month');
   const [data, setData] = useState(null);
@@ -233,17 +236,17 @@ export default function Dashboard() {
   const checkDelta = deltaPct(t.avg_check, prev.avg_check);
 
   const scopeLabel = isOwner
-    ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `Филиал #${branchId}`) : 'Все филиалы')
-    : (role === 'manager' ? 'Мой филиал' : '');
+    ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `${tt('Филиал')} #${branchId}`) : tt('Все филиалы'))
+    : (role === 'manager' ? tt('Мой филиал') : '');
 
-  const periodLabel = PERIOD_OPTIONS.find(p => p.value === period)?.label || '';
+  const periodLabel = tt(PERIOD_OPTIONS.find(p => p.value === period)?.label || '');
 
   // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/gen_dir — суммарно по всем)
   const branchSummary = (() => {
     if (!isOwner && branches.length === 1) {
       return {
         title: branches[0].branch_name,
-        sub: `${branches[0].worker_count} сотр · маржа ${branches[0].margin_pct}%`,
+        sub: `${branches[0].worker_count} ${tt('сотр · маржа ')}${branches[0].margin_pct}%`,
         icon: '🏭',
       };
     }
@@ -252,9 +255,9 @@ export default function Dashboard() {
       const avgMargin = t.margin_pct || 0;
       return {
         title: branchId
-          ? (allBranches.find(x => x.id === branchId)?.name || `Филиал #${branchId}`)
-          : 'Все филиалы',
-        sub: `${totalWorkers} сотр · маржа ${avgMargin}%`,
+          ? (allBranches.find(x => x.id === branchId)?.name || `${tt('Филиал')} #${branchId}`)
+          : tt('Все филиалы'),
+        sub: `${totalWorkers} ${tt('сотр · маржа ')}${avgMargin}%`,
         icon: '🏢',
       };
     }
@@ -264,13 +267,13 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader
-        title="Главная панель"
+        title={tt('Главная панель')}
         sub={`${scopeLabel} · ${todayLabel()}`}
-        actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS} label="Период панели" />}
+        actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Главная панель')} />}
       />
 
       {error && (
-        <Card icon="⚠️" title="Ошибка загрузки">
+        <Card icon="⚠️" title={tt('Ошибка загрузки')}>
           <div style={{ color: 'var(--red)' }}>{error}</div>
         </Card>
       )}
@@ -327,14 +330,14 @@ export default function Dashboard() {
                 📅 {todayLabel()}
               </div>
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
-                💰 ВЫРУЧКА · {periodLabel}
+                💰 {tt('ВЫРУЧКА')} · {periodLabel}
               </div>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5 }}>
-                {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>сум</span>
+                {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>{tt('сум')}</span>
               </div>
               {revDelta != null ? (
                 <div style={{ fontSize: 11.5, fontWeight: 800 }}>
-                  {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% к прошлому периоду
+                  {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% {tt('к прошлому периоду')}
                 </div>
               ) : (
                 data?.prev_totals != null && (
@@ -366,11 +369,11 @@ export default function Dashboard() {
 
           {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
           <div className="grid-3" style={{ marginBottom: 16 }}>
-            <CompactTile icon="🏦" label="Касса (баланс)" value={fmtMoneyFull(t.cash_balance)} sub="сум · остаток на сейчас"
+            <CompactTile icon="🏦" label={tt('Касса (баланс)')} value={fmtMoneyFull(t.cash_balance)} sub={tt('сум') + ' · ' + tt('остаток на сейчас')}
               breakdown={byMethod.cash_in} color="#0EA5E9" />
-            <CompactTile icon="📦" label="Продаж" value={fmtNum(t.deals_count)} sub="за период"
+            <CompactTile icon="📦" label={tt('Продаж')} value={fmtNum(t.deals_count)} sub={tt('за период')}
               breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
-            <CompactTile icon="🧾" label="Средний чек" value={fmtMoneyFull(t.avg_check)} sub="сум"
+            <CompactTile icon="🧾" label={tt('Средний чек')} value={fmtMoneyFull(t.avg_check)} sub={tt('сум')}
               breakdown={byMethod.avg_check} delta={checkDelta} color="#FF6B2B" />
           </div>
 
@@ -389,7 +392,7 @@ export default function Dashboard() {
                   }}>{branchSummary.icon}</div>
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                      💸 Денежный поток
+                      💸 {tt('Денежный поток')}
                     </div>
                     <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', marginTop: 2 }}>{branchSummary.title}</div>
                     <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>{branchSummary.sub}</div>
@@ -401,30 +404,30 @@ export default function Dashboard() {
                     Валовая прибыль — продажи минус себестоимость за период.
                     Склад — текущая стоимость остатков (не зависит от периода). */}
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Приход · {periodLabel}</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>{tt('Приход')} · {periodLabel}</div>
                   <div className="mono" style={{ fontWeight: 800, color: 'var(--green)', fontSize: 18, marginTop: 4 }}>+{fmtMoneyFull(t.cash_income)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · в кассу</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{tt('сум · в кассу')}</div>
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Расход · {periodLabel}</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>{tt('Расход')} · {periodLabel}</div>
                   <div className="mono" style={{ fontWeight: 800, color: 'var(--red)', fontSize: 18, marginTop: 4 }}>−{fmtMoneyFull(t.cash_expense)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · из кассы</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{tt('сум · из кассы')}</div>
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Валовая прибыль</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>{tt('Валовая прибыль')}</div>
                   <div className="mono" style={{ fontWeight: 800, color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.gross_profit)}</div>
                   {profitDelta != null ? (
                     <div style={{ fontSize: 10, fontWeight: 800, color: profitDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}% к прошлому
+                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}% {tt('к прошлому периоду')}
                     </div>
                   ) : (
-                    <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · продажи − себестоимость</div>
+                    <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{tt('сум · продажи − себестоимость')}</div>
                   )}
                 </div>
                 <div>
-                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>Склад · сейчас</div>
+                  <div style={{ color: 'var(--text3)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: .5 }}>{tt('Склад')} · {tt('сейчас')}</div>
                   <div className="mono" style={{ fontWeight: 800, fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.stock_value)}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>сум · стоимость остатков</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{tt('сум · стоимость остатков')}</div>
                 </div>
               </div>
             </div>
@@ -441,15 +444,15 @@ export default function Dashboard() {
               <>
                 {/* Тулбар: заголовок секции слева, переключатель масштаба справа */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 Динамика продаж</div>
-                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS} label="Масштаб графика" />
+                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 {tt('Динамика продаж')}</div>
+                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Динамика продаж')} />
                 </div>
 
                 <div className="grid-2 dashboard-charts-row" style={{ marginBottom: 16, alignItems: 'stretch' }}>
                   {/* Карта 1 — Продажи */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
-                      label={`Продажи · ${CHART_RANGE_LABEL[chartGran]}`}>
+                      label={tt('Продажи · ') + tt(CHART_RANGE_LABEL[chartGran])}>
                       <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
                         {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
                       </div>
@@ -459,21 +462,21 @@ export default function Dashboard() {
                     )}
                     {/* Футер для выравнивания высоты с правой картой */}
                     <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text2)', minHeight: 18 }}>
-                      {peak > 0 && <>Пик: <strong className="mono">{fmtMoneyFull(peak)} сум</strong> · {peakLabel}</>}
+                      {peak > 0 && <>{tt('Пик')}: <strong className="mono">{fmtMoneyFull(peak)} {tt('сум')}</strong> · {peakLabel}</>}
                     </div>
                   </div>
 
                   {/* Карта 2 — Сравнение с предыдущим аналогичным диапазоном */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
-                      label={`Сравнение · ${CHART_RANGE_LABEL[chartGran]}`}>
+                      label={tt('Сравнение · ') + tt(CHART_RANGE_LABEL[chartGran])}>
                       <div className="mono" style={{
                         fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
                         color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
                       }}>
                         {chartDelta != null
                           ? <>{chartDelta >= 0 ? '▲' : '▼'} {Math.abs(chartDelta)}%</>
-                          : <span style={{ fontSize: 13, fontWeight: 700 }}>нет базы для сравнения</span>}
+                          : <span style={{ fontSize: 13, fontWeight: 700 }}>{tt('нет базы для сравнения')}</span>}
                       </div>
                     </ChartHead>
                     {chartLoading && !chart ? <Skeleton height={150} /> : (
@@ -483,11 +486,11 @@ export default function Dashboard() {
                     <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, flexWrap: 'wrap', minHeight: 18 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
-                        <span style={{ color: 'var(--text2)' }}>Текущий: <strong className="mono">{fmtMoneyFull(chartTotal)} сум</strong></span>
+                        <span style={{ color: 'var(--text2)' }}>{tt('Текущий')}: <strong className="mono">{fmtMoneyFull(chartTotal)} {tt('сум')}</strong></span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
-                        <span style={{ color: 'var(--text2)' }}>Предыдущие: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} сум</strong></span>
+                        <span style={{ color: 'var(--text2)' }}>{tt('Предыдущие')}: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} {tt('сум')}</strong></span>
                       </div>
                     </div>
                   </div>
@@ -497,21 +500,21 @@ export default function Dashboard() {
           })()}
 
           {isOwner && branches.length > 1 && (
-            <Card icon="🏭" title="Сравнение филиалов"
-              actions={<Badge tone="purple">{branches.length} филиалов</Badge>}
+            <Card icon="🏭" title={tt('Сравнение филиалов')}
+              actions={<Badge tone="purple">{branches.length} {tt('филиалов')}</Badge>}
               style={{ marginBottom: 16 }}>
               <div style={{ overflowX: 'auto' }}>
                 <table>
                   <thead>
                     <tr>
-                      <th>Филиал</th>
-                      <th style={{ textAlign: 'right' }}>Выручка</th>
-                      <th style={{ textAlign: 'right' }}>Прибыль</th>
-                      <th style={{ textAlign: 'right' }}>Маржа</th>
-                      <th style={{ textAlign: 'right' }}>Сделок</th>
-                      <th style={{ textAlign: 'right' }}>Касса</th>
-                      <th style={{ textAlign: 'right' }}>Склад</th>
-                      <th style={{ textAlign: 'right' }}>Сотр.</th>
+                      <th>{tt('Филиал')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Выручка')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Прибыль')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Маржа')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Сделок')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Касса')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Склад')}</th>
+                      <th style={{ textAlign: 'right' }}>{tt('Сотр.')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -519,7 +522,7 @@ export default function Dashboard() {
                       <tr key={b.branch_id}>
                         <td style={{ fontWeight: 700 }}>
                           🏭 {b.branch_name}{' '}
-                          {b.margin_pct < 10 && b.sales_revenue > 0 && <Badge tone="red">маржа↓</Badge>}
+                          {b.margin_pct < 10 && b.sales_revenue > 0 && <Badge tone="red">{tt('маржа↓')}</Badge>}
                         </td>
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(b.sales_revenue)}</td>
                         <td className="mono" style={{ textAlign: 'right', color: b.gross_profit >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoneyFull(b.gross_profit)}</td>
@@ -531,7 +534,7 @@ export default function Dashboard() {
                       </tr>
                     ))}
                     <tr style={{ background: 'rgba(91,79,232,.05)', fontWeight: 800 }}>
-                      <td>ИТОГО</td>
+                      <td>{tt('ИТОГО')}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(t.sales_revenue)}</td>
                       <td className="mono" style={{ textAlign: 'right', color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoneyFull(t.gross_profit)}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{t.margin_pct}%</td>
@@ -547,10 +550,10 @@ export default function Dashboard() {
           )}
 
           <div className="grid-3" style={{ marginBottom: 16 }}>
-            <Card icon="⚠️" title="Алерты" actions={alerts.length > 0 && <Badge tone="red">{alerts.length}</Badge>}>
+            <Card icon="⚠️" title={tt('Алерты')} actions={alerts.length > 0 && <Badge tone="red">{alerts.length}</Badge>}>
               <div className="list">
                 {alerts.length === 0 ? (
-                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>✓ Всё спокойно</div>
+                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>✓ {tt('Всё спокойно')}</div>
                 ) : alerts.map((a, i) => (
                   <div key={i} className="list-item">
                     <div style={{ width: 5, height: 34, borderRadius: 3, background: ({ red: '#EF4444', yellow: '#F59E0B', blue: '#5B4FE8', purple: '#7c3aed' })[a.tone] || '#6B7280' }} />
@@ -563,10 +566,10 @@ export default function Dashboard() {
               </div>
             </Card>
 
-            <Card icon="🏆" title="Топ товаров" actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/warehouse/stock')}>Все →</button>}>
+            <Card icon="🏆" title={tt('Топ товаров')} actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/warehouse/stock')}>{tt('Все →')}</button>}>
               <div className="list">
                 {topProducts.length === 0 ? (
-                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>Нет данных</div>
+                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных')}</div>
                 ) : topProducts.map((p, i) => (
                   <div key={p.id} className="list-item">
                     <div style={{
@@ -586,10 +589,10 @@ export default function Dashboard() {
               </div>
             </Card>
 
-            <Card icon="👤" title="Топ сотрудников" actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/management/team-kpi')}>KPI →</button>}>
+            <Card icon="👤" title={tt('Топ сотрудников')} actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/management/team-kpi')}>KPI →</button>}>
               <div className="list">
                 {topSellers.length === 0 ? (
-                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>Нет данных</div>
+                  <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных')}</div>
                 ) : topSellers.map(s => {
                   const init = (s.name || s.username || 'U').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase();
                   return (

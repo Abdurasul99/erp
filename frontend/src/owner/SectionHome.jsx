@@ -5,6 +5,7 @@ import { BranchScope } from './OwnerShell.jsx';
 import { getSectionsForRole } from './modules.js';
 import { Badge, Tooltip, Skeleton, fmtMoney, fmtNum } from './ui.jsx';
 import { shade } from './ui.jsx';
+import { useTt } from './tt.js';
 import api from '../api.js';
 
 const METRIC_DEFS = {
@@ -44,6 +45,7 @@ function formatValue(val, type, placeholder) {
 export default function SectionHome() {
   const { user } = useContext(AuthContext);
   const { branchId } = useContext(BranchScope);
+  const { tt } = useTt();
   const { sectionId } = useParams();
   const navigate = useNavigate();
   const sections = getSectionsForRole(user?.role);
@@ -80,13 +82,13 @@ export default function SectionHome() {
           boxShadow: `0 10px 30px ${section.color}44`,
         }}
       >
-        <div className="o-section-hero-eyebrow">ОТДЕЛ</div>
-        <div className="o-section-hero-title">{section.icon} {section.title}</div>
-        <div className="o-section-hero-desc">{section.desc}</div>
+        <div className="o-section-hero-eyebrow">{tt('ОТДЕЛ')}</div>
+        <div className="o-section-hero-title">{section.icon} {tt(section.title)}</div>
+        <div className="o-section-hero-desc">{tt(section.desc)}</div>
         <div style={{ marginTop: 14, fontSize: 12, opacity: .85, display: 'flex', gap: 18 }}>
-          <span>📦 <strong>{section.tools.length}</strong> инструментов</span>
-          <span>✅ <strong>{ready.length}</strong> готовых</span>
-          {upcoming.length > 0 && <span>🚧 <strong>{upcoming.length}</strong> в разработке</span>}
+          <span>📦 <strong>{section.tools.length}</strong> {tt('инструментов')}</span>
+          <span>✅ <strong>{ready.length}</strong> {tt('готовых')}</span>
+          {upcoming.length > 0 && <span>🚧 <strong>{upcoming.length}</strong> {tt('в разработке')}</span>}
         </div>
       </div>
 
@@ -99,7 +101,7 @@ export default function SectionHome() {
             return (
               <div key={mKey} className="card" style={{ padding: 16, borderLeft: `4px solid ${section.color}` }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                  {def.icon} {def.label}
+                  {def.icon} {tt(def.label)}
                 </div>
                 {dashLoading ? (
                   <Skeleton height={22} style={{ width: '60%', marginTop: 8 }} />
@@ -108,7 +110,7 @@ export default function SectionHome() {
                     {formatValue(val, def.format, def.placeholder)}
                   </div>
                 )}
-                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, fontWeight: 600 }}>{def.sub}</div>
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, fontWeight: 600 }}>{tt(def.sub)}</div>
               </div>
             );
           })}
@@ -118,11 +120,11 @@ export default function SectionHome() {
       {ready.length > 0 && (
         <>
           <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .6, marginBottom: 10 }}>
-            Готово к работе
+            {tt('Готово к работе')}
           </div>
           <div className="o-grid-3" style={{ marginBottom: 22 }}>
             {ready.map(t => (
-              <ToolCard key={t.id} tool={t} section={section} onOpen={() => navigate(`/owner/${section.id}/${t.id}`)} />
+              <ToolCard key={t.id} tool={t} section={section} tt={tt} onOpen={() => navigate(`/owner/${section.id}/${t.id}`)} />
             ))}
           </div>
         </>
@@ -131,11 +133,11 @@ export default function SectionHome() {
       {upcoming.length > 0 && (
         <>
           <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .6, marginBottom: 10 }}>
-            В разработке · можно посмотреть макет
+            {tt('В разработке · можно посмотреть макет')}
           </div>
           <div className="o-grid-3">
             {upcoming.map(t => (
-              <ToolCard key={t.id} tool={t} section={section} upcoming onOpen={() => navigate(`/owner/${section.id}/${t.id}`)} />
+              <ToolCard key={t.id} tool={t} section={section} tt={tt} upcoming onOpen={() => navigate(`/owner/${section.id}/${t.id}`)} />
             ))}
           </div>
         </>
@@ -144,27 +146,27 @@ export default function SectionHome() {
   );
 }
 
-function ToolCard({ tool, section, upcoming = false, onOpen }) {
+function ToolCard({ tool, section, upcoming = false, onOpen, tt }) {
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
-      aria-label={`${tool.title} — ${upcoming ? 'в разработке' : 'готов к работе'}`}
+      aria-label={`${tt(tool.title)} — ${upcoming ? tt('в разработке') : tt('Готово к работе')}`}
       className="o-tool-card"
       style={upcoming ? { opacity: .72 } : undefined}
     >
       <div className="o-tool-ico" style={{ background: section.color + '18', color: section.color }}>
         {tool.icon}
       </div>
-      <div className="o-tool-title">{tool.title}</div>
-      <div className="o-tool-desc">{tool.desc}</div>
+      <div className="o-tool-title">{tt(tool.title)}</div>
+      <div className="o-tool-desc">{tt(tool.desc)}</div>
       <div className="o-tool-cta" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ color: section.color }}>{upcoming ? 'Смотреть макет →' : 'Открыть →'}</span>
+        <span style={{ color: section.color }}>{upcoming ? tt('Смотреть макет →') : tt('Открыть →')}</span>
         {upcoming
-          ? <Tooltip text="Дизайн-макет. Реальные данные ещё не подключены — отображаются примеры."><Badge tone="yellow">🚧 Скоро</Badge></Tooltip>
-          : <Tooltip text="Работает с реальными данными вашей компании."><Badge tone="green">✓ Готов</Badge></Tooltip>}
+          ? <Tooltip text={tt('Дизайн-макет. Реальные данные ещё не подключены — отображаются примеры.')}><Badge tone="yellow">{tt('🚧 Скоро')}</Badge></Tooltip>
+          : <Tooltip text={tt('Работает с реальными данными вашей компании.')}><Badge tone="green">{tt('✓ Готов')}</Badge></Tooltip>}
       </div>
     </div>
   );

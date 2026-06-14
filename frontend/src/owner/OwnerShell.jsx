@@ -2,6 +2,7 @@ import React, { useContext, useState, useEffect, useRef, createContext } from 'r
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
 import { getSectionsForRole } from './modules.js';
+import { useTt, dateLocale } from './tt.js';
 import api from '../api.js';
 import './styles.css';
 
@@ -22,6 +23,7 @@ export const BranchScope = createContext({
 
 export default function OwnerShell() {
   const { user, logout } = useContext(AuthContext);
+  const { tt, lang, changeLang } = useTt();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const role = user?.role;
@@ -50,11 +52,11 @@ export default function OwnerShell() {
   const activeSection = parts[1] || 'dashboard';
 
   const initials = (user?.first_name || user?.username || 'U').slice(0, 2).toUpperCase();
-  const roleLabel = ({ founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер' })[role] || role;
+  const roleLabel = tt(({ founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер' })[role] || role);
 
   const currentBranchName = (() => {
-    if (role === 'manager') return user?.branch_name || 'Мой филиал';
-    if (!branchId) return 'Все филиалы';
+    if (role === 'manager') return user?.branch_name || tt('Мой филиал');
+    if (!branchId) return tt('Все филиалы');
     const b = branches.find(x => x.id === branchId);
     return b?.name || '...';
   })();
@@ -82,7 +84,7 @@ export default function OwnerShell() {
                 title={collapsed ? s.title : undefined}
               >
                 <span className="o-link-ico">{s.icon}</span>
-                {!collapsed && <span>{s.title}</span>}
+                {!collapsed && <span>{tt(s.title)}</span>}
                 {!collapsed && s.tools.length > 0 && <span className="o-link-badge">{s.tools.length}</span>}
               </button>
             ))}
@@ -91,7 +93,7 @@ export default function OwnerShell() {
               <button
                 onClick={() => navigate('/owner/ai')}
                 className={'o-link' + (activeSection === 'ai' ? ' active' : '')}
-                title={collapsed ? 'AI-помощник' : undefined}
+                title={collapsed ? tt('AI-помощник') : undefined}
                 style={activeSection === 'ai' ? undefined : {
                   background: 'linear-gradient(135deg, rgba(124,58,237,.12), rgba(91,79,232,.18))',
                   color: '#fff',
@@ -99,7 +101,7 @@ export default function OwnerShell() {
                 }}
               >
                 <span className="o-link-ico">🤖</span>
-                {!collapsed && <span>AI-помощник</span>}
+                {!collapsed && <span>{tt('AI-помощник')}</span>}
                 {!collapsed && <span className="o-link-badge" style={{ background: 'linear-gradient(135deg, #FF6B2B, #F59E0B)' }}>NEW</span>}
               </button>
             )}
@@ -111,23 +113,23 @@ export default function OwnerShell() {
               <button onClick={() => setAiOpen(true)} className="o-link" style={{
                 background: 'linear-gradient(135deg, #7c3aed, #5B4FE8)',
                 color: '#fff', fontWeight: 800,
-              }} title={collapsed ? 'Быстрый AI-чат' : undefined}>
+              }} title={collapsed ? tt('Быстрый чат') : undefined}>
                 <span className="o-link-ico">⚡</span>
-                {!collapsed && <span>Быстрый чат</span>}
+                {!collapsed && <span>{tt('Быстрый чат')}</span>}
                 {!collapsed && <span className="o-link-badge" style={{ background: 'rgba(255,255,255,.25)' }}>popup</span>}
               </button>
             )}
 
             {/* Collapse toggle */}
-            <button onClick={() => setCollapsed(c => !c)} className="o-link" style={{ fontSize: 12 }} title={collapsed ? 'Развернуть' : 'Свернуть'}>
+            <button onClick={() => setCollapsed(c => !c)} className="o-link" style={{ fontSize: 12 }} title={collapsed ? tt('Развернуть') : tt('Свернуть')}>
               <span className="o-link-ico">{collapsed ? '»' : '«'}</span>
-              {!collapsed && <span>Свернуть панель</span>}
+              {!collapsed && <span>{tt('Свернуть панель')}</span>}
             </button>
 
             {!collapsed && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,.6)', fontSize: 11, padding: '4px 12px' }}>
                 <span className="o-dot" />
-                Все системы в норме
+                {tt('Все системы в норме')}
               </div>
             )}
           </div>
@@ -138,22 +140,38 @@ export default function OwnerShell() {
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="o-topbar-title">
                 {(sections.find(s => s.id === activeSection) || sections[0])?.icon}{' '}
-                {(sections.find(s => s.id === activeSection) || sections[0])?.title}
+                {tt((sections.find(s => s.id === activeSection) || sections[0])?.title)}
               </div>
               <div className="o-topbar-sub">
-                {new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}
+                {new Date().toLocaleDateString(dateLocale(lang), { weekday: 'long', day: 'numeric', month: 'long' })}
               </div>
             </div>
 
+            {/* Переключатель языка RU / UZ */}
+            <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
+              {['ru', 'uz'].map(l => (
+                <button key={l} type="button" onClick={() => changeLang && changeLang(l)}
+                  style={{
+                    border: 'none', cursor: 'pointer', padding: '5px 10px', borderRadius: 6,
+                    fontWeight: 800, fontSize: 11, fontFamily: 'inherit',
+                    background: lang === l ? 'var(--surface, #fff)' : 'transparent',
+                    color: lang === l ? 'var(--primary)' : 'var(--text3)',
+                    boxShadow: lang === l ? 'var(--shadow-sm)' : 'none',
+                  }}>
+                  {l === 'ru' ? 'RU' : 'UZ'}
+                </button>
+              ))}
+            </div>
+
             {isOwner ? (
-              <BranchPicker branches={branches} value={branchId} onChange={setBranchId} />
+              <BranchPicker branches={branches} value={branchId} onChange={setBranchId} tt={tt} />
             ) : (
-              <div className="o-branch-pick" title="Менеджер видит только свой филиал">
+              <div className="o-branch-pick" title={tt('Менеджер видит только свой филиал')}>
                 🏭 {currentBranchName}
               </div>
             )}
 
-            <div className="o-user" onClick={logout} title="Выйти" style={{ cursor: 'pointer' }}>
+            <div className="o-user" onClick={logout} title={tt('Выйти')} style={{ cursor: 'pointer' }}>
               <div className="o-avatar">{initials}</div>
               <div style={{ lineHeight: 1.2, fontSize: 12 }}>
                 <div style={{ fontWeight: 800, fontSize: 13 }}>
@@ -184,7 +202,7 @@ export default function OwnerShell() {
   );
 }
 
-function BranchPicker({ branches, value, onChange }) {
+function BranchPicker({ branches, value, onChange, tt }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -195,10 +213,10 @@ function BranchPicker({ branches, value, onChange }) {
   }, []);
 
   const current = value == null
-    ? { icon: '🌐', label: 'Все филиалы', sub: branches.length ? `${branches.length} филиал${branches.length === 1 ? '' : 'ов'}` : null }
+    ? { icon: '🌐', label: tt('Все филиалы'), sub: branches.length ? `${branches.length} ${tt('Филиал').toLowerCase()}` : null }
     : (() => {
         const b = branches.find(x => x.id === value);
-        return { icon: '🏭', label: b?.name || '...', sub: 'Один филиал' };
+        return { icon: '🏭', label: b?.name || '...', sub: tt('Один филиал') };
       })();
 
   return (
@@ -229,18 +247,18 @@ function BranchPicker({ branches, value, onChange }) {
         }}>
           <BranchOption
             active={value == null}
-            icon="🌐" title="Все филиалы"
-            sub="Сводка по всей компании"
+            icon="🌐" title={tt('Все филиалы')}
+            sub={tt('Сводка по всей компании')}
             onClick={() => { onChange(null); setOpen(false); }}
           />
           <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
           {branches.length === 0
-            ? <div style={{ padding: '14px 10px', fontSize: 12, color: 'var(--text3)', textAlign: 'center' }}>Нет филиалов</div>
+            ? <div style={{ padding: '14px 10px', fontSize: 12, color: 'var(--text3)', textAlign: 'center' }}>{tt('Нет филиалов')}</div>
             : branches.map(b => (
               <BranchOption key={b.id}
                 active={value === b.id}
                 icon="🏭" title={b.name}
-                sub="Только этот филиал"
+                sub={tt('Только этот филиал')}
                 onClick={() => { onChange(b.id); setOpen(false); }}
               />
             ))}
