@@ -40,6 +40,7 @@ export const SECTIONS = [
     tools: [
       { id: 'ca-analysis',    icon: '🎯', title: 'Анализ ЦА (JTBD)',     desc: 'Аватары · боли · возражения', wired: true  },
       { id: 'content-plan',   icon: '🎬', title: 'Конструктор контента',  desc: 'Воронка · план/факт · аналитика', wired: true  },
+      { id: 'channels',       icon: '📡', title: 'Каналы и ROI',          desc: 'Откуда клиенты · ROI · LTV по источнику', wired: true  },
       { id: 'ltv',            icon: '💎', title: 'LTV клиентов',          desc: 'Ценность · повторные · сегменты', wired: true  },
       { id: 'ssp',            icon: '🧭', title: 'ССП — стратегия',       desc: 'Cистема сбалансированных показателей', wired: false },
       { id: 'strategy-3y',    icon: '🗓️', title: 'Стратегия 3 года',      desc: 'Сезонность · этапы',         wired: false },

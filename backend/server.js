@@ -4393,11 +4393,12 @@ app.get('/api/customers', auth(), async (req, res) => {
 
 app.post('/api/customers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
-    const { name, phone, note } = req.body;
+    const { name, phone, note, source } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+    const src = source && source.trim() ? source.trim().slice(0, 40) : null;
     const { rows } = await pool.query(
-      'INSERT INTO customers (company_id, name, phone, note, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-      [req.user.company_id, name.trim(), phone || null, note || null, req.user.id]
+      'INSERT INTO customers (company_id, name, phone, note, source, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+      [req.user.company_id, name.trim(), phone || null, note || null, src, req.user.id]
     );
     res.json(rows[0]);
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -4405,11 +4406,12 @@ app.post('/api/customers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cash
 
 app.put('/api/customers/:id', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
-    const { name, phone, note } = req.body;
+    const { name, phone, note, source } = req.body;
+    const src = source === undefined ? undefined : (source && source.trim() ? source.trim().slice(0, 40) : null);
     const { rows } = await pool.query(
-      `UPDATE customers SET name=$1, phone=$2, note=$3
+      `UPDATE customers SET name=$1, phone=$2, note=$3, source=COALESCE($6, source)
        WHERE id=$4 AND company_id=$5 AND deleted_at IS NULL RETURNING *`,
-      [name, phone || null, note || null, req.params.id, req.user.company_id]
+      [name, phone || null, note || null, req.params.id, req.user.company_id, src === undefined ? null : src]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
@@ -5262,6 +5264,91 @@ app.get('/api/marketing/ltv', auth(MKT_ROLES), async (req, res) => {
   } catch (e) { console.error('marketing/ltv err', e); res.status(500).json({ error: e.message }); }
 });
 
+// === КАНАЛЫ + ROI (краеугольный камень: откуда пришёл клиент → деньги канала) ===
+const CHANNEL_LABELS = {
+  instagram: 'Instagram', telegram: 'Telegram', referral: 'Сарафан / реф.',
+  ads: 'Реклама', walk_in: 'Прохожий', marketplace: 'Маркетплейс', other: 'Другое', unknown: 'Не указан',
+};
+async function computeChannels(companyId, branchId) {
+  const params = [companyId];
+  let branchSQL = '';
+  if (branchId) { params.push(branchId); branchSQL = `AND so.branch_id = $${params.length}`; }
+  const custQ = await pool.query(`
+    WITH agg AS (
+      SELECT c.id, COALESCE(NULLIF(TRIM(c.source),''),'unknown') AS source,
+             COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
+             COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'),0) AS revenue
+      FROM customers c
+      LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL
+      GROUP BY c.id, c.source
+    )
+    SELECT source,
+           COUNT(*) AS customers,
+           COUNT(*) FILTER (WHERE orders > 0) AS buyers,
+           COUNT(*) FILTER (WHERE orders >= 2) AS repeat_buyers,
+           COALESCE(SUM(revenue),0) AS revenue
+    FROM agg GROUP BY source`, params);
+
+  const spendQ = await pool.query(
+    `SELECT id, channel, to_char(month,'YYYY-MM') AS month, amount FROM channel_spend WHERE company_id = $1 ORDER BY month DESC`, [companyId]);
+  const spendByChannel = {};
+  for (const r of spendQ.rows) spendByChannel[r.channel] = (spendByChannel[r.channel] || 0) + parseFloat(r.amount);
+
+  const keys = new Set([...custQ.rows.map(r => r.source), ...Object.keys(spendByChannel)]);
+  const channels = [...keys].map(src => {
+    const row = custQ.rows.find(r => r.source === src) || { customers: 0, buyers: 0, repeat_buyers: 0, revenue: 0 };
+    const customers = parseInt(row.customers) || 0;
+    const buyers = parseInt(row.buyers) || 0;
+    const revenue = parseFloat(row.revenue) || 0;
+    const spend = spendByChannel[src] || 0;
+    return {
+      channel: src, label: CHANNEL_LABELS[src] || src,
+      customers, buyers,
+      repeat_rate: buyers ? Math.round((parseInt(row.repeat_buyers) / buyers) * 100) : 0,
+      revenue: Math.round(revenue),
+      avg_ltv: buyers ? Math.round(revenue / buyers) : 0,
+      spend: Math.round(spend),
+      roi: spend > 0 ? Math.round((revenue / spend) * 100) / 100 : null,
+      cac: spend > 0 && buyers > 0 ? Math.round(spend / buyers) : null,
+    };
+  }).sort((a, b) => b.revenue - a.revenue);
+
+  return { channels, spend_rows: spendQ.rows.map(r => ({ id: r.id, channel: r.channel, month: r.month, amount: parseFloat(r.amount) })) };
+}
+
+app.get('/api/marketing/channels', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const branchId = getBranchFilter(req.user, req.query);
+    res.json(await computeChannels(req.user.company_id, branchId));
+  } catch (e) { console.error('marketing/channels err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/marketing/channel-spend', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { channel, month, amount } = req.body || {};
+    if (!channel || !month) return res.status(400).json({ error: 'channel и month обязательны' });
+    const amt = parseFloat(amount);
+    if (!Number.isFinite(amt) || amt < 0) return res.status(400).json({ error: 'amount >= 0' });
+    const monthDate = /^\d{4}-\d{2}$/.test(month) ? month + '-01' : month;
+    const { rows } = await pool.query(
+      `INSERT INTO channel_spend (company_id, channel, month, amount, created_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (company_id, channel, month) DO UPDATE SET amount = EXCLUDED.amount RETURNING *`,
+      [req.user.company_id, String(channel).slice(0, 40), monthDate, amt, req.user.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/marketing/channel-spend/:id', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const { rowCount } = await pool.query('DELETE FROM channel_spend WHERE id=$1 AND company_id=$2', [parseInt(req.params.id, 10), req.user.company_id]);
+    if (!rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // === AI CHAT — DeepSeek proxy ===
 // Token loaded from env (DEEPSEEK_API_KEY). Owner roles only. Logs usage to ai_chat_log.
 // Backend acts as proxy so the key never reaches the browser.
@@ -5797,6 +5884,7 @@ const FIN_TOPICS = {
   cashflow:    { name: 'Денежный поток (Cash Flow)', fn: computeCashflow },
   'break-even':{ name: 'Точка безубыточности',       fn: computeBreakEven },
   model:       { name: 'Финансовая модель',          fn: computeFinModel },
+  channels:    { name: 'Каналы привлечения и ROI',   fn: null },
 };
 app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
   try {
@@ -5809,11 +5897,18 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ analysis: 'Нет данных для анализа — у вас нет доступных филиалов.' });
 
+    const fmtN = (n) => Math.round(parseFloat(n) || 0).toLocaleString('ru-RU');
+    let factSheet = '';
+
+    if (topic === 'channels') {
+      const branchId = (scope.ids && scope.ids.length === 1) ? scope.ids[0] : null;
+      const ch = await computeChannels(req.user.company_id, branchId);
+      factSheet = 'Каналы привлечения клиентов (источник → результат):\n' + ch.channels.map(c =>
+        `${c.label}: клиентов ${c.customers}, покупателей ${c.buyers}, выручка ${fmtN(c.revenue)} сум, средний LTV ${fmtN(c.avg_ltv)} сум, повторные ${c.repeat_rate}%, расход ${fmtN(c.spend)} сум, ROI ${c.roi != null ? c.roi + 'x' : 'н/д'}, CAC ${c.cac != null ? fmtN(c.cac) + ' сум' : 'н/д'}`
+      ).join('\n');
+    } else {
     // Реальные цифры (server-side, доверенные)
     const data = meta.fn === computeFinModel ? await meta.fn(scope) : await meta.fn(scope, null, null);
-    const fmtN = (n) => Math.round(parseFloat(n) || 0).toLocaleString('ru-RU');
-
-    let factSheet = '';
     if (topic === 'cashflow') {
       factSheet = `Приход за период: ${fmtN(data.income)} сум\nРасход за период: ${fmtN(data.expense)} сум\nСальдо (баланс): ${fmtN(data.balance)} сум\nИзменение к прошлому периоду: ${data.balance_delta_pct ?? 'н/д'}%\nСредний чистый поток/день: ${fmtN(data.forecast_avg_net)} сум\nПрогноз баланса через 7 дней: ${fmtN(data.forecast_end_balance)} сум`;
     } else if (topic === 'break-even') {
@@ -5822,8 +5917,10 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
       const rows = [...data.months, ...data.projection].map(m => `${m.label}${m.projected ? ' (прогноз)' : ''}: выручка ${fmtN(m.revenue)}, валовая прибыль ${fmtN(m.gross_profit)}, чистая ${fmtN(m.net_profit)}`).join('\n');
       factSheet = `Среднемесячный рост выручки: ${data.growth_pct}%\n${rows}`;
     }
+    }
 
-    const sys = `Ты — финансовый аналитик ERP-системы для розничного бизнеса в Узбекистане. Отвечай по-русски, кратко и по делу. На основе реальных цифр компании дай: (1) короткий вывод о состоянии (2-3 предложения), (2) 2-3 конкретных действия. Без воды, без общих фраз. Суммы в сумах. Используй ТОЛЬКО приведённые цифры, не выдумывай.`;
+    const sysChannels = `Ты — маркетинговый аналитик ERP для розницы в Узбекистане. По данным каналов привлечения дай: (1) какой канал приносит больше денег и почему (LTV, ROI, повторные), (2) куда перелить бюджет и от чего отказаться, (3) 1-2 действия. Кратко, по-русски, только по цифрам. Если у канала нет расхода — отметь, что ROI не посчитать без ввода бюджета.`;
+    const sys = topic === 'channels' ? sysChannels : `Ты — финансовый аналитик ERP-системы для розничного бизнеса в Узбекистане. Отвечай по-русски, кратко и по делу. На основе реальных цифр компании дай: (1) короткий вывод о состоянии (2-3 предложения), (2) 2-3 конкретных действия. Без воды, без общих фраз. Суммы в сумах. Используй ТОЛЬКО приведённые цифры, не выдумывай.`;
     const userMsg = `Раздел: ${meta.name}\n\nРеальные данные компании:\n${factSheet}\n\nДай разбор и рекомендации.`;
 
     const r = await fetch(DEEPSEEK_URL, {
@@ -5940,6 +6037,19 @@ async function ensureSchema() {
     await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS fact_likes INT`);
     await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS fact_comments INT`);
     await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS analysis TEXT`);
+    await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS source VARCHAR(40)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS channel_spend (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        channel VARCHAR(40) NOT NULL,
+        month DATE NOT NULL,
+        amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (company_id, channel, month)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_channel_spend_company ON channel_spend(company_id, month)`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ai_chat_log (

@@ -12,7 +12,7 @@ export default function CustomersManager() {
   const [edit, setEdit] = useState(null); // null | 'new' | {customer}
   const [debtorOnly, setDebtorOnly] = useState(false);
   const [debtsFor, setDebtsFor] = useState(null); // customer record
-  const [form, setForm] = useState({ name: '', phone: '', note: '' });
+  const [form, setForm] = useState({ name: '', phone: '', note: '', source: '' });
   const [err, setErr] = useState('');
   const [msg, setMsg, clearMsg] = useMsg();
 
@@ -33,8 +33,8 @@ export default function CustomersManager() {
   const totalDebt = filtered.reduce((s, c) => s + parseFloat(c.debt_amount || 0), 0);
   const withDebt = filtered.filter(c => parseFloat(c.debt_amount) > 0).length;
 
-  const openNew = () => { setEdit('new'); setForm({ name: '', phone: '', note: '' }); setErr(''); };
-  const openEdit = (c) => { setEdit(c); setForm({ name: c.name, phone: c.phone || '', note: c.note || '' }); setErr(''); };
+  const openNew = () => { setEdit('new'); setForm({ name: '', phone: '', note: '', source: '' }); setErr(''); };
+  const openEdit = (c) => { setEdit(c); setForm({ name: c.name, phone: c.phone || '', note: c.note || '', source: c.source || '' }); setErr(''); };
 
   const save = async () => {
     if (!form.name.trim()) { setErr(t('enterName')); return; }
@@ -162,6 +162,20 @@ export default function CustomersManager() {
             </div>
             <div style={{ marginBottom: '12px' }}><label className="label">{t('name') || 'Имя'} *</label><input className="input" autoFocus value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
             <div style={{ marginBottom: '12px' }}><label className="label">{t('phone') || 'Телефон'}</label><input className="input" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+998..." /></div>
+            <div style={{ marginBottom: '12px' }}>
+              <label className="label">Откуда пришёл клиент</label>
+              <select className="input" value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>
+                <option value="">— не указан —</option>
+                <option value="instagram">📷 Instagram</option>
+                <option value="telegram">✈️ Telegram</option>
+                <option value="referral">🤝 Сарафан / рекомендация</option>
+                <option value="ads">📣 Реклама</option>
+                <option value="walk_in">🚶 Прохожий</option>
+                <option value="marketplace">🛒 Маркетплейс</option>
+                <option value="other">📌 Другое</option>
+              </select>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>Канал нужен для аналитики ROI в разделе Маркетинг → Каналы</div>
+            </div>
             <div style={{ marginBottom: '16px' }}><label className="label">{t('note') || 'Примечание'}</label><textarea className="input" rows={3} value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} /></div>
             {err && <div className="alert alert-error">{err}</div>}
             <div style={{ display: 'flex', gap: '10px' }}>
