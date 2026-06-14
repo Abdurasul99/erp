@@ -5,6 +5,8 @@ import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import { AuthContext } from '../App.jsx';
 
+const PW_HINT = 'Пароль минимум 8 символов и должен содержать букву и цифру';
+const pwOk = (pw) => typeof pw === 'string' && pw.length >= 8 && /[a-zA-Zа-яА-Я]/.test(pw) && /[0-9]/.test(pw);
 const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole' };
 const roleBadge = { founder: 'badge-blue', gen_dir: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
@@ -64,7 +66,7 @@ export default function GenDirUsers() {
   };
 
   const handlePwdSave = async () => {
-    if (!newPwd || newPwd.length < 4) return;
+    if (!pwOk(newPwd)) { setMsg('error', PW_HINT); return; }
     try {
       await api.post('/users/reset-password', { user_id: pwdChange.id, password: newPwd });
       setMsg('success', t('success'));
@@ -99,6 +101,7 @@ export default function GenDirUsers() {
 
   const handleAddUser = async (e) => {
     e.preventDefault();
+    if (!pwOk(addForm.password)) { setMsg('error', PW_HINT); return; }
     try {
       await api.post('/users', {
         username: addForm.username, password: addForm.password,
@@ -187,6 +190,7 @@ export default function GenDirUsers() {
                 <button type="button" onClick={() => setShowAddPass(v => !v)} style={{ position: 'absolute', right: '10px', top: '32px', background: 'none', border: 'none', cursor: 'pointer' }}>
                   <Icon name={showAddPass ? 'eyeOff' : 'eye'} size={15} color="#9EA3BF" />
                 </button>
+                <div style={{ fontSize: 11, color: addForm.password && !pwOk(addForm.password) ? '#EF4444' : '#9EA3BF', marginTop: 4 }}>{PW_HINT}</div>
               </div>
               <div>
                 <label className="label">{t('role')}</label>
@@ -357,7 +361,8 @@ export default function GenDirUsers() {
             <div style={{ fontWeight: 800, fontSize: '18px', marginBottom: '16px' }}>{t('changePassword')} — {pwdChange.username}</div>
             <div style={{ position: 'relative', marginBottom: '16px' }}>
               <input className="input" type={showNewPwd ? 'text' : 'password'} value={newPwd} onChange={e => setNewPwd(e.target.value)} placeholder={t('newPassword')} style={{ paddingRight: '44px' }} autoFocus />
-              <button type="button" onClick={() => setShowNewPwd(v => !v)} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer' }}>
+              <div style={{ fontSize: 11, color: newPwd && !pwOk(newPwd) ? '#EF4444' : '#9EA3BF', marginTop: 6 }}>{PW_HINT}</div>
+              <button type="button" onClick={() => setShowNewPwd(v => !v)} style={{ position: 'absolute', right: '12px', top: '22px', background: 'none', border: 'none', cursor: 'pointer' }}>
                 <Icon name={showNewPwd ? 'eyeOff' : 'eye'} size={16} color="#9EA3BF" />
               </button>
             </div>

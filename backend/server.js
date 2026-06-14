@@ -84,6 +84,12 @@ const upload = multer({
   },
 });
 
+function validatePassword(pw) {
+  if (typeof pw !== 'string' || pw.length < 8) return { ok: false, error: 'Пароль минимум 8 символов и должен содержать букву и цифру' };
+  if (!/[a-zA-Zа-яА-Я]/.test(pw) || !/[0-9]/.test(pw)) return { ok: false, error: 'Пароль минимум 8 символов и должен содержать букву и цифру' };
+  return { ok: true };
+}
+
 const auth = (roles = []) => (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
@@ -184,7 +190,7 @@ app.post('/api/companies', auth(['admin']), async (req, res) => {
     if (!name || !name.trim()) return res.status(400).json({ error: 'Название компании обязательно' });
     if (!founder_first_name || !founder_first_name.trim()) return res.status(400).json({ error: 'ФИО учредителя обязательно' });
     if (!gen_dir_username || !gen_dir_username.trim()) return res.status(400).json({ error: 'Логин учредителя обязателен' });
-    if (!gen_dir_password || gen_dir_password.length < 4) return res.status(400).json({ error: 'Пароль учредителя минимум 4 символа' });
+    { const v = validatePassword(gen_dir_password); if (!v.ok) return res.status(400).json({ error: v.error }); }
 
     const client = await pool.connect();
     try {
@@ -263,6 +269,8 @@ app.post('/api/branches', auth(['admin', 'gen_dir', 'founder']), async (req, res
         [companyId, name, address || '', phone || '', req.user.id]
       );
       if (manager_username && manager_password) {
+        const v = validatePassword(manager_password);
+        if (!v.ok) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
         const hash = await bcrypt.hash(manager_password, 10);
         await client.query(
           'INSERT INTO users (username, password_hash, role, company_id, branch_id) VALUES ($1,$2,$3,$4,$5)',
@@ -1293,6 +1301,7 @@ app.get('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
 app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const { username, password, role, branch_id, company_id, first_name, last_name } = req.body;
+    { const v = validatePassword(password); if (!v.ok) return res.status(400).json({ error: v.error }); }
     const hash = await bcrypt.hash(password, 10);
     let companyId, branchId;
     if (req.user.role === 'admin') {
@@ -1433,7 +1442,7 @@ app.put('/api/users/:id/block', auth(['admin', 'gen_dir', 'founder', 'manager'])
 app.post('/api/auth/change-password', auth(), async (req, res) => {
   try {
     const { current_password, new_password } = req.body;
-    if (!new_password || new_password.length < 4) return res.status(400).json({ error: 'Новый пароль минимум 4 символа' });
+    { const v = validatePassword(new_password); if (!v.ok) return res.status(400).json({ error: v.error }); }
     const { rows } = await pool.query('SELECT password_hash FROM users WHERE id=$1', [req.user.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
     const ok = await bcrypt.compare(current_password || '', rows[0].password_hash);
@@ -1449,7 +1458,7 @@ app.post('/api/users/reset-password', auth(['admin', 'gen_dir', 'founder', 'mana
     const { user_id, password } = req.body;
     const targetId = parseInt(user_id, 10);
     if (!Number.isFinite(targetId)) return res.status(400).json({ error: 'bad user_id' });
-    if (!password || password.length < 4) return res.status(400).json({ error: 'Пароль минимум 4 символа' });
+    { const v = validatePassword(password); if (!v.ok) return res.status(400).json({ error: v.error }); }
     const { rows: [cur] } = await pool.query('SELECT id, role, branch_id, company_id FROM users WHERE id=$1', [targetId]);
     if (!cur) return res.status(404).json({ error: 'Not found' });
     if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
@@ -2273,7 +2282,7 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
     // If seller picked a branch, make sure it's in their company
     if (req.user.role === 'seller' && bodyBranch) {
       try { await assertBranchInCompany(req.user, parseInt(bodyBranch)); }
-      catch (e) { client.release(); return res.status(e.statusCode || 403).json({ error: e.message }); }
+      catch (e) { return res.status(e.statusCode || 403).json({ error: e.message }); }
     }
     // Payment fields with safe defaults
     const total = qty * (Number.isFinite(resolvedPrice) ? resolvedPrice : parseFloat(price || 0));
@@ -2288,6 +2297,16 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
     if (pstatus === 'partial' && paid <= 0)     pstatus = 'debt'; // demote
     const dueDate = pstatus !== 'paid' && due_date ? due_date : null;
     const custId = customer_id ? parseInt(customer_id) : null;
+    const branchId = getBranchFilter(req.user, req.body);
+
+    // Нельзя продать больше, чем есть на складе филиала. Проверка на создании
+    // (даже для pending) — даёт понятную ошибку и защищает от переполнения сумм
+    // при абсурдных количествах. Жёсткая атомарная проверка остаётся на approve.
+    if (branchId) {
+      const av = await client.query('SELECT COALESCE(quantity,0) AS q FROM product_stock WHERE product_id=$1 AND branch_id=$2', [pid, branchId]);
+      const avail = parseFloat(av.rows[0]?.q || 0);
+      if (qty > avail) return res.status(400).json({ error: `Недостаточно остатка: есть ${avail}, запрошено ${qty}` });
+    }
 
     await client.query('BEGIN');
     // Seller sales go to PENDING — warehouse/manager must verify before stock is decremented.
@@ -2295,7 +2314,6 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
     // Cashier sales also go pending (no change).
     const autoApprove = ['admin', 'founder', 'gen_dir', 'manager', 'warehouse'].includes(req.user.role);
     const status = autoApprove ? 'approved' : 'pending';
-    const branchId = getBranchFilter(req.user, req.body);
 
     const { rows } = await client.query(
       `INSERT INTO stock_outcome (product_id, quantity, price, note, created_by, approved_by, status, branch_id,
@@ -5096,7 +5114,9 @@ app.get('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
 
 app.post('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
   try {
-    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes } = req.body || {};
+    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes,
+            funnel_stage, reference_link, plan_views, plan_likes, plan_comments,
+            fact_views, fact_likes, fact_comments, analysis } = req.body || {};
     if (!title || !title.trim()) return res.status(400).json({ error: 'title required' });
     const allowedPlatform = ['instagram','telegram','tiktok','youtube','facebook','email','sms','website','other'];
     const allowedFormat = ['post','reels','story','video','photo','carousel','article','email','sms','live','other'];
@@ -5104,6 +5124,8 @@ app.post('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
     const plat = allowedPlatform.includes(platform) ? platform : 'instagram';
     const fmt  = allowedFormat.includes(format) ? format : 'post';
     const st   = allowedStatus.includes(status) ? status : 'planned';
+    const stage = ['tofu','mofu','bofu'].includes(funnel_stage) ? funnel_stage : null;
+    const numOrNull = (v) => (v === '' || v == null || isNaN(parseInt(v))) ? null : parseInt(v);
     const pid  = persona_id ? parseInt(persona_id, 10) : null;
     if (pid != null) {
       const o = await pool.query('SELECT company_id FROM marketing_personas WHERE id = $1', [pid]);
@@ -5113,10 +5135,13 @@ app.post('/api/marketing/content', auth(MKT_ROLES), async (req, res) => {
     }
     const { rows } = await pool.query(
       `INSERT INTO marketing_content
-         (company_id, title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+         (company_id, title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes, created_by,
+          funnel_stage, reference_link, plan_views, plan_likes, plan_comments, fact_views, fact_likes, fact_comments, analysis)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
       [req.user.company_id, title.trim(), plat, fmt, scheduled_for || null, st, pid,
-       hook || null, body || null, cta || null, notes || null, req.user.id]
+       hook || null, body || null, cta || null, notes || null, req.user.id,
+       stage, reference_link || null, numOrNull(plan_views), numOrNull(plan_likes), numOrNull(plan_comments),
+       numOrNull(fact_views), numOrNull(fact_likes), numOrNull(fact_comments), analysis || null]
     );
     audit(req, 'create', 'marketing_content', rows[0].id, null, rows[0]);
     res.json(rows[0]);
@@ -5127,8 +5152,12 @@ app.put('/api/marketing/content/:id', auth(MKT_ROLES), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
-    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes } = req.body || {};
+    const { title, platform, format, scheduled_for, status, persona_id, hook, body, cta, notes,
+            funnel_stage, reference_link, plan_views, plan_likes, plan_comments,
+            fact_views, fact_likes, fact_comments, analysis } = req.body || {};
     const pid = persona_id === null ? null : persona_id ? parseInt(persona_id, 10) : null;
+    const stage = ['tofu','mofu','bofu'].includes(funnel_stage) ? funnel_stage : null;
+    const numOrNull = (v) => (v === '' || v == null || isNaN(parseInt(v))) ? null : parseInt(v);
     const { rows } = await pool.query(
       `UPDATE marketing_content
          SET title = COALESCE($1, title),
@@ -5138,11 +5167,16 @@ app.put('/api/marketing/content/:id', auth(MKT_ROLES), async (req, res) => {
              status   = COALESCE($5, status),
              persona_id = $6,
              hook = $7, body = $8, cta = $9, notes = $10,
+             funnel_stage = $13, reference_link = $14,
+             plan_views = $15, plan_likes = $16, plan_comments = $17,
+             fact_views = $18, fact_likes = $19, fact_comments = $20, analysis = $21,
              updated_at = NOW()
        WHERE id = $11 AND company_id = $12 RETURNING *`,
       [title?.trim() || null, platform || null, format || null, scheduled_for || null,
        status || null, pid, hook || null, body || null, cta || null, notes || null,
-       id, req.user.company_id]
+       id, req.user.company_id,
+       stage, reference_link || null, numOrNull(plan_views), numOrNull(plan_likes), numOrNull(plan_comments),
+       numOrNull(fact_views), numOrNull(fact_likes), numOrNull(fact_comments), analysis || null]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
     audit(req, 'update', 'marketing_content', id, null, rows[0]);
@@ -5161,6 +5195,71 @@ app.delete('/api/marketing/content/:id', auth(MKT_ROLES), async (req, res) => {
     audit(req, 'delete', 'marketing_content', id, null, null);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === LTV (ценность клиента) — на реальных продажах, company/branch-scoped ===
+app.get('/api/marketing/ltv', auth(MKT_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND so.branch_id = $${params.length}`; }
+    const { rows } = await pool.query(`
+      WITH agg AS (
+        SELECT c.id, c.name, c.phone,
+               COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
+               COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
+               MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at,
+               EXTRACT(DAY FROM NOW() - MAX(so.created_at) FILTER (WHERE so.status='approved')) AS days_since
+        FROM customers c
+        LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL
+        GROUP BY c.id, c.name, c.phone
+      )
+      SELECT id, name, phone, orders::int, revenue::numeric, last_at,
+             COALESCE(days_since,0)::int AS days_since,
+             CASE
+               WHEN orders = 0 THEN 'new'
+               WHEN days_since >= 120 THEN 'lost'
+               WHEN days_since >= 60 THEN 'sleeping'
+               WHEN revenue >= 5000000 THEN 'vip'
+               ELSE 'regular'
+             END AS segment
+      FROM agg ORDER BY revenue DESC NULLS LAST`, params);
+
+    const buyers = rows.filter(r => r.orders > 0);
+    const totalRevenue = buyers.reduce((a, r) => a + parseFloat(r.revenue), 0);
+    const totalOrders = buyers.reduce((a, r) => a + r.orders, 0);
+    const repeatBuyers = buyers.filter(r => r.orders >= 2).length;
+    const ltvs = buyers.map(r => parseFloat(r.revenue)).sort((a, b) => a - b);
+    const median = ltvs.length ? (ltvs.length % 2 ? ltvs[(ltvs.length - 1) / 2] : (ltvs[ltvs.length / 2 - 1] + ltvs[ltvs.length / 2]) / 2) : 0;
+
+    const segMap = {};
+    for (const r of rows) {
+      const s = r.segment;
+      if (!segMap[s]) segMap[s] = { count: 0, revenue: 0 };
+      segMap[s].count++; segMap[s].revenue += parseFloat(r.revenue);
+    }
+    const by_segment = Object.entries(segMap).map(([segment, v]) => ({
+      segment, count: v.count, avg_ltv: v.count ? Math.round(v.revenue / v.count) : 0, total: v.revenue,
+    }));
+
+    res.json({
+      customers_total: rows.length,
+      buyers_count: buyers.length,
+      avg_ltv: buyers.length ? Math.round(totalRevenue / buyers.length) : 0,
+      median_ltv: Math.round(median),
+      avg_orders: buyers.length ? Math.round((totalOrders / buyers.length) * 10) / 10 : 0,
+      avg_order_value: totalOrders ? Math.round(totalRevenue / totalOrders) : 0,
+      repeat_rate: buyers.length ? Math.round((repeatBuyers / buyers.length) * 100) : 0,
+      by_segment,
+      top_customers: buyers.slice(0, 15).map(r => ({
+        id: r.id, name: r.name, phone: r.phone, orders: r.orders,
+        ltv: parseFloat(r.revenue), last_at: r.last_at, segment: r.segment,
+      })),
+    });
+  } catch (e) { console.error('marketing/ltv err', e); res.status(500).json({ error: e.message }); }
 });
 
 // === AI CHAT — DeepSeek proxy ===
@@ -5832,6 +5931,15 @@ async function ensureSchema() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_content_company ON marketing_content(company_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_content_scheduled ON marketing_content(company_id, scheduled_for)`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS funnel_stage VARCHAR(8)`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS reference_link TEXT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS plan_views INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS plan_likes INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS plan_comments INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS fact_views INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS fact_likes INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS fact_comments INT`);
+    await pool.query(`ALTER TABLE marketing_content ADD COLUMN IF NOT EXISTS analysis TEXT`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ai_chat_log (
