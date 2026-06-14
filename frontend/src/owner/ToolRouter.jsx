@@ -45,6 +45,7 @@ import ModelingTool from './tools/ModelingTool.jsx';
 import MktOverviewTool from './tools/MktOverviewTool.jsx';
 import Strategy3yTool from './tools/Strategy3yTool.jsx';
 import ContentPlanTool from './tools/ContentPlanTool.jsx';
+import LtvTool from './tools/LtvTool.jsx';
 import LeadGenTool from './tools/LeadGenTool.jsx';
 import CompetitorsTool from './tools/CompetitorsTool.jsx';
 import LoyaltyTool from './tools/LoyaltyTool.jsx';
@@ -88,12 +89,11 @@ const RESOLVE = {
   marketing: {
     'ca-analysis':  { Comp: PersonasTool },
     'content-plan': { Comp: ContentPlanTool },
-    'mkt-overview': { Comp: MktOverviewTool },
+    ltv:            { Comp: LtvTool },
     'strategy-3y':  { Comp: Strategy3yTool },
     leadgen:        { Comp: LeadGenTool },
     competitors:    { Comp: CompetitorsTool },
     loyalty:        { Comp: LoyaltyTool },
-    cjm:            { Comp: CjmTool },
     ssp:            { Comp: MgmtTool },
   },
   procurement: {

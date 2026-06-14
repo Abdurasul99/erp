@@ -61,6 +61,10 @@ _new_endpoints*.cjs
 _remote_smoke*.cjs
 _payload.json
 
+# Generated artifacts (Excel checklists, temp office lockfiles)
+*.xlsx
+~$*
+
 # Personal access / credentials file — NEVER commit
 CREDENTIALS.md
 SECRETS.md

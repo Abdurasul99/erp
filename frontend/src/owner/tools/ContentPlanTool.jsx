@@ -27,16 +27,27 @@ const STATUS_META = {
   cancelled:   { label: '🚫 Отменено',       tone: 'gray' },
 };
 
+// Воронка контента: TOFU (привлечение) → MOFU (вовлечение) → BOFU (продажа)
+const FUNNEL_META = {
+  tofu: { label: 'TOFU · Привлечение', short: 'TOFU', tone: 'blue',   hint: 'Знакомят с брендом, охват' },
+  mofu: { label: 'MOFU · Вовлечение',  short: 'MOFU', tone: 'yellow', hint: 'Прогрев, доверие, польза' },
+  bofu: { label: 'BOFU · Продажа',     short: 'BOFU', tone: 'green',  hint: 'Призыв купить, оффер' },
+};
+
 const empty = {
   title: '', platform: 'instagram', format: 'post',
   scheduled_for: '', status: 'planned', persona_id: '',
   hook: '', body: '', cta: '', notes: '',
+  funnel_stage: '', reference_link: '',
+  plan_views: '', plan_likes: '', plan_comments: '',
+  fact_views: '', fact_likes: '', fact_comments: '', analysis: '',
 };
 
 const FILTERS = [
   { value: 'all',         label: 'Все' },
-  { value: 'planned',     label: '📅 Планы' },
-  { value: 'in_progress', label: '⏳ В работе' },
+  { value: 'tofu',        label: 'TOFU' },
+  { value: 'mofu',        label: 'MOFU' },
+  { value: 'bofu',        label: 'BOFU' },
   { value: 'published',   label: '✅ Опублик.' },
 ];
 
@@ -66,19 +77,15 @@ export default function ContentPlanTool() {
 
   const filtered = useMemo(() => {
     if (statusFilter === 'all') return list;
+    if (['tofu', 'mofu', 'bofu'].includes(statusFilter)) return list.filter(c => c.funnel_stage === statusFilter);
     return list.filter(c => c.status === statusFilter);
   }, [list, statusFilter]);
 
   const summary = useMemo(() => ({
     total: list.length,
-    planned: list.filter(c => c.status === 'planned').length,
-    in_progress: list.filter(c => c.status === 'in_progress').length,
-    published: list.filter(c => c.status === 'published').length,
-    this_week: list.filter(c => {
-      if (!c.scheduled_for) return false;
-      const days = (new Date(c.scheduled_for) - new Date()) / 86400000;
-      return days >= 0 && days <= 7;
-    }).length,
+    tofu: list.filter(c => c.funnel_stage === 'tofu').length,
+    mofu: list.filter(c => c.funnel_stage === 'mofu').length,
+    bofu: list.filter(c => c.funnel_stage === 'bofu').length,
   }), [list]);
 
   const openNew = () => {
@@ -91,6 +98,10 @@ export default function ContentPlanTool() {
       scheduled_for: c.scheduled_for ? c.scheduled_for.slice(0, 10) : '',
       status: c.status || 'planned', persona_id: c.persona_id || '',
       hook: c.hook || '', body: c.body || '', cta: c.cta || '', notes: c.notes || '',
+      funnel_stage: c.funnel_stage || '', reference_link: c.reference_link || '',
+      plan_views: c.plan_views ?? '', plan_likes: c.plan_likes ?? '', plan_comments: c.plan_comments ?? '',
+      fact_views: c.fact_views ?? '', fact_likes: c.fact_likes ?? '', fact_comments: c.fact_comments ?? '',
+      analysis: c.analysis || '',
     });
     setEditing(c.id);
   };
@@ -126,8 +137,8 @@ export default function ContentPlanTool() {
   return (
     <>
       <PageHeader
-        title="📝 Контент-план"
-        sub="Календарь публикаций · хук · CTA · привязка к ЦА"
+        title="🎬 Конструктор контента"
+        sub="Воронка TOFU/MOFU/BOFU · план/факт · анализ после публикации"
         actions={
           <>
             <Badge tone="green">Live · CRUD</Badge>
@@ -145,10 +156,10 @@ export default function ContentPlanTool() {
       )}
 
       <div className="grid-4" style={{ marginBottom: 16 }}>
-        <Tile icon="📝" label="Всего"          value={fmtNum(summary.total)}       sub="публикаций"         color="#EC4899" />
-        <Tile icon="📅" label="Запланировано" value={fmtNum(summary.planned)}     sub="ждут"               color="#5B4FE8" />
-        <Tile icon="⏳" label="В работе"       value={fmtNum(summary.in_progress)} sub="готовится"          color="#F59E0B" />
-        <Tile icon="✅" label="На этой неделе" value={fmtNum(summary.this_week)}   sub="выйдет ≤ 7 дней"    color="#22C55E" />
+        <Tile icon="📝" label="Всего публикаций" value={fmtNum(summary.total)} sub="в плане"          color="#EC4899" />
+        <Tile icon="🔵" label="TOFU"             value={fmtNum(summary.tofu)} sub="привлечение"      color="#5B4FE8" />
+        <Tile icon="🟡" label="MOFU"             value={fmtNum(summary.mofu)} sub="вовлечение"       color="#F59E0B" />
+        <Tile icon="🟢" label="BOFU"             value={fmtNum(summary.bofu)} sub="продажа"          color="#22C55E" />
       </div>
 
       {editing !== null && (
@@ -173,7 +184,11 @@ export default function ContentPlanTool() {
             <Field label="Когда" value={form.scheduled_for}
               onChange={v => setForm({ ...form, scheduled_for: v })} type="date" />
           </div>
-          <div className="grid-2" style={{ gap: 14, marginTop: 14 }}>
+          <div className="grid-3" style={{ gap: 14, marginTop: 14 }}>
+            <Field label="🎯 Стадия воронки" value={form.funnel_stage}
+              onChange={v => setForm({ ...form, funnel_stage: v })} type="select"
+              options={[{ value: '', label: '— не указана —' },
+                ...Object.keys(FUNNEL_META).map(k => ({ value: k, label: FUNNEL_META[k].label }))]} />
             <Field label="Статус" value={form.status}
               onChange={v => setForm({ ...form, status: v })} type="select"
               options={Object.keys(STATUS_META).map(k => ({ value: k, label: STATUS_META[k].label }))} />
@@ -194,9 +209,31 @@ export default function ContentPlanTool() {
             <Field label="🎯 CTA (что сделать читателю)" value={form.cta}
               onChange={v => setForm({ ...form, cta: v })}
               placeholder="«Пиши «хочу» в комменты» / «Заходи на сайт»" multiline />
-            <Field label="📝 Примечание / референсы" value={form.notes}
-              onChange={v => setForm({ ...form, notes: v })}
-              placeholder="Ссылки на конкурентов, идеи кадров..." multiline />
+            <Field label="🔗 Референс / ссылка на пост" value={form.reference_link}
+              onChange={v => setForm({ ...form, reference_link: v })}
+              placeholder="https://instagram.com/... или идея-референс" />
+          </div>
+
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border, #e6e8f2)' }}>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>📊 Метрики: план vs факт</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr', gap: 10, alignItems: 'center', fontSize: 12 }}>
+              <div></div>
+              <div style={{ fontWeight: 700, color: 'var(--text3)', textAlign: 'center' }}>👁 Просмотры</div>
+              <div style={{ fontWeight: 700, color: 'var(--text3)', textAlign: 'center' }}>❤️ Лайки</div>
+              <div style={{ fontWeight: 700, color: 'var(--text3)', textAlign: 'center' }}>💬 Комменты</div>
+              <div style={{ fontWeight: 700, color: 'var(--primary)' }}>План</div>
+              <input className="input" type="number" min="0" value={form.plan_views} onChange={e => setForm({ ...form, plan_views: e.target.value })} placeholder="0" />
+              <input className="input" type="number" min="0" value={form.plan_likes} onChange={e => setForm({ ...form, plan_likes: e.target.value })} placeholder="0" />
+              <input className="input" type="number" min="0" value={form.plan_comments} onChange={e => setForm({ ...form, plan_comments: e.target.value })} placeholder="0" />
+              <div style={{ fontWeight: 700, color: 'var(--green)' }}>Факт</div>
+              <input className="input" type="number" min="0" value={form.fact_views} onChange={e => setForm({ ...form, fact_views: e.target.value })} placeholder="0" />
+              <input className="input" type="number" min="0" value={form.fact_likes} onChange={e => setForm({ ...form, fact_likes: e.target.value })} placeholder="0" />
+              <input className="input" type="number" min="0" value={form.fact_comments} onChange={e => setForm({ ...form, fact_comments: e.target.value })} placeholder="0" />
+            </div>
+            <Field label="🔍 Разбор: что залетело / что нет / почему" value={form.analysis}
+              onChange={v => setForm({ ...form, analysis: v })}
+              placeholder="«Хук про экономию зашёл — досмотры 80%. CTA слабый, мало комментов. В следующий раз вопрос в конце.»"
+              multiline style={{ marginTop: 14 }} />
           </div>
         </Card>
       )}
@@ -220,10 +257,10 @@ export default function ContentPlanTool() {
               <thead>
                 <tr>
                   <th>Дата</th>
+                  <th>Воронка</th>
                   <th>Платформа</th>
-                  <th>Формат</th>
                   <th>Заголовок</th>
-                  <th>ЦА</th>
+                  <th>Результат</th>
                   <th>Статус</th>
                   <th>Действия</th>
                 </tr>
@@ -232,15 +269,27 @@ export default function ContentPlanTool() {
                 {filtered.map(c => {
                   const meta = PLATFORM_META[c.platform] || PLATFORM_META.other;
                   const status = STATUS_META[c.status] || STATUS_META.planned;
+                  const fn = FUNNEL_META[c.funnel_stage];
+                  const hasFact = c.fact_views != null || c.fact_likes != null;
+                  const hit = hasFact && c.plan_views != null && (c.fact_views || 0) >= (c.plan_views || 0);
                   return (
                     <tr key={c.id}>
                       <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                         {c.scheduled_for ? new Date(c.scheduled_for).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : '—'}
                       </td>
-                      <td><span title={meta.label} style={{ fontSize: 16 }}>{meta.icon}</span> <span style={{ fontSize: 12, color: 'var(--text2)' }}>{meta.label}</span></td>
-                      <td style={{ fontSize: 12 }}>{FORMAT_META[c.format] || c.format}</td>
-                      <td style={{ fontWeight: 700 }}>{c.title}</td>
-                      <td style={{ fontSize: 12, color: 'var(--text2)' }}>{c.persona_name ? '👤 ' + c.persona_name : '—'}</td>
+                      <td>{fn ? <Badge tone={fn.tone}>{fn.short}</Badge> : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                      <td><span title={meta.label} style={{ fontSize: 16 }}>{meta.icon}</span> <span style={{ fontSize: 12, color: 'var(--text2)' }}>{FORMAT_META[c.format] || c.format}</span></td>
+                      <td style={{ fontWeight: 700 }}>{c.title}{c.persona_name && <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 400 }}>👤 {c.persona_name}</div>}</td>
+                      <td style={{ fontSize: 12 }}>
+                        {hasFact ? (
+                          <span title={`План просмотров: ${fmtNum(c.plan_views || 0)}`}>
+                            <Badge tone={hit ? 'green' : 'red'}>{hit ? '🔥 залетело' : '📉 не зашло'}</Badge>
+                            <div style={{ color: 'var(--text3)', marginTop: 2 }}>👁 {fmtNum(c.fact_views || 0)} · ❤️ {fmtNum(c.fact_likes || 0)}</div>
+                          </span>
+                        ) : c.plan_views != null ? (
+                          <span style={{ color: 'var(--text3)' }}>план 👁 {fmtNum(c.plan_views)}</span>
+                        ) : <span style={{ color: 'var(--text3)' }}>—</span>}
+                      </td>
                       <td><Badge tone={status.tone}>{status.label}</Badge></td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
