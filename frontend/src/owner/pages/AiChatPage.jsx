@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../../api.js';
 import AiChartBlock, { parseChartTags } from '../AiChartBlock.jsx';
-import { useTt } from '../tt.js';
+import { useTt, dateLocale } from '../tt.js';
 
 const SEED_QUESTIONS = [
   { icon: '📈', text: 'Растёт ли моя выручка по сравнению с прошлым периодом?' },
@@ -56,7 +56,7 @@ function makeTitle(messages) {
 }
 
 export default function AiChatPage() {
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
   const [sessions, setSessions] = useState(() => {
     const loaded = loadSessions();
     return loaded.length > 0 ? loaded : [newSession()];
@@ -234,7 +234,7 @@ export default function AiChatPage() {
                   {tt(s.title)}
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
-                  {s.messages.length} {tt('сообщений')} · {new Date(s.updated_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                  {s.messages.length} {tt('сообщений')} · {new Date(s.updated_at).toLocaleDateString(dateLocale(lang), { day: 'numeric', month: 'short' })}
                 </div>
               </div>
               <button

@@ -168,7 +168,7 @@ const CHART_RANGE_LABEL = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
   const { branchId, isOwner, role, branches: allBranches } = useContext(BranchScope);
   const [period, setPeriod] = useState('month');
   const [data, setData] = useState(null);
@@ -269,7 +269,7 @@ export default function Dashboard() {
     <>
       <PageHeader
         title={tt('Главная панель')}
-        sub={`${scopeLabel} · ${todayLabel()}`}
+        sub={`${scopeLabel} · ${todayLabel(lang)}`}
         actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Главная панель')} />}
       />
 
@@ -328,7 +328,7 @@ export default function Dashboard() {
             {/* Левая колонка — дата, выручка, breakdown */}
             <div style={{ flex: '0 1 300px', minWidth: 250, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
-                📅 {todayLabel()}
+                📅 {todayLabel(lang)}
               </div>
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
                 💰 {tt('ВЫРУЧКА')} · {periodLabel}

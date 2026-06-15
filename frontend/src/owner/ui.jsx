@@ -389,9 +389,10 @@ export const fmtAxis = (v) => {
 
 export const fmtNum = (v) => (parseFloat(v) || 0).toLocaleString('ru-RU');
 
-// Сегодня в виде «9 июня 2026, вторник»
-export const todayLabel = () => {
-  return new Date().toLocaleDateString('ru-RU', {
+// Сегодня в виде «9 июня 2026, вторник» (или по-узбекски при lang='uz')
+export const todayLabel = (lang) => {
+  const locale = lang === 'uz' ? 'uz-UZ' : 'ru-RU';
+  return new Date().toLocaleDateString(locale, {
     day: 'numeric', month: 'long', year: 'numeric', weekday: 'long',
   });
 };
