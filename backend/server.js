@@ -824,6 +824,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
         SELECT COALESCE(so.payment_method, 'cash') AS method,
                COALESCE(so.currency, 'UZS') AS currency,
                COALESCE(SUM(so.quantity * so.price), 0) AS amount,
+               COALESCE(SUM(so.quantity * so.price / NULLIF(so.exchange_rate, 0)), 0) AS orig,
                COUNT(*) AS deals
         FROM stock_outcome so
         WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
@@ -889,6 +890,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
 
     const revBuckets = emptyBuckets();
     const dealsBuckets = emptyBuckets();
+    let revUsdOrig = 0; // исходная сумма в долларах (по факту принятая наличность USD)
     for (const r of revByMethodQ.rows) {
       // so.price хранится в UZS-эквиваленте, но валюта оплаты — в so.currency:
       // наличная продажа в долларах должна попадать в «Доллар», не в «Сум».
@@ -896,6 +898,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       if (k) {
         revBuckets[k] += parseFloat(r.amount) || 0;
         dealsBuckets[k] += parseInt(r.deals) || 0;
+        if (k === 'cash_usd') revUsdOrig += parseFloat(r.orig) || 0;
       }
     }
     const cashInBuckets = emptyBuckets();
@@ -925,6 +928,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       cash_out:  cashOutBuckets,   // период-расход
       deals:     dealsBuckets,
       avg_check: avgCheckBuckets,
+      revenue_usd_orig: Math.round(revUsdOrig), // исходные доллары в выручке (для скобки рядом с «Доллар»)
     };
 
     // Sales trend covering the selected period (revenue per day).

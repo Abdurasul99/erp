@@ -32,7 +32,7 @@ const METHOD_LABELS = [
 
 // Компактная разбивка по способам оплаты — 4 строки внизу плитки
 // unit: 'money' (по умолчанию, показывает «4 150 000 UZS») | 'count' (показывает «12 шт»)
-function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
+function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 0 }) {
   const { tt } = useTt();
   if (!data) return null;
   const labelColor = lightOnDark ? 'rgba(255,255,255,.7)' : 'var(--text3)';
@@ -56,6 +56,9 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
             <span style={{ color: labelColor, fontWeight: 700 }}>{m.icon} {tt(m.label)}</span>
             <span style={{ color: valueColor, fontWeight: 700 }}>
               {isCount ? fmtNum(v) : fmtMoneyFull(v)} <span style={{ opacity: .6, fontSize: 9 }}>{isCount ? tt('шт') : m.curr}</span>
+              {!isCount && m.key === 'cash_usd' && usdOrig > 0 && (
+                <span style={{ opacity: .85, fontSize: 9.5, marginLeft: 4 }}>{`(${fmtNum(usdOrig)} $)`}</span>
+              )}
             </span>
           </div>
         );
@@ -349,7 +352,7 @@ export default function Dashboard() {
                 )
               )}
               <div style={{ marginTop: 8 }}>
-                <MethodBreakdown data={byMethod.revenue} lightOnDark />
+                <MethodBreakdown data={byMethod.revenue} lightOnDark usdOrig={byMethod.revenue_usd_orig} />
               </div>
             </div>
 
