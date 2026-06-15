@@ -100,7 +100,9 @@ function BusinessStateChart({ data, lang, isOwner }) {
   const grid = [0, 1, 2, 3, 4].map(k => yMin + ((yMax - yMin) * k) / 4);
   const left = hover != null ? (xAt(hover) / W) * 100 : 0;
   const pctChg = (hover != null && hover > 0 && rev[hover - 1] > 0) ? Math.round(((rev[hover] - rev[hover - 1]) / rev[hover - 1]) * 100) : null;
-  const labelIdx = [0, Math.floor((n - 1) / 3), Math.floor((2 * (n - 1)) / 3), n - 1];
+  // Подписи дат: показываем КАЖДУЮ; если точек слишком много — прорежаем до ~31.
+  const labelStep = Math.max(1, Math.ceil(n / 31));
+  const dayMon = (iso) => { const d = new Date(iso); return d.getDate() + '.' + String(d.getMonth() + 1).padStart(2, '0'); };
 
   return (
     <div>
@@ -144,8 +146,12 @@ function BusinessStateChart({ data, lang, isOwner }) {
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
-          {labelIdx.map((idx, k) => (<span key={k}>{data[idx] ? fmtDate(data[idx].date, { day: 'numeric', month: 'short' }, lang) : ''}</span>))}
+        <div style={{ display: 'flex', marginTop: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
+          {data.map((d, i) => (
+            <div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+              {i % labelStep === 0 ? dayMon(d.date) : ''}
+            </div>
+          ))}
         </div>
       </div>
     </div>
