@@ -8,7 +8,7 @@ import { useTt } from './tt.js';
 // реальные цифры на сервере и просит DeepSeek дать разбор + рекомендации.
 // Доступна только руководителям (founder/gen_dir/admin) — у менеджера AI нет.
 export default function AiAnalyze({ topic, branchId }) {
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
   const { role } = useContext(BranchScope);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -21,7 +21,7 @@ export default function AiAnalyze({ topic, branchId }) {
     setOpen(true); setLoading(true); setError(''); setAnalysis('');
     const params = {};
     if (branchId) params.branch_id = branchId;
-    api.post('/ai/analyze', { topic }, { params })
+    api.post('/ai/analyze', { topic, lang }, { params })
       .then(r => setAnalysis(r.data?.analysis || tt('Пустой ответ от AI.')))
       .catch(e => setError(e.response?.data?.error || e.message))
       .finally(() => setLoading(false));

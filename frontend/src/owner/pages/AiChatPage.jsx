@@ -150,14 +150,14 @@ export default function AiChatPage() {
 
     try {
       const apiMessages = newMessages.map(m => ({ role: m.role, content: m.text }));
-      const { data } = await api.post('/ai/chat', { messages: apiMessages });
+      const { data } = await api.post('/ai/chat', { messages: apiMessages, lang });
       const reply = data.reply || tt('Не получил ответ. Попробуй переформулировать.');
       updateActive(s => ({
         ...s,
         messages: [...s.messages, { role: 'assistant', text: reply, ts: Date.now(), model: data.model, usage: data.usage }],
         updated_at: Date.now(),
       }));
-      api.post('/ai/suggest', { last_reply: reply })
+      api.post('/ai/suggest', { last_reply: reply, lang })
         .then(r => {
           const qs = Array.isArray(r.data?.questions) ? r.data.questions : [];
           setFollowUps(qs.length > 0 ? qs : FALLBACK_FOLLOWUPS);

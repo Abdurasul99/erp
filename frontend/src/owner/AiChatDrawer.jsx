@@ -21,7 +21,7 @@ const FALLBACK_FOLLOWUPS = [
 ];
 
 export default function AiChatDrawer({ open, onClose }) {
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
   const [history, setHistory] = useState([
     { role: 'assistant', text: tt('Привет! Я твой AI-консультант по бизнесу. Спроси что-нибудь или выбери вопрос ниже.') },
   ]);
@@ -55,10 +55,10 @@ export default function AiChatDrawer({ open, onClose }) {
     setFollowUps([]);
     try {
       const apiMessages = newHistory.map(m => ({ role: m.role, content: m.text }));
-      const { data } = await api.post('/ai/chat', { messages: apiMessages });
+      const { data } = await api.post('/ai/chat', { messages: apiMessages, lang });
       const reply = data.reply || tt('Не получил ответ. Попробуй переформулировать.');
       setHistory(h => [...h, { role: 'assistant', text: reply }]);
-      api.post('/ai/suggest', { last_reply: reply })
+      api.post('/ai/suggest', { last_reply: reply, lang })
         .then(r => {
           const qs = Array.isArray(r.data?.questions) ? r.data.questions : [];
           setFollowUps(qs.length > 0 ? qs : FALLBACK_FOLLOWUPS);
