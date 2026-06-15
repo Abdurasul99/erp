@@ -6201,24 +6201,40 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
   }
 });
 
-// Объяснение «состояния бизнеса» по графику (выручка+прибыль по дням).
-// Только владельцу (AI_ROLES без manager) — менеджер не имеет доступа к AI и к суммам.
-app.post('/api/ai/explain-state', auth(AI_ROLES), async (req, res) => {
+// Объяснение «состояния бизнеса» по графику. Доступно и менеджеру, НО:
+// менеджеру даём БЕЗ денежных сумм — только относительный idx и доли (он их и присылает),
+// и системный промпт СТРОГО запрещает называть суммы. Учредитель — полные цифры.
+app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
   try {
     if (!process.env.DEEPSEEK_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
     const { question, trend, biz_state, lang } = req.body || {};
     const q = (typeof question === 'string' && question.trim()) ? question.trim().slice(0, 300) : 'Объясни состояние бизнеса по этому графику.';
     const rows = Array.isArray(trend) ? trend.slice(-62) : [];
     const fmtN = (x) => Math.round(parseFloat(x) || 0).toLocaleString('ru-RU');
-    let factSheet = rows.length
-      ? 'Динамика по дням (дата · выручка · валовая прибыль, сум):\n' + rows.map(r => `${r.date}: ${fmtN(r.revenue)} · ${fmtN(r.profit)}`).join('\n')
-      : 'Данных по дням за период нет.';
-    if (biz_state && biz_state.assets != null) {
-      const b = biz_state.breakdown || {};
-      factSheet += `\n\nБаланс (состояние) сейчас, сум:\nАктивы ${fmtN(biz_state.assets)} (касса ${fmtN(b.cash)}, склад ${fmtN(b.inventory)}, дебиторка ${fmtN(b.receivables)}, осн.средства ${fmtN(b.fixed_assets)})\nОбязательства ${fmtN(biz_state.liabilities)} (поставщики ${fmtN(b.payables)}, кредиты ${fmtN(b.loans)}, налоги ${fmtN(b.tax_payable)}, зарплаты ${fmtN(b.wages_payable)})\nСобственный капитал ${fmtN(biz_state.equity)}`;
+    const noChart = ' НЕ используй теги вида [[CHART:...]] — здесь они не поддерживаются.';
+    let sys, userMsg;
+    if (req.user.role === 'manager') {
+      // Менеджеру — БЕЗ сумм: на входе только относительный idx (0..1) и доли баланса.
+      const fs = rows.length
+        ? 'Относительная динамика по дням (дата · индекс 0..1, где 1 = максимум периода):\n' + rows.map(r => `${r.date}: ${r.idx != null ? r.idx : '-'}`).join('\n')
+        : 'Данных по дням за период нет.';
+      const bs = biz_state || {};
+      const ratioLine = bs.equity_ratio != null
+        ? `\nСтруктура баланса: капитал ${Math.round((bs.equity_ratio || 0) * 100)}% / обязательства ${Math.round((bs.liability_ratio || 0) * 100)}% от активов.`
+        : '';
+      sys = aiLangRule(lang) + ' Ты помощник по СОСТОЯНИЮ бизнеса для менеджера филиала розничной торговли в Узбекистане. Объясняй ДИНАМИКУ (рост/спад, в какие дни) по относительным данным (индекс 0..1 — доля от максимума периода). СТРОГО ЗАПРЕЩЕНО называть денежные суммы, выручку и прибыль в абсолютных цифрах — у пользователя НЕТ к ним доступа. Только относительные термины: вырос/упал, на сколько % к прошлому дню, какая доля/структура. Кратко (2-4 предложения) + 1 практический совет.' + noChart;
+      userMsg = `График «Состояние бизнеса» (относительные данные, БЕЗ сумм):\n${fs}${ratioLine}\n\nВопрос: ${q}\nОтветь про динамику/состояние, БЕЗ конкретных денежных сумм.`;
+    } else {
+      let factSheet = rows.length
+        ? 'Динамика по дням (дата · выручка · валовая прибыль, сум):\n' + rows.map(r => `${r.date}: ${fmtN(r.revenue)} · ${fmtN(r.profit)}`).join('\n')
+        : 'Данных по дням за период нет.';
+      if (biz_state && biz_state.assets != null) {
+        const b = biz_state.breakdown || {};
+        factSheet += `\n\nБаланс (состояние) сейчас, сум:\nАктивы ${fmtN(biz_state.assets)} (касса ${fmtN(b.cash)}, склад ${fmtN(b.inventory)}, дебиторка ${fmtN(b.receivables)}, осн.средства ${fmtN(b.fixed_assets)})\nОбязательства ${fmtN(biz_state.liabilities)} (поставщики ${fmtN(b.payables)}, кредиты ${fmtN(b.loans)}, налоги ${fmtN(b.tax_payable)}, зарплаты ${fmtN(b.wages_payable)})\nСобственный капитал ${fmtN(biz_state.equity)}`;
+      }
+      sys = (await buildSystemPrompt(req.user, lang)) + noChart;
+      userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.`;
     }
-    const sys = await buildSystemPrompt(req.user, lang);
-    const userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.`;
     const r = await fetch(DEEPSEEK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
@@ -6227,7 +6243,8 @@ app.post('/api/ai/explain-state', auth(AI_ROLES), async (req, res) => {
     });
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('explain-state non-ok', r.status, t.slice(0, 200)); return res.status(502).json({ error: 'AI временно недоступен, попробуйте позже.' }); }
     const j = await r.json();
-    const answer = j?.choices?.[0]?.message?.content || '';
+    // Убираем теги [[CHART:...]] — StateAsk их не рендерит (показывал бы как текст).
+    const answer = (j?.choices?.[0]?.message?.content || '').replace(/\[\[CHART:[a-z_]+\]\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
     const usage = j?.usage || {};
     pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
       [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, 'deepseek-chat', null]).catch(() => {});

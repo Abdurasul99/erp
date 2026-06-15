@@ -188,7 +188,7 @@ function StateAsk({ trend, bizState, lang }) {
       {err && <div style={{ marginTop: 8, color: 'var(--red)', fontWeight: 600, fontSize: 12 }}>⚠️ {err}</div>}
       {ans && (
         <div style={{ marginTop: 10, background: 'var(--bg-2)', borderRadius: 10, padding: '12px 14px', fontFamily: "'Inter', 'Nunito', system-ui, sans-serif", fontSize: 14, lineHeight: 1.7 }}>
-          <RichText text={ans} />
+          <RichText text={ans.replace(/\[\[CHART:[a-z_]+\]\]/gi, '').trim()} />
         </div>
       )}
     </div>
@@ -567,7 +567,7 @@ export default function Dashboard() {
               {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
                 <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
               )}
-              {isOwner && <StateAsk trend={trend} bizState={data?.biz_state} lang={lang} />}
+              <StateAsk trend={trend} bizState={data?.biz_state} lang={lang} />
             </Card>
           )}
           {isOwner && <FinManualEditor open={finEditOpen} onClose={() => setFinEditOpen(false)} onChanged={() => setReloadTick(t => t + 1)} />}
