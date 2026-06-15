@@ -1115,6 +1115,7 @@ export const TOOLS_UZ = {
   "сообщений": "xabar",
   "сорт (А/Б/В)": "sort (A/B/V)",
   "Состав": "Tarkib",
+  "Состояние бизнеса": "Biznes holati",
   "Сосчитано": "Sanaldi",
   "Сотрудник": "Xodim",
   "Сотрудники компании · реальная активность": "Kompaniya xodimlari · haqiqiy faollik",

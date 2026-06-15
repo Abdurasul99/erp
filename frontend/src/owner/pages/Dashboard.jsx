@@ -67,75 +67,93 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
   );
 }
 
-// Хиро-чарт: крипто-стайл ЛИНИЯ с разноцветным градиентом по высоте
-// (зелёный сверху → жёлтый → красный снизу) + заливка, точка «сейчас», тултип.
-function HeroLineChart({ daily, dates, lang }) {
+// Округление вверх до «красивого» числа для шкалы оси (1/2/5 × 10^k).
+function niceCeil(x) {
+  if (x <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(x)));
+  const f = x / p;
+  const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nf * p;
+}
+
+// Диаграмма СОСТОЯНИЯ БИЗНЕСА: две линии за период — Выручка (разноцветная,
+// зелёный→жёлтый→красный по высоте) и Валовая прибыль (фиолетовая). Слева ось в
+// сумах с сеткой, снизу даты, тултип с обоими значениями. Разрыв линий = себестоимость.
+function BusinessStateChart({ data, lang }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
-  if (!daily || daily.length < 2 || !dates) return null;
-  const n = daily.length;
-  const W = 1000, H = 120, TOP = 8;
-  const max = Math.max(...daily, 1);
+  if (!data || data.length < 2) return null;
+  const n = data.length;
+  const rev = data.map(d => d.revenue || 0);
+  const prof = data.map(d => d.profit || 0);
+  const yMax = niceCeil(Math.max(...rev, 1));
+  const yMin = Math.min(0, ...prof) < 0 ? -niceCeil(-Math.min(...prof)) : 0;
+  const W = 1000, H = 200, TOP = 10, BOT = H - 4;
   const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
-  const yAt = (v) => TOP + (1 - (v || 0) / max) * (H - TOP);
-  const pts = daily.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+  const yAt = (v) => TOP + (1 - ((v || 0) - yMin) / (yMax - yMin)) * (BOT - TOP);
 
-  let line = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
-    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
-  const last = pts[n - 1];
-  const lastRatio = (daily[n - 1] || 0) / max;
-  const dotColor = lastRatio > 0.66 ? '#22C55E' : lastRatio > 0.33 ? '#EAB308' : '#EF4444';
+  const smooth = (vals) => {
+    const p = vals.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+    let d = `M ${p[0].x.toFixed(1)} ${p[0].y.toFixed(1)}`;
+    for (let i = 0; i < p.length - 1; i++) {
+      const a = p[i - 1] || p[i], b = p[i], c = p[i + 1], e = p[i + 2] || c;
+      const c1x = b.x + (c.x - a.x) / 6, c1y = b.y + (c.y - a.y) / 6;
+      const c2x = c.x - (e.x - b.x) / 6, c2y = c.y - (e.y - b.y) / 6;
+      d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${c.x.toFixed(1)} ${c.y.toFixed(1)}`;
+    }
+    return d;
+  };
+  const revPath = smooth(rev);
+  const profPath = smooth(prof);
+  const revArea = `${revPath} L ${W} ${BOT} L 0 ${BOT} Z`;
+  const grid = [0, 1, 2, 3, 4].map(k => yMin + ((yMax - yMin) * k) / 4);
   const left = hover != null ? (xAt(hover) / W) * 100 : 0;
-  const hyTop = hover != null ? (yAt(daily[hover]) / H) * 100 : 0;
+  const labelIdx = [0, Math.floor((n - 1) / 3), Math.floor((2 * (n - 1)) / 3), n - 1];
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 18 }}>
-      <div style={{ position: 'relative', height: H, cursor: 'crosshair' }}
-        onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))))); }}
-        onMouseLeave={() => setHover(null)}>
-        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-          <defs>
-            <linearGradient id="heroLineGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2={H}>
-              <stop offset="0%" stopColor="#16a34a" />
-              <stop offset="50%" stopColor="#EAB308" />
-              <stop offset="100%" stopColor="#EF4444" />
-            </linearGradient>
-            <linearGradient id="heroAreaGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2={H}>
-              <stop offset="0%" stopColor="#22C55E" stopOpacity="0.22" />
-              <stop offset="55%" stopColor="#EAB308" stopOpacity="0.08" />
-              <stop offset="100%" stopColor="#EF4444" stopOpacity="0.03" />
-            </linearGradient>
-          </defs>
-          <path d={area} fill="url(#heroAreaGrad)" />
-          <path d={line} fill="none" stroke="url(#heroLineGrad)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-          {hover != null && (
-            <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={H} stroke="rgba(0,0,0,.18)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-          )}
-        </svg>
-
-        <span style={{ position: 'absolute', left: `${(last.x / W) * 100}%`, top: `${(last.y / H) * 100}%`, transform: 'translate(-50%,-50%)', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `3px solid ${dotColor}`, boxShadow: `0 0 8px ${dotColor}88`, pointerEvents: 'none' }} />
-
-        {hover != null && (
-          <>
-            <span style={{ position: 'absolute', left: `${left}%`, top: `${hyTop}%`, transform: 'translate(-50%,-50%)', width: 8, height: 8, borderRadius: '50%', background: '#fff', border: '2px solid var(--text)', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', left: `${left}%`, top: -4, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.2)', pointerEvents: 'none', zIndex: 2 }}>
-              {fmtMoneyFull(daily[hover])} {tt('сум')}
-              <div style={{ fontSize: 9, opacity: .7, fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
-            </div>
-          </>
-        )}
+    <div>
+      <div style={{ display: 'flex', gap: 18, marginBottom: 10, fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 16, height: 3, borderRadius: 2, background: 'linear-gradient(90deg,#16a34a,#EAB308,#EF4444)' }} /> {tt('Выручка')}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 16, height: 3, borderRadius: 2, background: '#5B4FE8' }} /> {tt('Валовая прибыль')}</span>
       </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
-        {[0, Math.floor((n - 1) / 2), n - 1].map((idx, k) => (
-          <span key={k}>{dates[idx] ? fmtDate(dates[idx], { day: 'numeric', month: 'short' }, lang) : ''}</span>
+      <div style={{ position: 'relative', paddingLeft: 54, paddingRight: 4 }}>
+        {grid.map((v, k) => (
+          <div key={k} style={{ position: 'absolute', left: 0, width: 48, textAlign: 'right', top: `${(yAt(v) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9.5, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace", pointerEvents: 'none' }}>{fmtMoney(v)}</div>
         ))}
+        <div style={{ position: 'relative', height: H, cursor: 'crosshair' }}
+          onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))))); }}
+          onMouseLeave={() => setHover(null)}>
+          <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+            <defs>
+              <linearGradient id="bsLineGrad" gradientUnits="userSpaceOnUse" x1="0" y1={TOP} x2="0" y2={BOT}>
+                <stop offset="0%" stopColor="#16a34a" />
+                <stop offset="50%" stopColor="#EAB308" />
+                <stop offset="100%" stopColor="#EF4444" />
+              </linearGradient>
+              <linearGradient id="bsArea" gradientUnits="userSpaceOnUse" x1="0" y1={TOP} x2="0" y2={BOT}>
+                <stop offset="0%" stopColor="#22C55E" stopOpacity="0.16" />
+                <stop offset="100%" stopColor="#22C55E" stopOpacity="0.01" />
+              </linearGradient>
+            </defs>
+            {grid.map((v, k) => (
+              <line key={k} x1="0" y1={yAt(v)} x2={W} y2={yAt(v)} stroke="rgba(0,0,0,.08)" strokeWidth="1" strokeDasharray={v === 0 ? '0' : '4 4'} vectorEffect="non-scaling-stroke" />
+            ))}
+            <path d={revArea} fill="url(#bsArea)" />
+            <path d={profPath} fill="none" stroke="#5B4FE8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" opacity="0.9" />
+            <path d={revPath} fill="none" stroke="url(#bsLineGrad)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            {hover != null && <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={BOT} stroke="rgba(0,0,0,.2)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
+          </svg>
+          {hover != null && (
+            <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
+              <div>{tt('Выручка')}: {fmtMoneyFull(rev[hover])}</div>
+              <div style={{ color: '#a5b4fc' }}>{tt('Прибыль')}: {fmtMoneyFull(prof[hover])}</div>
+              <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{fmtDate(data[hover].date, { day: 'numeric', month: 'short' }, lang)}</div>
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
+          {labelIdx.map((idx, k) => (<span key={k}>{data[idx] ? fmtDate(data[idx].date, { day: 'numeric', month: 'short' }, lang) : ''}</span>))}
+        </div>
       </div>
     </div>
   );
@@ -347,8 +365,8 @@ export default function Dashboard() {
             display: 'flex', gap: 28, flexWrap: 'wrap',
             marginBottom: 14,
           }}>
-            {/* Левая колонка — дата, выручка, breakdown */}
-            <div style={{ flex: '0 1 300px', minWidth: 250, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {/* Левая колонка — дата, выручка, дельта */}
+            <div style={{ flex: '1 1 280px', minWidth: 240, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
                 📅 {todayLabel(lang)}
               </div>
@@ -369,22 +387,20 @@ export default function Dashboard() {
                   </div>
                 )
               )}
-              <div style={{ marginTop: 8 }}>
-                <MethodBreakdown data={byMethod.revenue} usdOrig={byMethod.revenue_usd_orig} />
-              </div>
             </div>
 
-            {/* Правая колонка — недельные столбцы, фикс. высота */}
-            {trendValues.length > 1 && trendValues.some(v => v > 0) && (
-              <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroLineChart
-                  daily={trendValues}
-                  dates={trend.map(x => x.date)}
-                  lang={lang}
-                />
-              </div>
-            )}
+            {/* Правая колонка — разбивка по способам оплаты */}
+            <div style={{ flex: '1 1 240px', minWidth: 220, maxWidth: 400 }}>
+              <MethodBreakdown data={byMethod.revenue} usdOrig={byMethod.revenue_usd_orig} />
+            </div>
           </div>
+
+          {/* Диаграмма состояния бизнеса — отдельная широкая карта (выручка + прибыль) */}
+          {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0) && (
+            <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
+              <BusinessStateChart data={trend} lang={lang} />
+            </Card>
+          )}
 
           {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
           <div className="grid-3" style={{ marginBottom: 16 }}>

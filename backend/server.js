@@ -955,22 +955,27 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     const trendQ = await pool.query(`
       SELECT date_trunc('day', so.created_at)::date AS d,
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
              COUNT(*) AS deals
       FROM stock_outcome so
+      LEFT JOIN products p ON p.id = so.product_id
       WHERE so.status='approved'
         AND so.branch_id IN ${branchIdsList}
         AND so.created_at >= $1 AND so.created_at < $2
       GROUP BY d ORDER BY d`,
       [trendFromIso, trendToIso]);
     const trendMap = new Map();
-    for (const r of trendQ.rows) trendMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue: parseFloat(r.revenue) || 0, deals: parseInt(r.deals) || 0 });
+    for (const r of trendQ.rows) {
+      const revenue = parseFloat(r.revenue) || 0;
+      trendMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue, profit: revenue - (parseFloat(r.cost) || 0), deals: parseInt(r.deals) || 0 });
+    }
     const sales_trend = [];
     const startDay = new Date(trendFromIso); startDay.setHours(0, 0, 0, 0);
     const endDay = new Date(trendToIso); endDay.setHours(0, 0, 0, 0);
     for (let d = new Date(startDay); d <= endDay; d.setDate(d.getDate() + 1)) {
       const key = d.toISOString().slice(0, 10);
-      const v = trendMap.get(key) || { revenue: 0, deals: 0 };
-      sales_trend.push({ date: key, revenue: v.revenue, deals: v.deals });
+      const v = trendMap.get(key) || { revenue: 0, profit: 0, deals: 0 };
+      sales_trend.push({ date: key, revenue: v.revenue, profit: v.profit, deals: v.deals });
     }
 
     // Previous period comparison — same length as current, ending right before `from`.
