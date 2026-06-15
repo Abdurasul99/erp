@@ -116,7 +116,7 @@ export const OWNER_UZ = {
   'Главная панель': 'Bosh panel', 'Сегодня': 'Bugun', 'Неделя': 'Hafta', 'Месяц': 'Oy', 'Год': 'Yil', 'Всё': 'Hammasi',
   'ВЫРУЧКА': 'TUSHUM', 'Выручка': 'Tushum', 'Касса (баланс)': 'Kassa (balans)', 'Продаж': 'Sotuvlar', 'Средний чек': "O'rtacha chek",
   'за период': 'davr uchun', 'сум · остаток на сейчас': "so'm · hozirgi qoldiq",
-  'Сум': "So'm", 'Доллар': 'Dollar', 'На карту': 'Kartaga', 'На кассу': 'Kassaga',
+  'Сум': "So'm", 'Доллар': 'Dollar', 'На карту': 'Kartaga', 'На счёт': 'Hisobga',
   'Денежный поток': 'Pul oqimi', 'Приход': 'Kirim', 'Расход': 'Chiqim', 'Валовая прибыль': 'Yalpi foyda', 'Склад': 'Ombor',
   'Прошлый период пуст — сравнение появится позже': "O'tgan davr bo'sh — solishtirish keyinroq paydo bo'ladi",
   'нет базы для сравнения': "solishtirish uchun asos yo'q",

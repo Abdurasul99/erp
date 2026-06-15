@@ -27,7 +27,7 @@ const METHOD_LABELS = [
   { key: 'cash_uzs', label: 'Сум',         icon: '💵', curr: 'UZS' },
   { key: 'cash_usd', label: 'Доллар',      icon: '💲', curr: 'UZS' },
   { key: 'card',     label: 'На карту',    icon: '💳', curr: 'UZS' },
-  { key: 'transfer', label: 'На кассу',    icon: '🏦', curr: 'UZS' },
+  { key: 'transfer', label: 'На счёт',     icon: '🏦', curr: 'UZS' },
 ];
 
 // Компактная разбивка по способам оплаты — 4 строки внизу плитки
