@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect, useRef, createContext } from 'r
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
 import { getSectionsForRole } from './modules.js';
-import { useTt, fmtDate } from './tt.js';
+import { useTt } from './tt.js';
 import api from '../api.js';
 import './styles.css';
 
@@ -137,15 +137,9 @@ export default function OwnerShell() {
 
         <div className="o-main">
           <header className="o-topbar">
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div className="o-topbar-title">
-                {(sections.find(s => s.id === activeSection) || sections[0])?.icon}{' '}
-                {tt((sections.find(s => s.id === activeSection) || sections[0])?.title)}
-              </div>
-              <div className="o-topbar-sub">
-                {fmtDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' }, lang)}
-              </div>
-            </div>
+            {/* Заголовок секции и дата убраны из топбара — они дублировали
+                заголовок страницы ниже. Пустой спейсер держит правые контролы справа. */}
+            <div style={{ minWidth: 0, flex: 1 }} />
 
             {/* Переключатель языка RU / UZ */}
             <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
