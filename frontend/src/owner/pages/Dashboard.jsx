@@ -67,75 +67,62 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
   );
 }
 
-// Хиро-чарт: крипто-стайл лайн — плавная линия + градиентная заливка,
-// светящаяся точка «сейчас», вертикальная направляющая и тултип при наведении.
-function HeroLineChart({ daily, dates, lang }) {
+// Хиро-чарт: СВЕЧНОЙ (как крипто-биржа) на тёмной панели. Свеча = день:
+// зелёная если выручка выросла к прошлому дню, красная если упала. Ось цен справа, тултип.
+function HeroCandleChart({ daily, dates, lang }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
   if (!daily || daily.length < 2 || !dates) return null;
   const n = daily.length;
-  const W = 1000, H = 120, TOP = 8;
-  const max = Math.max(...daily, 1);
-  const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
-  const yAt = (v) => TOP + (1 - (v || 0) / max) * (H - TOP);
-  const pts = daily.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
-
-  // Catmull-Rom → cubic Bezier: плавно, но без «кардиограммы».
-  let line = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
-    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
-  const last = pts[n - 1];
-  const lastLeft = (last.x / W) * 100, lastTop = (last.y / H) * 100;
-
-  const onMove = (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const rel = (e.clientX - r.left) / r.width;
-    setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1)))));
-  };
-  const hx = hover != null ? (xAt(hover) / W) * 100 : 0;
-  const hyTop = hover != null ? (yAt(daily[hover]) / H) * 100 : 0;
-  const labelIdx = [0, Math.floor((n - 1) / 2), n - 1];
+  const maxAll = Math.max(...daily, 1);
+  const candles = daily.map((c, i) => {
+    const o = i === 0 ? c : daily[i - 1];
+    return { o, c, up: c >= o, top: Math.max(o, c), bot: Math.min(o, c) };
+  });
+  const pct = (v) => (1 - (v || 0) / maxAll) * 100; // 0% = верх (max), 100% = низ (0)
+  const axis = [maxAll, maxAll * 0.5, 0];
+  const PLOT_H = 134;
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 18 }}>
-      <div style={{ position: 'relative', height: H, cursor: 'crosshair' }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-          <defs>
-            <linearGradient id="heroFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.40" />
-              <stop offset="100%" stopColor="#ffffff" stopOpacity="0.02" />
-            </linearGradient>
-          </defs>
-          <path d={area} fill="url(#heroFill)" />
-          <path d={line} fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke" style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.18))' }} />
-          {hover != null && (
-            <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={H} stroke="rgba(255,255,255,.55)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-          )}
-        </svg>
-
-        {/* Светящаяся точка «сейчас» */}
-        <span style={{ position: 'absolute', left: `${lastLeft}%`, top: `${lastTop}%`, transform: 'translate(-50%,-50%)', width: 11, height: 11, borderRadius: '50%', background: '#fff', boxShadow: '0 0 0 4px rgba(255,255,255,.32), 0 0 10px rgba(255,255,255,.85)', pointerEvents: 'none' }} />
-
-        {/* Точка + тултип при наведении */}
-        {hover != null && (
-          <>
-            <span style={{ position: 'absolute', left: `${hx}%`, top: `${hyTop}%`, transform: 'translate(-50%,-50%)', width: 9, height: 9, borderRadius: '50%', background: '#15803d', border: '2px solid #fff', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', left: `${hx}%`, top: -4, transform: `translateX(${hx > 70 ? '-100%' : hx < 30 ? '0' : '-50%'})`, background: 'rgba(255,255,255,.97)', color: '#15803d', borderRadius: 8, padding: '4px 9px', fontSize: 11, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.18)', pointerEvents: 'none' }}>
-              {fmtMoneyFull(daily[hover])} {tt('сум')}
-              <div style={{ fontSize: 9, color: '#64748b', fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
-            </div>
-          </>
-        )}
+    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 4 }}>
+      <div style={{ background: 'linear-gradient(180deg,#0f172a 0%,#13203a 100%)', borderRadius: 12, padding: '8px 46px 6px 10px', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.06)' }}>
+        <div style={{ position: 'relative', height: PLOT_H }} onMouseLeave={() => setHover(null)}>
+          {/* Сетка + ось цен справа */}
+          {axis.map((v, k) => (
+            <React.Fragment key={k}>
+              <div style={{ position: 'absolute', left: 0, right: 0, top: `${pct(v)}%`, borderTop: '1px dashed rgba(255,255,255,.08)', pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', right: -42, top: `${pct(v)}%`, transform: 'translateY(-50%)', fontSize: 9, color: 'rgba(255,255,255,.45)', fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', pointerEvents: 'none' }}>{fmtMoney(v)}</div>
+            </React.Fragment>
+          ))}
+          {/* Свечи */}
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'stretch', gap: n > 40 ? 1 : 2 }}>
+            {candles.map((cd, i) => {
+              const topPct = pct(cd.top);
+              const hPct = Math.max(pct(cd.bot) - pct(cd.top), 1.4);
+              const col = cd.up ? '#22C55E' : '#EF4444';
+              return (
+                <div key={i} onMouseEnter={() => setHover(i)} style={{ flex: 1, minWidth: 0, position: 'relative', cursor: 'crosshair' }}>
+                  <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', width: '62%', maxWidth: 14, minWidth: 2, top: `${topPct}%`, height: `${hPct}%`, background: col, borderRadius: 1.5, boxShadow: `0 0 6px ${col}66`, opacity: hover == null || hover === i ? 1 : .45 }} />
+                </div>
+              );
+            })}
+          </div>
+          {/* Тултип */}
+          {hover != null && (() => {
+            const cd = candles[hover];
+            const left = ((hover + 0.5) / n) * 100;
+            const delta = cd.o > 0 ? Math.round(((cd.c - cd.o) / cd.o) * 100) : null;
+            return (
+              <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'rgba(15,23,42,.97)', color: '#fff', border: '1px solid rgba(255,255,255,.14)', borderRadius: 8, padding: '5px 9px', fontSize: 10.5, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 6px 16px rgba(0,0,0,.4)', pointerEvents: 'none', zIndex: 2 }}>
+                <div style={{ color: cd.up ? '#4ade80' : '#f87171' }}>{fmtMoneyFull(cd.c)} {tt('сум')} {delta != null && <span>· {delta >= 0 ? '+' : ''}{delta}%</span>}</div>
+                <div style={{ fontSize: 9, color: 'rgba(255,255,255,.55)' }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
+              </div>
+            );
+          })()}
+        </div>
       </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, opacity: .8, fontFamily: "'JetBrains Mono', monospace" }}>
-        {labelIdx.map((idx, k) => (
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingRight: 44, fontSize: 9.5, fontWeight: 700, opacity: .8, fontFamily: "'JetBrains Mono', monospace" }}>
+        {[0, Math.floor((n - 1) / 2), n - 1].map((idx, k) => (
           <span key={k}>{dates[idx] ? fmtDate(dates[idx], { day: 'numeric', month: 'short' }, lang) : ''}</span>
         ))}
       </div>
@@ -378,7 +365,7 @@ export default function Dashboard() {
             {/* Правая колонка — недельные столбцы, фикс. высота */}
             {trendValues.length > 1 && trendValues.some(v => v > 0) && (
               <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroLineChart
+                <HeroCandleChart
                   daily={trendValues}
                   dates={trend.map(x => x.date)}
                   lang={lang}
