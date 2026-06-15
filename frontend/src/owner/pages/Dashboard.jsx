@@ -67,57 +67,76 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
   );
 }
 
-// Хиро-чарт: дневная выручка агрегируется в НЕДЕЛИ → толстые читаемые столбцы.
-// Пик-неделя ярче + чип суммы, пунктир «среднего», подсказка с диапазоном дат при наведении.
-function HeroWeeklyChart({ daily, dates, lang }) {
+// Хиро-чарт: крипто-стайл лайн — плавная линия + градиентная заливка,
+// светящаяся точка «сейчас», вертикальная направляющая и тултип при наведении.
+function HeroLineChart({ daily, dates, lang }) {
   const { tt } = useTt();
+  const [hover, setHover] = useState(null);
   if (!daily || daily.length < 2 || !dates) return null;
-  // Группируем подряд идущие дни в календарные недели (новая неделя — с понедельника).
-  const weeks = [];
-  daily.forEach((v, i) => {
-    const d = new Date(dates[i]);
-    const startNew = !weeks.length || (d.getDay() === 1 && weeks[weeks.length - 1].n > 0);
-    if (startNew) weeks.push({ sum: 0, n: 0, start: dates[i], end: dates[i] });
-    const w = weeks[weeks.length - 1];
-    w.sum += (v || 0); w.n += 1; w.end = dates[i];
-  });
-  if (weeks.length < 2) return null;
-  const max = Math.max(...weeks.map(w => w.sum), 1);
-  const peakIdx = weeks.reduce((bi, w, i, a) => (w.sum > a[bi].sum ? i : bi), 0);
-  const avg = weeks.reduce((s, w) => s + w.sum, 0) / weeks.length;
-  const avgPct = Math.min((avg / max) * 100, 100);
-  const range = (w) => fmtDate(w.start, { day: 'numeric' }, lang) + '–' + fmtDate(w.end, { day: 'numeric', month: 'short' }, lang);
+  const n = daily.length;
+  const W = 1000, H = 120, TOP = 8;
+  const max = Math.max(...daily, 1);
+  const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
+  const yAt = (v) => TOP + (1 - (v || 0) / max) * (H - TOP);
+  const pts = daily.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+
+  // Catmull-Rom → cubic Bezier: плавно, но без «кардиограммы».
+  let line = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
+  const last = pts[n - 1];
+  const lastLeft = (last.x / W) * 100, lastTop = (last.y / H) * 100;
+
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientX - r.left) / r.width;
+    setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1)))));
+  };
+  const hx = hover != null ? (xAt(hover) / W) * 100 : 0;
+  const hyTop = hover != null ? (yAt(daily[hover]) / H) * 100 : 0;
+  const labelIdx = [0, Math.floor((n - 1) / 2), n - 1];
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 28 }}>
-      <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 10, height: 108, borderBottom: '1.5px solid rgba(255,255,255,.4)' }}>
-        {avg > 0 && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${avgPct}%`, borderTop: '1.5px dashed rgba(255,255,255,.55)', pointerEvents: 'none' }}>
-            <span style={{ position: 'absolute', right: 0, top: -13, fontSize: 9.5, fontWeight: 800, opacity: .85 }}>{tt('среднее')}</span>
-          </div>
-        )}
-        {weeks.map((w, i) => {
-          const hPct = w.sum > 0 ? Math.max((w.sum / max) * 100, 6) : 0;
-          const isPeak = i === peakIdx && w.sum > 0;
-          return (
-            <div key={i} className="chart-col" data-tip={`${range(w)} · ${fmtMoneyFull(w.sum)} ${tt('сум')}`} style={{
-              flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', position: 'relative',
-            }}>
-              {isPeak && (
-                <div style={{ position: 'absolute', top: -22, background: 'rgba(255,255,255,.96)', color: '#15803d', borderRadius: 7, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 3px 10px rgba(0,0,0,.14)' }}>
-                  {fmtMoney(w.sum)}
-                </div>
-              )}
-              <div style={{ width: '100%', maxWidth: 44, height: `${hPct}%`, background: isPeak ? '#ffffff' : 'rgba(255,255,255,.6)', borderRadius: '9px 9px 0 0', minHeight: w.sum > 0 ? 4 : 0, transition: 'height .3s ease' }} />
+    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 18 }}>
+      <div style={{ position: 'relative', height: H, cursor: 'crosshair' }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+          <defs>
+            <linearGradient id="heroFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.40" />
+              <stop offset="100%" stopColor="#ffffff" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          <path d={area} fill="url(#heroFill)" />
+          <path d={line} fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke" style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.18))' }} />
+          {hover != null && (
+            <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={H} stroke="rgba(255,255,255,.55)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+          )}
+        </svg>
+
+        {/* Светящаяся точка «сейчас» */}
+        <span style={{ position: 'absolute', left: `${lastLeft}%`, top: `${lastTop}%`, transform: 'translate(-50%,-50%)', width: 11, height: 11, borderRadius: '50%', background: '#fff', boxShadow: '0 0 0 4px rgba(255,255,255,.32), 0 0 10px rgba(255,255,255,.85)', pointerEvents: 'none' }} />
+
+        {/* Точка + тултип при наведении */}
+        {hover != null && (
+          <>
+            <span style={{ position: 'absolute', left: `${hx}%`, top: `${hyTop}%`, transform: 'translate(-50%,-50%)', width: 9, height: 9, borderRadius: '50%', background: '#15803d', border: '2px solid #fff', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', left: `${hx}%`, top: -4, transform: `translateX(${hx > 70 ? '-100%' : hx < 30 ? '0' : '-50%'})`, background: 'rgba(255,255,255,.97)', color: '#15803d', borderRadius: 8, padding: '4px 9px', fontSize: 11, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.18)', pointerEvents: 'none' }}>
+              {fmtMoneyFull(daily[hover])} {tt('сум')}
+              <div style={{ fontSize: 9, color: '#64748b', fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
             </div>
-          );
-        })}
+          </>
+        )}
       </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
-        {weeks.map((w, i) => (
-          <div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 9.5, fontWeight: 700, opacity: i === peakIdx ? 1 : .7, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {range(w)}
-          </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, opacity: .8, fontFamily: "'JetBrains Mono', monospace" }}>
+        {labelIdx.map((idx, k) => (
+          <span key={k}>{dates[idx] ? fmtDate(dates[idx], { day: 'numeric', month: 'short' }, lang) : ''}</span>
         ))}
       </div>
     </div>
@@ -359,7 +378,7 @@ export default function Dashboard() {
             {/* Правая колонка — недельные столбцы, фикс. высота */}
             {trendValues.length > 1 && trendValues.some(v => v > 0) && (
               <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroWeeklyChart
+                <HeroLineChart
                   daily={trendValues}
                   dates={trend.map(x => x.date)}
                   lang={lang}
