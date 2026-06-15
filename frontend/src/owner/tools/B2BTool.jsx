@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
 import { Modal, toast } from '../Modal.jsx';
+import { useTt } from '../tt.js';
 
 const STAGES = ['Лид', 'Квалификация', 'Переговоры', 'КП', 'Договор', 'Оплачено'];
 
 export default function B2BTool() {
+  const { tt } = useTt();
   const [deals, setDeals] = useState([
     { id: 'D-2401', client: 'ООО «Меркурий»',  stage: 2, value: 24500000, owner: 'Anvar S.' },
     { id: 'D-2402', client: 'ЧП «Барс»',        stage: 3, value: 8200000,  owner: 'Diana K.' },
@@ -19,20 +21,20 @@ export default function B2BTool() {
 
   return (
     <>
-      <PageHeader title="🏢 B2B / B2G сделки" sub="Корпоративный pipeline · PITCH · тарифы"
-        actions={<button className="btn btn-primary btn-sm" onClick={() => toast('Открыта форма новой сделки')}>+ Сделка</button>} />
+      <PageHeader title={tt('🏢 B2B / B2G сделки')} sub={tt('Корпоративный pipeline · PITCH · тарифы')}
+        actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Открыта форма новой сделки'))}>+ {tt('Сделка')}</button>} />
       <div className="grid-5" style={{ marginBottom: 18 }}>
-        <Tile icon="📞" label="Лидов" value={deals.filter(d => d.stage === 0).length} color="#9094B0" />
-        <Tile icon="💌" label="КП отправлено" value={deals.filter(d => d.stage === 3).length} color="#5B4FE8" />
-        <Tile icon="🤝" label="В договоре" value={deals.filter(d => d.stage === 4).length} color="#FF6B2B" />
-        <Tile icon="✅" label="Выиграно" value={deals.filter(d => d.stage === 5).length} color="#22C55E" />
-        <Tile icon="💰" label="Пайплайн" value={(deals.reduce((s, d) => s + d.value, 0) / 1e6).toFixed(1) + 'M'} color="#0EA5E9" />
+        <Tile icon="📞" label={tt('Лидов')} value={deals.filter(d => d.stage === 0).length} color="#9094B0" />
+        <Tile icon="💌" label={tt('КП отправлено')} value={deals.filter(d => d.stage === 3).length} color="#5B4FE8" />
+        <Tile icon="🤝" label={tt('В договоре')} value={deals.filter(d => d.stage === 4).length} color="#FF6B2B" />
+        <Tile icon="✅" label={tt('Выиграно')} value={deals.filter(d => d.stage === 5).length} color="#22C55E" />
+        <Tile icon="💰" label={tt('Пайплайн')} value={(deals.reduce((s, d) => s + d.value, 0) / 1e6).toFixed(1) + 'M'} color="#0EA5E9" />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
         {STAGES.map((s, si) => (
           <div key={s} style={{ minHeight: 320 }}>
-            <div style={{ fontWeight: 800, fontSize: 12, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8, textAlign: 'center' }}>{s}</div>
+            <div style={{ fontWeight: 800, fontSize: 12, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8, textAlign: 'center' }}>{tt(s)}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {deals.filter(d => d.stage === si).map(d => (
                 <div key={d.id} onClick={() => setOpen(d)} style={{
@@ -51,16 +53,16 @@ export default function B2BTool() {
       </div>
 
       <Modal open={open != null} onClose={() => setOpen(null)} title={open?.client} icon="🏢"
-        footer={<><button className="btn btn-ghost" onClick={() => { moveDeal(open.id, -1); setOpen({ ...open, stage: open.stage - 1 }); toast('Сделка возвращена назад'); }}>← Назад</button>
-                  <button className="btn btn-primary" onClick={() => { moveDeal(open.id, +1); setOpen({ ...open, stage: open.stage + 1 }); toast('Сделка продвинута'); }}>Дальше →</button></>}>
+        footer={<><button className="btn btn-ghost" onClick={() => { moveDeal(open.id, -1); setOpen({ ...open, stage: open.stage - 1 }); toast(tt('Сделка возвращена назад')); }}>{tt('← Назад')}</button>
+                  <button className="btn btn-primary" onClick={() => { moveDeal(open.id, +1); setOpen({ ...open, stage: open.stage + 1 }); toast(tt('Сделка продвинута')); }}>{tt('Дальше →')}</button></>}>
         {open && (
           <>
             <div className="grid-2" style={{ marginBottom: 14 }}>
-              <Tile icon="💰" label="Сумма" value={(open.value / 1e6).toFixed(1) + 'M'} color="#5B4FE8" />
-              <Tile icon="🎯" label="Стадия" value={STAGES[open.stage]} color="#FF6B2B" />
+              <Tile icon="💰" label={tt('Сумма')} value={(open.value / 1e6).toFixed(1) + 'M'} color="#5B4FE8" />
+              <Tile icon="🎯" label={tt('Стадия')} value={tt(STAGES[open.stage])} color="#FF6B2B" />
             </div>
             <div style={{ background: 'var(--bg-2)', borderRadius: 10, padding: 12, fontSize: 13 }}>
-              <div style={{ marginBottom: 6 }}><strong>Ответственный:</strong> {open.owner}</div>
+              <div style={{ marginBottom: 6 }}><strong>{tt('Ответственный')}:</strong> {open.owner}</div>
               <div><strong>ID:</strong> <span className="mono">{open.id}</span></div>
             </div>
           </>

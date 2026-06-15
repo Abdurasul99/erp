@@ -1,5 +1,6 @@
 import React from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const POINTS = [
   { stage: 'До покупки', icon: '🔍', items: [
@@ -23,23 +24,24 @@ const POINTS = [
 ];
 
 export default function ContactPointsTool() {
+  const { tt } = useTt();
   return (
     <>
-      <PageHeader title="📍 Точки контакта" sub="До · во время · после покупки" />
+      <PageHeader title={tt('📍 Точки контакта')} sub={tt('До · во время · после покупки')} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📍" label="Всего" value="14" color="#5B4FE8" />
-        <Tile icon="✅" label="Активных" value="11" color="#22C55E" />
-        <Tile icon="🚧" label="В плане" value="3" color="#F59E0B" />
-        <Tile icon="🎯" label="Конверсия" value="8.4%" delta={3} color="#FF6B2B" />
+        <Tile icon="📍" label={tt('Всего')} value="14" color="#5B4FE8" />
+        <Tile icon="✅" label={tt('Активных')} value="11" color="#22C55E" />
+        <Tile icon="🚧" label={tt('В плане')} value="3" color="#F59E0B" />
+        <Tile icon="🎯" label={tt('Конверсия')} value="8.4%" delta={3} color="#FF6B2B" />
       </div>
       {POINTS.map(s => (
-        <Card key={s.stage} icon={s.icon} title={s.stage} style={{ marginBottom: 14 }}>
+        <Card key={s.stage} icon={s.icon} title={tt(s.stage)} style={{ marginBottom: 14 }}>
           <div className="grid-4">
             {s.items.map(p => (
               <div key={p.name} style={{ padding: 14, background: 'var(--bg-2)', borderRadius: 12 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>{p.name}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>{tt(p.name)}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Badge tone={p.status === 'live' ? 'green' : 'yellow'}>{p.status === 'live' ? 'Активно' : 'План'}</Badge>
+                  <Badge tone={p.status === 'live' ? 'green' : 'yellow'}>{p.status === 'live' ? tt('Активно') : tt('План')}</Badge>
                   <span className="mono" style={{ fontSize: 12, fontWeight: 800, color: 'var(--primary)' }}>{p.conv}</span>
                 </div>
               </div>

@@ -1,16 +1,18 @@
 import React from 'react';
+import { useTt } from './tt.js';
 
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
 
 export function Tile({ icon, label, value, sub, delta, color = '#5B4FE8' }) {
+  const { tt } = useTt();
   return (
     <div className="tile" style={{ borderLeftColor: color }}>
       <div className="tile-label">{icon} {label}</div>
       <div className="tile-value" style={{ color }}>{value}</div>
       {delta != null && (
         <div className={'tile-delta ' + (delta >= 0 ? 'up' : 'down')}>
-          {delta >= 0 ? '▲' : '▼'} {Math.abs(Math.round(delta))}% к прошлому периоду
+          {delta >= 0 ? '▲' : '▼'} {Math.abs(Math.round(delta))}% {tt('к прошлому периоду')}
         </div>
       )}
       {sub && <div className="tile-sub">{sub}</div>}
@@ -54,8 +56,9 @@ export function Bars({ data, max, color = '#5B4FE8' }) {
 // Used on the dashboard for "Продажи за период" + "Сравнение с прошлым".
 // Поддерживает читаемые оси: yAxis=true рисует 3 метки слева (max / mid / 0).
 export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#9094B0', height = 160, labels = null, yAxis = true }) {
+  const { tt } = useTt();
   if (!data || data.length === 0) {
-    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Нет данных за период</div>;
+    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных за период')}</div>;
   }
   // Combined max for shared Y-scale
   const allValues = [...data, ...(prevData || [])];
@@ -133,8 +136,9 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
 // без Y-оси (значение каждого бара видно по hover-подсказке).
 // prevData — опциональная серая серия рядом для сравнения периодов.
 export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor = '#C3C8D4', height = 160, maxLabels = 6 }) {
+  const { tt } = useTt();
   if (!data || data.length === 0) {
-    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>Нет данных за период</div>;
+    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных за период')}</div>;
   }
   const allValues = [...data, ...(prevData || [])];
   const max = Math.max(...allValues, 1);
@@ -164,7 +168,7 @@ export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor 
           const pv = prevData ? (prevData[i] || 0) : null;
           const phPct = pv != null ? Math.max((pv / max) * 100, pv > 0 ? 3 : 0) : null;
           const tip = (labels && labels[i] ? labels[i] + ' · ' : '') + fmtMoneyFull(v) +
-            (pv != null ? `\nпрошлый · ${fmtMoneyFull(pv)}` : '');
+            (pv != null ? `\n${tt('прошлый')} · ${fmtMoneyFull(pv)}` : '');
           return (
             <div key={i} className="chart-col" data-tip={tip} style={{
               flex: 1, minWidth: 0, height: '100%',
@@ -246,6 +250,7 @@ export function PageHeader({ title, sub, actions }) {
 }
 
 export function Pills({ value, onChange, options, label = 'Выбор' }) {
+  const { tt } = useTt();
   // Стрелками ←/→ переключаемся между пилюлями (как radiogroup), не теряя фокус
   const onKey = (e, idx) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -259,7 +264,7 @@ export function Pills({ value, onChange, options, label = 'Выбор' }) {
     btns?.[next]?.focus();
   };
   return (
-    <div className="pills" role="group" aria-label={label}>
+    <div className="pills" role="group" aria-label={tt(label)}>
       {options.map((o, i) => (
         <button key={o.value} type="button"
           className={'pill' + (o.value === value ? ' active' : '')}
@@ -272,11 +277,12 @@ export function Pills({ value, onChange, options, label = 'Выбор' }) {
 }
 
 export function ComingSoon({ icon = '🚧', title = 'В разработке', children }) {
+  const { tt } = useTt();
   return (
     <div className="card">
       <div className="coming-soon">
         <div className="coming-soon-icon">{icon}</div>
-        <div className="coming-soon-title">{title}</div>
+        <div className="coming-soon-title">{tt(title)}</div>
         <div style={{ maxWidth: 480 }}>{children}</div>
       </div>
     </div>
@@ -327,7 +333,8 @@ export function Tooltip({ text, children }) {
 }
 
 export function RequiredMark() {
-  return <span className="req-asterisk" aria-label="обязательное поле">*</span>;
+  const { tt } = useTt();
+  return <span className="req-asterisk" aria-label={tt('обязательное поле')}>*</span>;
 }
 
 export function FeatureGrid({ items }) {

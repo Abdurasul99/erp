@@ -1,23 +1,25 @@
 import React from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 export default function LoyaltyTool() {
+  const { tt } = useTt();
   return (
     <>
-      <PageHeader title="🎁 Программа лояльности" sub="Уровни · кэшбек · реферальная программа" />
+      <PageHeader title={tt('🎁 Программа лояльности')} sub={tt('Уровни · кэшбек · реферальная программа')} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🥉" label="Bronze" value="1 487" sub="0-2 покупки" color="#A07655" />
-        <Tile icon="🥈" label="Silver" value="486" sub="3-9 покупок" color="#9CA3AF" />
+        <Tile icon="🥉" label="Bronze" value="1 487" sub={tt('0-2 покупки')} color="#A07655" />
+        <Tile icon="🥈" label="Silver" value="486" sub={tt('3-9 покупок')} color="#9CA3AF" />
         <Tile icon="🥇" label="Gold" value="184" sub="10-29" color="#F59E0B" />
         <Tile icon="💎" label="Platinum" value="47" sub="30+" color="#7C3AED" />
       </div>
-      <Card icon="🎯" title="Условия уровней">
+      <Card icon="🎯" title={tt('Условия уровней')}>
         <div className="grid-4">
           {[
-            ['🥉 Bronze', '5%', 'Базовый кэшбек'],
-            ['🥈 Silver', '8%', '+ поздравления с ДР'],
-            ['🥇 Gold', '12%', '+ персональный менеджер'],
-            ['💎 Platinum', '15%', '+ закрытые распродажи'],
+            ['🥉 Bronze', '5%', tt('Базовый кэшбек')],
+            ['🥈 Silver', '8%', tt('+ поздравления с ДР')],
+            ['🥇 Gold', '12%', tt('+ персональный менеджер')],
+            ['💎 Platinum', '15%', tt('+ закрытые распродажи')],
           ].map(([n, c, p]) => (
             <div key={n} style={{ padding: 16, background: 'var(--bg-2)', borderRadius: 12, textAlign: 'center' }}>
               <div style={{ fontSize: 32 }}>{n.split(' ')[0]}</div>
@@ -28,11 +30,11 @@ export default function LoyaltyTool() {
           ))}
         </div>
       </Card>
-      <Card icon="🤝" title="Реферальная программа" style={{ marginTop: 18 }}>
+      <Card icon="🤝" title={tt('Реферальная программа')} style={{ marginTop: 18 }}>
         <div className="grid-3">
-          <Tile icon="👥" label="Приглашённых" value="148" color="#5B4FE8" />
-          <Tile icon="💰" label="Конверсия" value="34%" sub="реферал → клиент" color="#22C55E" />
-          <Tile icon="🎁" label="Выплачено бонусов" value="12.4M" sub="UZS" color="#FF6B2B" />
+          <Tile icon="👥" label={tt('Приглашённых')} value="148" color="#5B4FE8" />
+          <Tile icon="💰" label={tt('Конверсия')} value="34%" sub={tt('реферал → клиент')} color="#22C55E" />
+          <Tile icon="🎁" label={tt('Выплачено бонусов')} value="12.4M" sub="UZS" color="#FF6B2B" />
         </div>
       </Card>
     </>

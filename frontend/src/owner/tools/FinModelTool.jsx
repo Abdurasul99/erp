@@ -3,8 +3,10 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
+import { useTt } from '../tt.js';
 
 export default function FinModelTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -32,28 +34,28 @@ export default function FinModelTool() {
 
   return (
     <>
-      <PageHeader title="📈 Финансовая модель" sub="P&L по месяцам + прогноз на 3 месяца · реальные данные" />
+      <PageHeader title={tt('📈 Финансовая модель')} sub={tt('P&L по месяцам + прогноз на 3 месяца · реальные данные')} />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={200} /></Card>
       ) : error ? (
         <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div></Card>
       ) : !hasData ? (
-        <Card><EmptyState icon="📊" title="Недостаточно истории" description="Для финансовой модели нужны продажи хотя бы за месяц. Появятся данные — модель построится." /></Card>
+        <Card><EmptyState icon="📊" title={tt('Недостаточно истории')} description={tt('Для финансовой модели нужны продажи хотя бы за месяц. Появятся данные — модель построится.')} /></Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="💰" label="Выручка (посл. месяц)" value={fmtMoneyFull(lastReal?.revenue || 0)} sub="сум" color="#5B4FE8" />
-            <Tile icon="💎" label="Валовая прибыль" value={fmtMoneyFull(lastReal?.gross_profit || 0)} sub="сум" color="#22C55E" />
-            <Tile icon="🏦" label="Чистая прибыль" value={fmtMoneyFull(lastReal?.net_profit || 0)} sub="сум · после расходов" color={(lastReal?.net_profit || 0) >= 0 ? '#16a34a' : '#EF4444'} />
-            <Tile icon="📈" label="Темп роста" value={(data.growth_pct >= 0 ? '+' : '') + data.growth_pct + '%'} sub="выручка / мес" color={data.growth_pct >= 0 ? '#22C55E' : '#EF4444'} />
+            <Tile icon="💰" label={tt('Выручка (посл. месяц)')} value={fmtMoneyFull(lastReal?.revenue || 0)} sub={tt('сум')} color="#5B4FE8" />
+            <Tile icon="💎" label={tt('Валовая прибыль')} value={fmtMoneyFull(lastReal?.gross_profit || 0)} sub={tt('сум')} color="#22C55E" />
+            <Tile icon="🏦" label={tt('Чистая прибыль')} value={fmtMoneyFull(lastReal?.net_profit || 0)} sub={tt('сум · после расходов')} color={(lastReal?.net_profit || 0) >= 0 ? '#16a34a' : '#EF4444'} />
+            <Tile icon="📈" label={tt('Темп роста')} value={(data.growth_pct >= 0 ? '+' : '') + data.growth_pct + '%'} sub={tt('выручка / мес')} color={data.growth_pct >= 0 ? '#22C55E' : '#EF4444'} />
           </div>
 
-          <Card icon="📊" title="Выручка по месяцам (факт + прогноз)" style={{ marginBottom: 16 }}>
+          <Card icon="📊" title={tt('Выручка по месяцам (факт + прогноз)')} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 170, borderBottom: '1.5px solid var(--border, #e6e8f2)', paddingTop: 10 }}>
               {all.map((m, i) => (
                 <div key={i} className="chart-col"
-                  data-tip={`${m.label}${m.projected ? ' (прогноз)' : ''} · ${fmtMoneyFull(m.revenue)} сум`}
+                  data-tip={`${m.label}${m.projected ? ' (' + tt('прогноз') + ')' : ''} · ${fmtMoneyFull(m.revenue)} ${tt('сум')}`}
                   style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center' }}>
                   <div style={{
                     width: '70%', height: `${(m.revenue / maxRev) * 100}%`,
@@ -71,28 +73,28 @@ export default function FinModelTool() {
               ))}
             </div>
             <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12 }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#5B4FE8', borderRadius: 2 }} /> Факт</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#A5B4FC', borderRadius: 2 }} /> Прогноз</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#5B4FE8', borderRadius: 2 }} /> {tt('Факт')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#A5B4FC', borderRadius: 2 }} /> {tt('Прогноз')}</span>
             </div>
           </Card>
 
-          <Card icon="📋" title="P&L по месяцам">
+          <Card icon="📋" title={tt('P&L по месяцам')}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Месяц</th>
-                    <th style={{ textAlign: 'right' }}>Выручка</th>
-                    <th style={{ textAlign: 'right' }}>Себестоимость</th>
-                    <th style={{ textAlign: 'right' }}>Валовая прибыль</th>
-                    <th style={{ textAlign: 'right' }}>Расходы</th>
-                    <th style={{ textAlign: 'right' }}>Чистая прибыль</th>
+                    <th>{tt('Месяц')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Выручка')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Себестоимость')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Валовая прибыль')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Расходы')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Чистая прибыль')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {all.map((m, i) => (
                     <tr key={i} style={m.projected ? { background: 'rgba(91,79,232,.04)' } : undefined}>
-                      <td style={{ fontWeight: 700 }}>{m.label} {m.projected && <Badge tone="purple">прогноз</Badge>}</td>
+                      <td style={{ fontWeight: 700 }}>{m.label} {m.projected && <Badge tone="purple">{tt('прогноз')}</Badge>}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(m.revenue)}</td>
                       <td className="mono" style={{ textAlign: 'right', color: 'var(--text3)' }}>−{fmtMoneyFull(m.cogs)}</td>
                       <td className="mono" style={{ textAlign: 'right', color: 'var(--green)' }}>{fmtMoneyFull(m.gross_profit)}</td>
@@ -106,7 +108,7 @@ export default function FinModelTool() {
               </table>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 10 }}>
-              ℹ️ Прогноз строится по среднемесячному темпу роста ({(data.growth_pct >= 0 ? '+' : '') + data.growth_pct}%) на основе фактических месяцев. Расходы прогнозируются по среднему уровню.
+              ℹ️ {tt('Прогноз строится по среднемесячному темпу роста')} ({(data.growth_pct >= 0 ? '+' : '') + data.growth_pct}%) {tt('на основе фактических месяцев. Расходы прогнозируются по среднему уровню.')}
             </div>
           </Card>
 

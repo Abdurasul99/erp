@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, fmtNum } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 // Честные статусы интеграций: «Активна» — только то, что РЕАЛЬНО работает
 // на сервере (проверяется backend-ом). Остальное — план развития, не фейк.
@@ -16,6 +17,7 @@ const CATALOG = [
 ];
 
 export default function IntegrationsTool() {
+  const { tt } = useTt();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -34,7 +36,7 @@ export default function IntegrationsTool() {
 
   return (
     <>
-      <PageHeader title="🔌 Интеграции" sub="Реальный статус подключений · без макетов" />
+      <PageHeader title={tt('🔌 Интеграции')} sub={tt('Реальный статус подключений · без макетов')} />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={160} /></Card>
@@ -43,9 +45,9 @@ export default function IntegrationsTool() {
       ) : (
         <>
           <div className="grid-3" style={{ marginBottom: 18 }}>
-            <Tile icon="🔌" label="Активных" value={fmtNum(activeCount)} sub={`из ${CATALOG.length} в каталоге`} color="#22C55E" />
-            <Tile icon="🤖" label="AI-запросов" value={fmtNum(data.ai_requests_30d)} sub="за 30 дней" color="#5B4FE8" />
-            <Tile icon="🧮" label="AI-токенов" value={fmtNum(data.ai_tokens_30d)} sub="за 30 дней" color="#0EA5E9" />
+            <Tile icon="🔌" label={tt('Активных')} value={fmtNum(activeCount)} sub={`${tt('из')} ${CATALOG.length} ${tt('в каталоге')}`} color="#22C55E" />
+            <Tile icon="🤖" label={tt('AI-запросов')} value={fmtNum(data.ai_requests_30d)} sub={tt('за 30 дней')} color="#5B4FE8" />
+            <Tile icon="🧮" label={tt('AI-токенов')} value={fmtNum(data.ai_tokens_30d)} sub={tt('за 30 дней')} color="#0EA5E9" />
           </div>
 
           <div className="grid-3">
@@ -56,16 +58,16 @@ export default function IntegrationsTool() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <div style={{ fontSize: 24 }} aria-hidden="true">{it.ic}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 800, fontSize: 14 }}>{it.n}</div>
+                      <div style={{ fontWeight: 800, fontSize: 14 }}>{tt(it.n)}</div>
                     </div>
-                    <Badge tone={active ? 'green' : 'gray'}>{active ? 'Активна' : 'Не подключена'}</Badge>
+                    <Badge tone={active ? 'green' : 'gray'}>{active ? tt('Активна') : tt('Не подключена')}</Badge>
                   </div>
-                  <div style={{ fontSize: 12.5, color: 'var(--text2)', marginBottom: 10 }}>{it.d}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text2)', marginBottom: 10 }}>{tt(it.d)}</div>
                   {active ? (
-                    <div style={{ fontSize: 12, color: 'var(--green)', fontWeight: 700 }}>✓ Работает на сервере</div>
+                    <div style={{ fontSize: 12, color: 'var(--green)', fontWeight: 700 }}>{tt('✓ Работает на сервере')}</div>
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--text3)' }}>
-                      Подключается администратором системы — напишите нам, если нужна в первую очередь.
+                      {tt('Подключается администратором системы — напишите нам, если нужна в первую очередь.')}
                     </div>
                   )}
                 </Card>
@@ -74,8 +76,7 @@ export default function IntegrationsTool() {
           </div>
 
           <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text3)' }}>
-            ℹ️ Статус «Активна» означает, что интеграция реально работает на сервере прямо сейчас —
-            здесь нет демонстрационных переключателей.
+            {tt('ℹ️ Статус «Активна» означает, что интеграция реально работает на сервере прямо сейчас — здесь нет демонстрационных переключателей.')}
           </div>
         </>
       )}

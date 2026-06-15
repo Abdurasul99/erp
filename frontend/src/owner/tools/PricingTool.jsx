@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext, useMemo } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoney, fmtNum, Pills } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 const TONE_META = {
   red:    { label: 'Низкая маржа',  badge: 'red',    sort: 0, hint: 'Маржа < 10% — поднять цену или поменять поставщика' },
@@ -23,6 +24,7 @@ const SORTS = [
 ];
 
 export default function PricingTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -56,47 +58,47 @@ export default function PricingTool() {
   return (
     <>
       <PageHeader
-        title="🏷️ Ценообразование"
-        sub="Маржа по каждому товару · приоритет проблемных"
-        actions={<Badge tone="green">Live</Badge>}
+        title={tt('🏷️ Ценообразование')}
+        sub={tt('Маржа по каждому товару · приоритет проблемных')}
+        actions={<Badge tone="green">{tt('Live')}</Badge>}
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
 
       {loading ? (
-        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>Загрузка...</div></div></Card>
+        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="📦" label="Всего товаров" value={fmtNum(summary.total)} sub={`средняя маржа ${summary.avg_margin || 0}%`} color="#5B4FE8" />
-            <Tile icon="🔴" label="Низкая маржа" value={fmtNum(summary.red)} sub="< 10% — поднять цену" color="#EF4444" />
-            <Tile icon="🟡" label="Средняя"      value={fmtNum(summary.yellow)} sub="10-25%" color="#F59E0B" />
-            <Tile icon="🟢" label="Здоровая"     value={fmtNum(summary.green)} sub="≥ 25%" color="#22C55E" />
+            <Tile icon="📦" label={tt('Всего товаров')} value={fmtNum(summary.total)} sub={`${tt('средняя маржа')} ${summary.avg_margin || 0}%`} color="#5B4FE8" />
+            <Tile icon="🔴" label={tt('Низкая маржа')} value={fmtNum(summary.red)} sub={tt('< 10% — поднять цену')} color="#EF4444" />
+            <Tile icon="🟡" label={tt('Средняя')}      value={fmtNum(summary.yellow)} sub="10-25%" color="#F59E0B" />
+            <Tile icon="🟢" label={tt('Здоровая')}     value={fmtNum(summary.green)} sub="≥ 25%" color="#22C55E" />
           </div>
 
-          <Card icon="📋" title={`Товары (${filtered.length})`}
+          <Card icon="📋" title={`${tt('Товары')} (${filtered.length})`}
             actions={
               <div style={{ display: 'flex', gap: 8 }}>
-                <Pills value={filter} onChange={setFilter} options={FILTERS} />
-                <Pills value={sort} onChange={setSort} options={SORTS} />
+                <Pills value={filter} onChange={setFilter} options={FILTERS.map(f => ({ ...f, label: tt(f.label) }))} />
+                <Pills value={sort} onChange={setSort} options={SORTS.map(s => ({ ...s, label: tt(s.label) }))} />
               </div>
             }>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Товар</th>
-                    <th style={{ textAlign: 'right' }}>Закупка</th>
-                    <th style={{ textAlign: 'right' }}>Продажа</th>
-                    <th style={{ textAlign: 'right' }}>Маржа</th>
-                    <th style={{ textAlign: 'center' }}>Статус</th>
-                    <th style={{ textAlign: 'right' }}>Выручка 90д</th>
-                    <th style={{ textAlign: 'right' }}>Кол-во 90д</th>
+                    <th>{tt('Товар')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Закупка')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Продажа')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Маржа')}</th>
+                    <th style={{ textAlign: 'center' }}>{tt('Статус')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Выручка 90д')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Кол-во 90д')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет товаров</td></tr>
+                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>{tt('Нет товаров')}</td></tr>
                   ) : filtered.slice(0, 300).map(it => {
                     const meta = TONE_META[it.tone];
                     return (
@@ -110,7 +112,7 @@ export default function PricingTool() {
                           color: it.tone === 'red' ? '#EF4444' : it.tone === 'yellow' ? '#F59E0B' : '#22C55E',
                         }}>{it.margin_pct}%</td>
                         <td style={{ textAlign: 'center' }}>
-                          <Badge tone={meta.badge}>{meta.label}</Badge>
+                          <Badge tone={meta.badge}>{tt(meta.label)}</Badge>
                         </td>
                         <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(it.revenue_90d)}</td>
                         <td className="mono" style={{ textAlign: 'right', color: 'var(--text2)' }}>{fmtNum(it.qty_90d)} {it.unit}</td>
@@ -122,7 +124,7 @@ export default function PricingTool() {
             </div>
             {filtered.length > 300 && (
               <div style={{ textAlign: 'center', padding: 10, color: 'var(--text3)', fontSize: 12 }}>
-                Показаны первые 300 из {filtered.length}
+                {tt('Показаны первые 300 из')} {filtered.length}
               </div>
             )}
           </Card>

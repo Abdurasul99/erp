@@ -1,5 +1,6 @@
 import { useContext } from 'react';
 import { LangContext } from '../App.jsx';
+import { TOOLS_UZ } from './tt_tools.js';
 
 // Owner-shell перевод: ключ = русская строка, значение = узбекская (латиница).
 // Если перевода нет — показываем русский (graceful fallback). Это позволяет
@@ -138,7 +139,7 @@ export const OWNER_UZ = {
   'День': 'Kun', 'Сравнение с прошлым периодом': "O'tgan davr bilan solishtirish",
   'Низкий остаток': 'Past qoldiq', 'товаров': 'tovar', 'Меньше 5 единиц на складе — рискуете остаться без продаж': "Omborda 5 donadan kam — sotuvsiz qolish xavfi",
   'сделок': 'bitim', 'Все филиалы · ': 'Barcha filiallar · ', 'сейчас': 'hozir',
-  'Сравнение': 'Solishtirish', 'филиалов': 'filial', 'Сотр.': 'Xodim', 'маржа↓': 'marja↓',
+  'Сравнение': 'Solishtirish', 'Продажи': 'Sotuvlar', 'филиалов': 'filial', 'Сотр.': 'Xodim', 'маржа↓': 'marja↓',
   'сотр · маржа ': 'xodim · marja ',
 
   // — SectionHome: метрики + UI карточек разделов —
@@ -159,7 +160,7 @@ export const OWNER_UZ = {
 
 export function tt(ru, lang) {
   if (lang !== 'uz') return ru;
-  return OWNER_UZ[ru] || ru;
+  return OWNER_UZ[ru] || TOOLS_UZ[ru] || ru;
 }
 
 // Хук: читает текущий язык из LangContext, возвращает переводчик + смену языка.

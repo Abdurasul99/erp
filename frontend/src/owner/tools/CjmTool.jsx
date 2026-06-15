@@ -1,5 +1,6 @@
 import React from 'react';
 import { Card, Badge, PageHeader } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const JOURNEY = [
   { p: 'Узнавание',    e: '👀', t: 'Реклама Telegram',     a: 'Видит пост',     em: '🤔', pain: 'Скепсис',                          bonus: '—' },
@@ -12,22 +13,23 @@ const JOURNEY = [
 ];
 
 export default function CjmTool() {
+  const { tt } = useTt();
   return (
     <>
-      <PageHeader title="🗺️ Customer Journey Map" sub="Путь клиента · 7 этапов · точки боли · бонусы" />
-      <Card icon="🗺️" title="B2C розничный покупатель">
+      <PageHeader title={`🗺️ ${tt('Customer Journey Map')}`} sub={tt('Путь клиента · 7 этапов · точки боли · бонусы')} />
+      <Card icon="🗺️" title={tt('B2C розничный покупатель')}>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ minWidth: 980 }}>
-            <thead><tr><th>Этап</th><th>Точка касания</th><th>Действие</th><th>Эмоция</th><th>Боль</th><th>Наш бонус</th></tr></thead>
+            <thead><tr><th>{tt('Этап')}</th><th>{tt('Точка касания')}</th><th>{tt('Действие')}</th><th>{tt('Эмоция')}</th><th>{tt('Боль')}</th><th>{tt('Наш бонус')}</th></tr></thead>
             <tbody>
               {JOURNEY.map((j, i) => (
                 <tr key={i}>
-                  <td><Badge tone="purple">{j.e} {j.p}</Badge></td>
-                  <td style={{ fontWeight: 700 }}>{j.t}</td>
-                  <td>{j.a}</td>
+                  <td><Badge tone="purple">{j.e} {tt(j.p)}</Badge></td>
+                  <td style={{ fontWeight: 700 }}>{tt(j.t)}</td>
+                  <td>{tt(j.a)}</td>
                   <td style={{ fontSize: 24 }}>{j.em}</td>
-                  <td style={{ color: 'var(--red)', fontSize: 12 }}>{j.pain}</td>
-                  <td style={{ color: 'var(--green)', fontWeight: 700, fontSize: 12 }}>{j.bonus}</td>
+                  <td style={{ color: 'var(--red)', fontSize: 12 }}>{tt(j.pain)}</td>
+                  <td style={{ color: 'var(--green)', fontWeight: 700, fontSize: 12 }}>{tt(j.bonus)}</td>
                 </tr>
               ))}
             </tbody>

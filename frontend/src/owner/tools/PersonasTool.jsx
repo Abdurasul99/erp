@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { Card, Badge, PageHeader, Tile, EmptyState, Skeleton, fmtNum } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const CHANNEL_OPTIONS = ['Instagram', 'Telegram', 'TikTok', 'Сарафан', 'Витрина', 'Маркетплейсы', 'Сайт', 'Холодные звонки', 'Другое'];
 const BUDGET_OPTIONS = ['до 200К/мес', '200К-500К/мес', '500К-1М/мес', '1М-3М/мес', '3М+/мес'];
@@ -11,6 +12,7 @@ const empty = {
 };
 
 export default function PersonasTool() {
+  const { tt } = useTt();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -38,7 +40,7 @@ export default function PersonasTool() {
   const cancel = () => { setEditing(null); setForm(empty); };
 
   const save = async () => {
-    if (!form.name.trim()) { setError('Название обязательно'); return; }
+    if (!form.name.trim()) { setError(tt('Название обязательно')); return; }
     setSaving(true); setError(null);
     try {
       if (editing === 'new') await api.post('/marketing/personas', form);
@@ -49,7 +51,7 @@ export default function PersonasTool() {
   };
 
   const remove = async (p) => {
-    if (!confirm(`Удалить портрет "${p.name}"?`)) return;
+    if (!confirm(`${tt('Удалить портрет')} "${p.name}"?`)) return;
     try { await api.delete('/marketing/personas/' + p.id); await reload(); }
     catch (e) { setError(e.response?.data?.error || e.message); }
   };
@@ -57,13 +59,13 @@ export default function PersonasTool() {
   return (
     <>
       <PageHeader
-        title="🎯 Анализ ЦА (JTBD · портреты · боли)"
-        sub="Опиши своих покупателей: кто они, что хотят, что им мешает купить"
+        title={tt('🎯 Анализ ЦА (JTBD · портреты · боли)')}
+        sub={tt('Опиши своих покупателей: кто они, что хотят, что им мешает купить')}
         actions={
           <>
-            <Badge tone="green">Live · CRUD</Badge>
+            <Badge tone="green">{tt('Live · CRUD')}</Badge>
             <button className="btn btn-primary btn-sm" onClick={openNew} disabled={editing !== null}>
-              + Добавить портрет
+              {tt('+ Добавить портрет')}
             </button>
           </>
         }
@@ -76,52 +78,52 @@ export default function PersonasTool() {
       )}
 
       <div className="grid-3" style={{ marginBottom: 16 }}>
-        <Tile icon="👥" label="Всего портретов"  value={fmtNum(list.length)} sub="ЦА-аватаров" color="#EC4899" />
-        <Tile icon="🎯" label="С JTBD"            value={fmtNum(list.filter(p => p.jtbd).length)} sub="есть задача-кандидат" color="#7C3AED" />
-        <Tile icon="💔" label="С болями"          value={fmtNum(list.filter(p => p.pains).length)} sub="описаны pain points" color="#EF4444" />
+        <Tile icon="👥" label={tt('Всего портретов')}  value={fmtNum(list.length)} sub={tt('ЦА-аватаров')} color="#EC4899" />
+        <Tile icon="🎯" label={tt('С JTBD')}            value={fmtNum(list.filter(p => p.jtbd).length)} sub={tt('есть задача-кандидат')} color="#7C3AED" />
+        <Tile icon="💔" label={tt('С болями')}          value={fmtNum(list.filter(p => p.pains).length)} sub={tt('описаны pain points')} color="#EF4444" />
       </div>
 
       {editing !== null && (
-        <Card icon={editing === 'new' ? '➕' : '✏️'} title={editing === 'new' ? 'Новый портрет ЦА' : 'Редактирование портрета'}
+        <Card icon={editing === 'new' ? '➕' : '✏️'} title={editing === 'new' ? tt('Новый портрет ЦА') : tt('Редактирование портрета')}
           style={{ marginBottom: 16 }}
           actions={
             <>
-              <button className="btn btn-ghost btn-sm" onClick={cancel} disabled={saving}>Отмена</button>
-              <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>{saving ? '...' : '💾 Сохранить'}</button>
+              <button className="btn btn-ghost btn-sm" onClick={cancel} disabled={saving}>{tt('Отмена')}</button>
+              <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>{saving ? '...' : tt('💾 Сохранить')}</button>
             </>
           }>
           <div className="grid-2" style={{ gap: 14 }}>
-            <Field label="Название" required value={form.name}
+            <Field label={tt('Название')} required value={form.name}
               onChange={v => setForm({ ...form, name: v })}
-              placeholder="Молодая мама 25-35 / Студент / Прораб..." />
-            <Field label="Возраст" value={form.age_range}
+              placeholder={tt('Молодая мама 25-35 / Студент / Прораб...')} />
+            <Field label={tt('Возраст')} value={form.age_range}
               onChange={v => setForm({ ...form, age_range: v })} placeholder="25-35" />
-            <Field label="Пол" value={form.gender}
+            <Field label={tt('Пол')} value={form.gender}
               onChange={v => setForm({ ...form, gender: v })}
-              type="select" options={['', 'Ж', 'М', 'Любой']} />
-            <Field label="Бюджет на покупки" value={form.budget}
+              type="select" options={['', tt('Ж'), tt('М'), tt('Любой')]} />
+            <Field label={tt('Бюджет на покупки')} value={form.budget}
               onChange={v => setForm({ ...form, budget: v })}
-              type="select" options={['', ...BUDGET_OPTIONS]} />
-            <Field label="Каналы — где живёт" value={form.channels}
+              type="select" options={['', ...BUDGET_OPTIONS.map(o => tt(o))]} />
+            <Field label={tt('Каналы — где живёт')} value={form.channels}
               onChange={v => setForm({ ...form, channels: v })}
-              placeholder="Instagram, Telegram, сарафан" hint={CHANNEL_OPTIONS.join(' · ')} />
-            <Field label="JTBD — что покупает" value={form.jtbd}
+              placeholder={tt('Instagram, Telegram, сарафан')} hint={CHANNEL_OPTIONS.map(o => tt(o)).join(' · ')} />
+            <Field label={tt('JTBD — что покупает')} value={form.jtbd}
               onChange={v => setForm({ ...form, jtbd: v })}
-              placeholder="«Чтобы быстро купить подарок ребёнку, не выходя из дома»"
+              placeholder={tt('«Чтобы быстро купить подарок ребёнку, не выходя из дома»')}
               multiline />
           </div>
           <div className="grid-2" style={{ gap: 14, marginTop: 14 }}>
-            <Field label="Боли / страхи" value={form.pains}
+            <Field label={tt('Боли / страхи')} value={form.pains}
               onChange={v => setForm({ ...form, pains: v })}
-              placeholder="«Боится переплатить · нет времени на сравнение»" multiline />
-            <Field label="Возражения" value={form.objections}
+              placeholder={tt('«Боится переплатить · нет времени на сравнение»')} multiline />
+            <Field label={tt('Возражения')} value={form.objections}
               onChange={v => setForm({ ...form, objections: v })}
-              placeholder="«Дорого · долго ждать доставку · не уверен в качестве»" multiline />
+              placeholder={tt('«Дорого · долго ждать доставку · не уверен в качестве»')} multiline />
           </div>
           <div style={{ marginTop: 14 }}>
-            <Field label="Примечание" value={form.notes}
+            <Field label={tt('Примечание')} value={form.notes}
               onChange={v => setForm({ ...form, notes: v })}
-              placeholder="Любые наблюдения о ЦА" multiline />
+              placeholder={tt('Любые наблюдения о ЦА')} multiline />
           </div>
         </Card>
       )}
@@ -140,9 +142,9 @@ export default function PersonasTool() {
       ) : list.length === 0 ? (
         <EmptyState
           icon="🎯"
-          title="Портретов ЦА ещё нет"
-          description="Опиши хотя бы 3 портрета — это база любого маркетинга. Кто твой покупатель? Что у него болит? Где он живёт онлайн? Это поможет писать контент, скрипты продаж и таргет."
-          action={<button className="btn btn-primary" onClick={openNew}>+ Создать первый портрет</button>}
+          title={tt('Портретов ЦА ещё нет')}
+          description={tt('Опиши хотя бы 3 портрета — это база любого маркетинга. Кто твой покупатель? Что у него болит? Где он живёт онлайн? Это поможет писать контент, скрипты продаж и таргет.')}
+          action={<button className="btn btn-primary" onClick={openNew}>{tt('+ Создать первый портрет')}</button>}
         />
       ) : (
         <div className="grid-3">
@@ -156,15 +158,15 @@ export default function PersonasTool() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <button className="action-btn action-btn-edit" onClick={() => openEdit(p)} title="Редактировать">✏️</button>
-                  <button className="action-btn action-btn-del" onClick={() => remove(p)} title="Удалить">🗑</button>
+                  <button className="action-btn action-btn-edit" onClick={() => openEdit(p)} title={tt('Редактировать')}>✏️</button>
+                  <button className="action-btn action-btn-del" onClick={() => remove(p)} title={tt('Удалить')}>🗑</button>
                 </div>
               </div>
-              {p.jtbd && <CardLine icon="🎯" label="JTBD" text={p.jtbd} />}
-              {p.pains && <CardLine icon="💔" label="Боли" text={p.pains} />}
-              {p.objections && <CardLine icon="🛑" label="Возражения" text={p.objections} />}
-              {p.channels && <CardLine icon="📡" label="Каналы" text={p.channels} />}
-              {p.notes && <CardLine icon="📝" label="Прим" text={p.notes} />}
+              {p.jtbd && <CardLine icon="🎯" label={tt('JTBD')} text={p.jtbd} />}
+              {p.pains && <CardLine icon="💔" label={tt('Боли')} text={p.pains} />}
+              {p.objections && <CardLine icon="🛑" label={tt('Возражения')} text={p.objections} />}
+              {p.channels && <CardLine icon="📡" label={tt('Каналы')} text={p.channels} />}
+              {p.notes && <CardLine icon="📝" label={tt('Прим')} text={p.notes} />}
             </Card>
           ))}
         </div>
@@ -174,12 +176,13 @@ export default function PersonasTool() {
 }
 
 function Field({ label, value, onChange, placeholder, required, multiline, type, options, hint }) {
+  const { tt } = useTt();
   return (
     <div>
       <label className={'label' + (required ? ' required' : '')}>{label}</label>
       {type === 'select' ? (
         <select className="input" value={value} onChange={e => onChange(e.target.value)}>
-          {(options || []).map(o => <option key={o} value={o}>{o || '— не указано —'}</option>)}
+          {(options || []).map(o => <option key={o} value={o}>{o || tt('— не указано —')}</option>)}
         </select>
       ) : multiline ? (
         <textarea className="input" rows={3} value={value} onChange={e => onChange(e.target.value)}

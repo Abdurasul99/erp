@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { PRODUCTS, fmt } from '../data.js';
+import { useTt } from '../tt.js';
 
 export default function ProductsTool() {
+  const { tt } = useTt();
   const [list, setList] = useState(PRODUCTS);
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
@@ -19,52 +21,52 @@ export default function ProductsTool() {
 
   const openAdd = () => { setForm({ name: '', type: 'Декор', brand: '', stock: 0, unit: 'шт', buy: 0, sell: 0, photo: '📦' }); setAdding(true); };
   const saveNew = () => {
-    if (!form.name) { toast('Введите название', 'error'); return; }
+    if (!form.name) { toast(tt('Введите название'), 'error'); return; }
     setList(l => [{ ...form, id: Date.now(), sku: String(Date.now()).slice(-13), buy: +form.buy, sell: +form.sell, stock: +form.stock }, ...l]);
     setAdding(false);
-    toast(`Товар «${form.name}» добавлен`);
+    toast(`${tt('Товар')} «${form.name}» ${tt('добавлен')}`);
   };
   const openEdit = (p) => { setForm(p); setEditing(p.id); };
   const saveEdit = () => {
     setList(l => l.map(p => p.id === editing ? { ...form, buy: +form.buy, sell: +form.sell, stock: +form.stock } : p));
     setEditing(null);
-    toast('Изменения сохранены');
+    toast(tt('Изменения сохранены'));
   };
   const remove = (id, name) => {
-    if (!confirm(`Удалить «${name}»?`)) return;
+    if (!confirm(`${tt('Удалить')} «${name}»?`)) return;
     setList(l => l.filter(p => p.id !== id));
-    toast(`«${name}» удалён`, 'info');
+    toast(`«${name}» ${tt('удалён')}`, 'info');
   };
 
   return (
     <>
-      <PageHeader title="📦 Товары" sub="Каталог · поиск · фильтры · добавление"
-        actions={<><button className="btn btn-ghost btn-sm" onClick={() => toast('Импорт XLSX — в разработке', 'info')}>📥 Импорт</button><button className="btn btn-primary btn-sm" onClick={openAdd}>+ Новый товар</button></>} />
+      <PageHeader title={tt('📦 Товары')} sub={tt('Каталог · поиск · фильтры · добавление')}
+        actions={<><button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Импорт XLSX — в разработке'), 'info')}>{tt('📥 Импорт')}</button><button className="btn btn-primary btn-sm" onClick={openAdd}>{tt('+ Новый товар')}</button></>} />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label="Всего" value={list.length} color="#5B4FE8" />
-        <Tile icon="✅" label="В наличии" value={list.filter(p => p.stock > 0).length} color="#22C55E" />
-        <Tile icon="⚠️" label="Заканчиваются" value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#F59E0B" />
-        <Tile icon="🚫" label="Нет в наличии" value={list.filter(p => p.stock === 0).length} color="#EF4444" />
+        <Tile icon="📦" label={tt('Всего')} value={list.length} color="#5B4FE8" />
+        <Tile icon="✅" label={tt('В наличии')} value={list.filter(p => p.stock > 0).length} color="#22C55E" />
+        <Tile icon="⚠️" label={tt('Заканчиваются')} value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#F59E0B" />
+        <Tile icon="🚫" label={tt('Нет в наличии')} value={list.filter(p => p.stock === 0).length} color="#EF4444" />
       </div>
 
       <Card>
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-          <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder="🔍 Поиск по названию или штрих-коду..."
+          <input className="input" style={{ flex: 1, minWidth: 220 }} placeholder={tt('🔍 Поиск по названию или штрих-коду...')}
             value={search} onChange={e => setSearch(e.target.value)} />
           <select className="input" style={{ width: 180 }} value={filterType} onChange={e => setFilterType(e.target.value)}>
-            <option value="">Все типы</option>
+            <option value="">{tt('Все типы')}</option>
             {types.map(t => <option key={t}>{t}</option>)}
           </select>
         </div>
 
         <table>
           <thead>
-            <tr><th></th><th>Название</th><th>Тип</th><th>Бренд</th>
-                <th style={{ textAlign: 'right' }}>Закупка</th>
-                <th style={{ textAlign: 'right' }}>Продажа</th>
-                <th style={{ textAlign: 'right' }}>Маржа</th>
-                <th style={{ textAlign: 'right' }}>Остаток</th><th></th></tr>
+            <tr><th></th><th>{tt('Название')}</th><th>{tt('Тип')}</th><th>{tt('Бренд')}</th>
+                <th style={{ textAlign: 'right' }}>{tt('Закупка')}</th>
+                <th style={{ textAlign: 'right' }}>{tt('Продажа')}</th>
+                <th style={{ textAlign: 'right' }}>{tt('Маржа')}</th>
+                <th style={{ textAlign: 'right' }}>{tt('Остаток')}</th><th></th></tr>
           </thead>
           <tbody>
             {filtered.map(p => {
@@ -90,31 +92,31 @@ export default function ProductsTool() {
               );
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={9} style={{ textAlign: 'center', padding: 32, color: 'var(--text3)' }}>Ничего не найдено</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: 'center', padding: 32, color: 'var(--text3)' }}>{tt('Ничего не найдено')}</td></tr>
             )}
           </tbody>
         </table>
       </Card>
 
       <Modal open={adding || editing != null} onClose={() => { setAdding(false); setEditing(null); }}
-        title={adding ? 'Новый товар' : 'Редактировать товар'} icon="📦"
-        footer={<><button className="btn btn-ghost" onClick={() => { setAdding(false); setEditing(null); }}>Отмена</button><button className="btn btn-primary" onClick={adding ? saveNew : saveEdit}>💾 Сохранить</button></>}>
-        <FormField label="Название" value={form.name} onChange={v => setForm({ ...form, name: v })} />
+        title={adding ? tt('Новый товар') : tt('Редактировать товар')} icon="📦"
+        footer={<><button className="btn btn-ghost" onClick={() => { setAdding(false); setEditing(null); }}>{tt('Отмена')}</button><button className="btn btn-primary" onClick={adding ? saveNew : saveEdit}>{tt('💾 Сохранить')}</button></>}>
+        <FormField label={tt('Название')} value={form.name} onChange={v => setForm({ ...form, name: v })} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <FormField label="Тип" value={form.type} onChange={v => setForm({ ...form, type: v })} />
-          <FormField label="Бренд" value={form.brand} onChange={v => setForm({ ...form, brand: v })} />
+          <FormField label={tt('Тип')} value={form.type} onChange={v => setForm({ ...form, type: v })} />
+          <FormField label={tt('Бренд')} value={form.brand} onChange={v => setForm({ ...form, brand: v })} />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-          <FormField label="Количество" value={form.stock} onChange={v => setForm({ ...form, stock: v })} type="number" />
-          <FormField label="Единица" value={form.unit} onChange={v => setForm({ ...form, unit: v })} />
+          <FormField label={tt('Количество')} value={form.stock} onChange={v => setForm({ ...form, stock: v })} type="number" />
+          <FormField label={tt('Единица')} value={form.unit} onChange={v => setForm({ ...form, unit: v })} />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <FormField label="Цена закупки (UZS)" value={form.buy} onChange={v => setForm({ ...form, buy: v })} type="number" />
-          <FormField label="Цена продажи (UZS)" value={form.sell} onChange={v => setForm({ ...form, sell: v })} type="number" />
+          <FormField label={tt('Цена закупки (UZS)')} value={form.buy} onChange={v => setForm({ ...form, buy: v })} type="number" />
+          <FormField label={tt('Цена продажи (UZS)')} value={form.sell} onChange={v => setForm({ ...form, sell: v })} type="number" />
         </div>
         {form.sell > 0 && form.buy > 0 && (
           <div style={{ marginTop: 8, padding: 10, background: 'var(--bg-2)', borderRadius: 8, fontSize: 13, color: 'var(--text2)' }}>
-            Маржа: <strong style={{ color: 'var(--primary)' }}>{Math.round((1 - form.buy / form.sell) * 100)}%</strong> · Прибыль с единицы: <strong className="mono">{fmt(form.sell - form.buy)} UZS</strong>
+            {tt('Маржа')}: <strong style={{ color: 'var(--primary)' }}>{Math.round((1 - form.buy / form.sell) * 100)}%</strong> · {tt('Прибыль с единицы')}: <strong className="mono">{fmt(form.sell - form.buy)} UZS</strong>
           </div>
         )}
       </Modal>

@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
+import { useTt } from './tt.js';
 
 export function Modal({ open, onClose, title, icon, children, footer, width = 520 }) {
+  const { tt } = useTt();
   const dialogRef = useRef(null);
   const titleId = useRef('modal-title-' + Math.random().toString(36).slice(2, 8)).current;
 
@@ -52,7 +54,7 @@ export function Modal({ open, onClose, title, icon, children, footer, width = 52
         <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
           {icon && <div style={{ fontSize: 22 }} aria-hidden="true">{icon}</div>}
           <div id={titleId} style={{ fontWeight: 800, fontSize: 17, flex: 1 }}>{title}</div>
-          <button onClick={onClose} aria-label="Закрыть" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text3)', padding: 4 }}>×</button>
+          <button onClick={onClose} aria-label={tt('Закрыть')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: 'var(--text3)', padding: 4 }}>×</button>
         </div>
         <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1 }}>
           {children}

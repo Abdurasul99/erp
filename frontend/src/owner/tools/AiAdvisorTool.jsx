@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
 import { toast } from '../Modal.jsx';
+import { useTt } from '../tt.js';
 
 const ANSWERS = {
   default: 'Анализирую данные за месяц... Готов отвечать на конкретные вопросы о бизнесе.',
@@ -18,34 +19,35 @@ const INSIGHTS = [
 ];
 
 export default function AiAdvisorTool() {
+  const { tt } = useTt();
   const [q, setQ] = useState('');
   const [chat, setChat] = useState([]);
   const ask = () => {
     if (!q.trim()) return;
     const key = Object.keys(ANSWERS).find(k => q.toLowerCase().includes(k));
-    const a = ANSWERS[key] || 'Анализирую... Это сложный вопрос — обратитесь к подробным отчётам или уточните формулировку.';
+    const a = ANSWERS[key] ? tt(ANSWERS[key]) : tt('Анализирую... Это сложный вопрос — обратитесь к подробным отчётам или уточните формулировку.');
     setChat(c => [...c, { u: q, a }]);
     setQ('');
   };
   return (
     <>
-      <PageHeader title="🤖 AI-консультант" sub="Что-Где-Почему · симуляторы · рекомендации"
+      <PageHeader title={tt('🤖 AI-консультант')} sub={tt('Что-Где-Почему · симуляторы · рекомендации')}
         actions={<Badge tone="purple">Claude 4.7 + GPT-5</Badge>} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="💡" label="Инсайтов" value="12" sub="требуют действий" color="#7C3AED" />
-        <Tile icon="🎯" label="Применено" value="48" sub="за месяц" delta={24} color="#22C55E" />
-        <Tile icon="💰" label="Экономия от AI" value="84M" sub="UZS" color="#FF6B2B" />
+        <Tile icon="💡" label={tt('Инсайтов')} value="12" sub={tt('требуют действий')} color="#7C3AED" />
+        <Tile icon="🎯" label={tt('Применено')} value="48" sub={tt('за месяц')} delta={24} color="#22C55E" />
+        <Tile icon="💰" label={tt('Экономия от AI')} value="84M" sub="UZS" color="#FF6B2B" />
       </div>
 
-      <Card icon="🤖" title="Спроси у бизнеса">
+      <Card icon="🤖" title={tt('Спроси у бизнеса')}>
         <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
           <input className="input" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()}
-            placeholder="«Почему продажи упали в мае?», «Что плохо продаётся?»..." style={{ flex: 1 }} />
-          <button className="btn btn-primary" onClick={ask}>🚀 Спросить</button>
+            placeholder={tt('«Почему продажи упали в мае?», «Что плохо продаётся?»...')} style={{ flex: 1 }} />
+          <button className="btn btn-primary" onClick={ask}>🚀 {tt('Спросить')}</button>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {['Почему продажи упали?', 'Что плохо продаётся?', 'Где теряем маржу?', 'Какие товары закупить?'].map(s => (
-            <button key={s} onClick={() => setQ(s)} style={{ padding: '6px 12px', borderRadius: 20, border: '1.5px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: 'var(--text2)', fontFamily: 'inherit' }}>{s}</button>
+            <button key={s} onClick={() => setQ(s)} style={{ padding: '6px 12px', borderRadius: 20, border: '1.5px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: 'var(--text2)', fontFamily: 'inherit' }}>{tt(s)}</button>
           ))}
         </div>
 
@@ -66,7 +68,7 @@ export default function AiAdvisorTool() {
         )}
       </Card>
 
-      <h3 style={{ marginTop: 24, marginBottom: 14, fontSize: 14, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5, fontWeight: 800 }}>📥 Рекомендации сегодня</h3>
+      <h3 style={{ marginTop: 24, marginBottom: 14, fontSize: 14, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5, fontWeight: 800 }}>📥 {tt('Рекомендации сегодня')}</h3>
       <div className="grid-2">
         {INSIGHTS.map((x, i) => {
           const colors = { green: '#22C55E', yellow: '#F59E0B', orange: '#FF6B2B', purple: '#7c3aed' };
@@ -76,12 +78,12 @@ export default function AiAdvisorTool() {
               <div style={{ display: 'flex', gap: 12 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 10, background: c + '20', color: c, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{x.ic}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>{x.t}</div>
-                  <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 10 }}>{x.b}</div>
+                  <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 6 }}>{tt(x.t)}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 10 }}>{tt(x.b)}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button className="btn btn-primary btn-sm" onClick={() => toast('Применено!')}>Применить</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => toast('Отложено', 'info')}>Позже</button>
-                    <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800, color: c }}>{x.impact}</span>
+                    <button className="btn btn-primary btn-sm" onClick={() => toast(tt('Применено!'))}>{tt('Применить')}</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Отложено'), 'info')}>{tt('Позже')}</button>
+                    <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800, color: c }}>{tt(x.impact)}</span>
                   </div>
                 </div>
               </div>

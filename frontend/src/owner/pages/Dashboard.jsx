@@ -90,6 +90,7 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
 // Бар-чарт для хиро-плитки: закруглённые белые бары + чип со значением пика.
 // (Кривую-«кардиограмму» убрали по фидбеку — бары читаются привычнее.)
 function HeroAreaChart({ points, labels }) {
+  const { tt } = useTt();
   const max = Math.max(...points, 1);
   const n = points.length;
   if (n < 2) return null;
@@ -117,7 +118,7 @@ function HeroAreaChart({ points, labels }) {
         {points.map((v, i) => {
           const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
           return (
-            <div key={i} className="chart-col" data-tip={`${labels[i] || ''} · ${fmtMoneyFull(v)} сум`} style={{
+            <div key={i} className="chart-col" data-tip={`${labels[i] || ''} · ${fmtMoneyFull(v)} ${tt('сум')}`} style={{
               flex: 1, minWidth: 0, height: '100%',
               display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
             }}>
@@ -452,9 +453,9 @@ export default function Dashboard() {
                   {/* Карта 1 — Продажи */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
-                      label={tt('Продажи · ') + tt(CHART_RANGE_LABEL[chartGran])}>
+                      label={tt('Продажи') + ' · ' + tt(CHART_RANGE_LABEL[chartGran])}>
                       <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
-                        {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>сум</span>
+                        {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt('сум')}</span>
                       </div>
                     </ChartHead>
                     {chartLoading && !chart ? <Skeleton height={150} /> : (
@@ -469,7 +470,7 @@ export default function Dashboard() {
                   {/* Карта 2 — Сравнение с предыдущим аналогичным диапазоном */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
-                      label={tt('Сравнение · ') + tt(CHART_RANGE_LABEL[chartGran])}>
+                      label={tt('Сравнение') + ' · ' + tt(CHART_RANGE_LABEL[chartGran])}>
                       <div className="mono" style={{
                         fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
                         color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
@@ -600,7 +601,7 @@ export default function Dashboard() {
                       <div className="o-avatar" style={{ width: 28, height: 28, fontSize: 11 }}>{init}</div>
                       <div style={{ flex: 1 }}>
                         <div className="list-item-title">{s.name}</div>
-                        <div className="list-item-sub">{s.deals} {s.deals % 10 === 1 && s.deals % 100 !== 11 ? 'сделка' : (s.deals % 10 >= 2 && s.deals % 10 <= 4 && (s.deals % 100 < 12 || s.deals % 100 > 14) ? 'сделки' : 'сделок')} · {ROLE_RU[s.role] || s.role}</div>
+                        <div className="list-item-sub">{s.deals} {s.deals % 10 === 1 && s.deals % 100 !== 11 ? tt('сделка') : (s.deals % 10 >= 2 && s.deals % 10 <= 4 && (s.deals % 100 < 12 || s.deals % 100 > 14) ? tt('сделки') : tt('сделок'))} · {tt(ROLE_RU[s.role] || s.role)}</div>
                       </div>
                       <div className="mono" style={{ fontWeight: 800, color: 'var(--orange)', fontSize: 12 }}>{fmtMoneyFull(s.revenue)}</div>
                     </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api.js';
 import AiChartBlock, { parseChartTags } from './AiChartBlock.jsx';
+import { useTt } from './tt.js';
 
 const SEED_QUESTIONS = [
   'Растёт ли моя выручка по сравнению с прошлым периодом?',
@@ -20,8 +21,9 @@ const FALLBACK_FOLLOWUPS = [
 ];
 
 export default function AiChatDrawer({ open, onClose }) {
+  const { tt } = useTt();
   const [history, setHistory] = useState([
-    { role: 'assistant', text: 'Привет! Я твой AI-консультант по бизнесу. Спроси что-нибудь или выбери вопрос ниже.' },
+    { role: 'assistant', text: tt('Привет! Я твой AI-консультант по бизнесу. Спроси что-нибудь или выбери вопрос ниже.') },
   ]);
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
@@ -54,7 +56,7 @@ export default function AiChatDrawer({ open, onClose }) {
     try {
       const apiMessages = newHistory.map(m => ({ role: m.role, content: m.text }));
       const { data } = await api.post('/ai/chat', { messages: apiMessages });
-      const reply = data.reply || 'Не получил ответ. Попробуй переформулировать.';
+      const reply = data.reply || tt('Не получил ответ. Попробуй переформулировать.');
       setHistory(h => [...h, { role: 'assistant', text: reply }]);
       api.post('/ai/suggest', { last_reply: reply })
         .then(r => {
@@ -63,7 +65,7 @@ export default function AiChatDrawer({ open, onClose }) {
         })
         .catch(() => setFollowUps(FALLBACK_FOLLOWUPS));
     } catch (e) {
-      const msg = e.response?.data?.error || 'Не получилось связаться с AI. Попробуй ещё раз.';
+      const msg = e.response?.data?.error || tt('Не получилось связаться с AI. Попробуй ещё раз.');
       setError(msg);
       setHistory(h => [...h, { role: 'assistant', text: '⚠️ ' + msg }]);
       setFollowUps(SEED_QUESTIONS);
@@ -72,7 +74,7 @@ export default function AiChatDrawer({ open, onClose }) {
   };
 
   const reset = () => {
-    setHistory([{ role: 'assistant', text: 'Начнём заново. Что тебя интересует?' }]);
+    setHistory([{ role: 'assistant', text: tt('Начнём заново. Что тебя интересует?') }]);
     setFollowUps(SEED_QUESTIONS);
     setError(null);
   };
@@ -107,14 +109,14 @@ export default function AiChatDrawer({ open, onClose }) {
             fontSize: 20,
           }}>🤖</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 800, fontSize: 15 }}>AI-консультант</div>
-            <div style={{ fontSize: 11, opacity: .8 }}>DeepSeek · готов помочь</div>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>{tt('AI-консультант')}</div>
+            <div style={{ fontSize: 11, opacity: .8 }}>DeepSeek · {tt('готов помочь')}</div>
           </div>
-          <button onClick={reset} title="Начать заново" style={{
+          <button onClick={reset} title={tt('Начать заново')} style={{
             background: 'rgba(255,255,255,.15)', border: 'none', color: '#fff',
             width: 30, height: 30, borderRadius: 8, cursor: 'pointer', fontSize: 14,
           }}>↻</button>
-          <button onClick={onClose} title="Закрыть" style={{
+          <button onClick={onClose} title={tt('Закрыть')} style={{
             background: 'rgba(255,255,255,.15)', border: 'none', color: '#fff',
             width: 30, height: 30, borderRadius: 8, cursor: 'pointer', fontSize: 18,
           }}>×</button>
@@ -175,7 +177,7 @@ export default function AiChatDrawer({ open, onClose }) {
             background: 'var(--bg)',
           }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 6 }}>
-              Подсказки:
+              {tt('Подсказки:')}
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {followUps.slice(0, 5).map((q, i) => (
@@ -191,7 +193,7 @@ export default function AiChatDrawer({ open, onClose }) {
                   textAlign: 'left',
                   maxWidth: '100%',
                 }}>
-                  {q}
+                  {tt(q)}
                 </button>
               ))}
             </div>
@@ -209,7 +211,7 @@ export default function AiChatDrawer({ open, onClose }) {
             className="input"
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder={typing ? 'AI думает...' : 'Спроси что-нибудь...'}
+            placeholder={typing ? tt('AI думает...') : tt('Спроси что-нибудь...')}
             disabled={typing}
             style={{ flex: 1 }}
           />
@@ -219,7 +221,7 @@ export default function AiChatDrawer({ open, onClose }) {
             className="btn btn-primary"
             style={{ padding: '0 14px' }}
           >
-            {typing ? '...' : 'Отправить'}
+            {typing ? '...' : tt('Отправить')}
           </button>
         </form>
       </div>

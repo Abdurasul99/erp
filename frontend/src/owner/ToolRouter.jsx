@@ -201,10 +201,9 @@ export default function ToolRouter() {
         }}>
           <span style={{ fontSize: 22, lineHeight: 1 }}>🚧</span>
           <div style={{ flex: 1, fontSize: 13, lineHeight: 1.5 }}>
-            <div style={{ fontWeight: 800, marginBottom: 2 }}>Дизайн-макет — данные ниже не настоящие</div>
+            <div style={{ fontWeight: 800, marginBottom: 2 }}>{tt('Дизайн-макет — данные ниже не настоящие')}</div>
             <div style={{ fontWeight: 500 }}>
-              Это образец интерфейса для согласования. Реальные данные подключим в следующих обновлениях.
-              Кнопки в макете не сохраняют ничего.
+              {tt('Это образец интерфейса для согласования. Реальные данные подключим в следующих обновлениях. Кнопки в макете не сохраняют ничего.')}
             </div>
           </div>
         </div>

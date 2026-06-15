@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoney, fmtNum, Pills } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 const SEGMENT_META = {
   vip:      { label: 'VIP',      tone: 'orange', icon: '👑', desc: 'LTV ≥ 5M UZS · активные'           },
@@ -21,6 +22,7 @@ const TABS = [
 ];
 
 export default function SegmentationTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -44,53 +46,53 @@ export default function SegmentationTool() {
   return (
     <>
       <PageHeader
-        title="🎯 Сегментация клиентов"
-        sub="RFM-разбивка — кому звонить, кого возвращать"
-        actions={<Badge tone="green">Live</Badge>}
+        title={tt('🎯 Сегментация клиентов')}
+        sub={tt('RFM-разбивка — кому звонить, кого возвращать')}
+        actions={<Badge tone="green">{tt('Live')}</Badge>}
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
 
       {loading ? (
-        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>Загрузка...</div></div></Card>
+        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
       ) : (
         <>
           <div className="grid-5" style={{ marginBottom: 16 }}>
-            <Tile icon="👑" label="VIP"      value={fmtNum(summary.vip)}      sub="клиентов"  color="#FF6B2B" />
-            <Tile icon="✅" label="Активные" value={fmtNum(summary.regular)}  sub="клиентов"  color="#22C55E" />
-            <Tile icon="😴" label="Спящие"   value={fmtNum(summary.sleeping)} sub="60-120 дн" color="#F59E0B" />
-            <Tile icon="👋" label="Ушли"     value={fmtNum(summary.lost)}     sub="120+ дн"   color="#EF4444" />
-            <Tile icon="✨" label="Новые"    value={fmtNum(summary.new)}      sub="< 30 дн"   color="#5B4FE8" />
+            <Tile icon="👑" label={tt('VIP')}      value={fmtNum(summary.vip)}      sub={tt('клиентов')}  color="#FF6B2B" />
+            <Tile icon="✅" label={tt('Активные')} value={fmtNum(summary.regular)}  sub={tt('клиентов')}  color="#22C55E" />
+            <Tile icon="😴" label={tt('Спящие')}   value={fmtNum(summary.sleeping)} sub={tt('60-120 дн')} color="#F59E0B" />
+            <Tile icon="👋" label={tt('Ушли')}     value={fmtNum(summary.lost)}     sub={tt('120+ дн')}   color="#EF4444" />
+            <Tile icon="✨" label={tt('Новые')}    value={fmtNum(summary.new)}      sub={tt('< 30 дн')}   color="#5B4FE8" />
           </div>
 
-          <Card icon="📋" title={`Клиенты (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS} />}
+          <Card icon="📋" title={`${tt('Клиенты')} (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS.map(t => ({ ...t, label: tt(t.label) }))} />}
             style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Клиент</th>
-                    <th>Телефон</th>
-                    <th>Сегмент</th>
-                    <th style={{ textAlign: 'right' }}>Сделок</th>
-                    <th style={{ textAlign: 'right' }}>Выручка</th>
-                    <th style={{ textAlign: 'right' }}>Посл. покупка</th>
+                    <th>{tt('Клиент')}</th>
+                    <th>{tt('Телефон')}</th>
+                    <th>{tt('Сегмент')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Сделок')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Выручка')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Посл. покупка')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет клиентов в этом сегменте</td></tr>
+                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>{tt('Нет клиентов в этом сегменте')}</td></tr>
                   ) : filtered.slice(0, 200).map(c => {
                     const meta = SEGMENT_META[c.segment] || {};
                     return (
                       <tr key={c.id}>
                         <td style={{ fontWeight: 700 }}>{c.name}</td>
                         <td className="mono" style={{ fontSize: 12, color: 'var(--text2)' }}>{c.phone || '—'}</td>
-                        <td><Badge tone={meta.tone}>{meta.icon} {meta.label}</Badge></td>
+                        <td><Badge tone={meta.tone}>{meta.icon} {tt(meta.label)}</Badge></td>
                         <td className="mono" style={{ textAlign: 'right' }}>{c.deals}</td>
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(c.revenue)}</td>
                         <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--text2)' }}>
-                          {c.last_at ? `${c.days_since} дн назад` : '—'}
+                          {c.last_at ? `${c.days_since} ${tt('дн назад')}` : '—'}
                         </td>
                       </tr>
                     );
@@ -100,7 +102,7 @@ export default function SegmentationTool() {
             </div>
             {filtered.length > 200 && (
               <div style={{ textAlign: 'center', padding: 10, color: 'var(--text3)', fontSize: 12 }}>
-                Показаны первые 200 из {filtered.length}
+                {tt('Показаны первые 200 из')} {filtered.length}
               </div>
             )}
           </Card>
@@ -110,16 +112,16 @@ export default function SegmentationTool() {
               const meta = SEGMENT_META[seg];
               const count = summary[seg] || 0;
               return (
-                <Card key={seg} icon={meta.icon} title={`${meta.label} — план действий`}>
+                <Card key={seg} icon={meta.icon} title={`${tt(meta.label)} — ${tt('план действий')}`}>
                   <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
-                    {meta.desc}
+                    {tt(meta.desc)}
                   </div>
                   <div style={{ marginTop: 12, fontSize: 24, fontWeight: 900 }} className="mono">{count}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>клиентов в сегменте</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>{tt('клиентов в сегменте')}</div>
                   <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-                    {seg === 'vip' && 'Персональный звонок · эксклюзивные предложения · приоритетная поддержка'}
-                    {seg === 'sleeping' && 'SMS-рассылка со скидкой 10% · напомните о себе · вернуть на радар'}
-                    {seg === 'lost' && 'Опрос «что пошло не так» · попытка last-chance с агрессивной скидкой'}
+                    {seg === 'vip' && tt('Персональный звонок · эксклюзивные предложения · приоритетная поддержка')}
+                    {seg === 'sleeping' && tt('SMS-рассылка со скидкой 10% · напомните о себе · вернуть на радар')}
+                    {seg === 'lost' && tt('Опрос «что пошло не так» · попытка last-chance с агрессивной скидкой')}
                   </div>
                 </Card>
               );

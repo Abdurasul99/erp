@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../../api.js';
 import AiChartBlock, { parseChartTags } from '../AiChartBlock.jsx';
+import { useTt } from '../tt.js';
 
 const SEED_QUESTIONS = [
   { icon: '📈', text: 'Растёт ли моя выручка по сравнению с прошлым периодом?' },
@@ -55,6 +56,7 @@ function makeTitle(messages) {
 }
 
 export default function AiChatPage() {
+  const { tt } = useTt();
   const [sessions, setSessions] = useState(() => {
     const loaded = loadSessions();
     return loaded.length > 0 ? loaded : [newSession()];
@@ -123,7 +125,7 @@ export default function AiChatPage() {
   };
 
   const deleteSession = (id) => {
-    if (!confirm('Удалить этот чат?')) return;
+    if (!confirm(tt('Удалить этот чат?'))) return;
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
       if (next.length === 0) return [newSession()];
@@ -149,7 +151,7 @@ export default function AiChatPage() {
     try {
       const apiMessages = newMessages.map(m => ({ role: m.role, content: m.text }));
       const { data } = await api.post('/ai/chat', { messages: apiMessages });
-      const reply = data.reply || 'Не получил ответ. Попробуй переформулировать.';
+      const reply = data.reply || tt('Не получил ответ. Попробуй переформулировать.');
       updateActive(s => ({
         ...s,
         messages: [...s.messages, { role: 'assistant', text: reply, ts: Date.now(), model: data.model, usage: data.usage }],
@@ -162,7 +164,7 @@ export default function AiChatPage() {
         })
         .catch(() => setFollowUps(FALLBACK_FOLLOWUPS));
     } catch (e) {
-      const msg = e.response?.data?.error || 'Не удалось связаться с AI. Попробуй ещё раз.';
+      const msg = e.response?.data?.error || tt('Не удалось связаться с AI. Попробуй ещё раз.');
       setError(msg);
       updateActive(s => ({
         ...s,
@@ -205,12 +207,12 @@ export default function AiChatPage() {
       }}>
         <div style={{ padding: '14px 12px', borderBottom: '1px solid var(--border)' }}>
           <button onClick={startNewChat} className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
-            ✨ Новый чат
+            ✨ {tt('Новый чат')}
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
           {sessions.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Нет чатов</div>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>{tt('Нет чатов')}</div>
           ) : sessions.map(s => (
             <div key={s.id}
               onClick={() => setActiveId(s.id)}
@@ -229,10 +231,10 @@ export default function AiChatPage() {
               <span style={{ fontSize: 14 }}>💬</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
-                  {s.title}
+                  {tt(s.title)}
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
-                  {s.messages.length} сообщений · {new Date(s.updated_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                  {s.messages.length} {tt('сообщений')} · {new Date(s.updated_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
                 </div>
               </div>
               <button
@@ -242,13 +244,13 @@ export default function AiChatPage() {
                   color: 'var(--text3)', fontSize: 14, padding: 2,
                   opacity: s.id === activeId ? 1 : 0.5,
                 }}
-                title="Удалить чат"
+                title={tt('Удалить чат')}
               >🗑</button>
             </div>
           ))}
         </div>
         <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text3)' }}>
-          💡 Чаты хранятся локально в браузере
+          💡 {tt('Чаты хранятся локально в браузере')}
         </div>
       </aside>
 
@@ -262,7 +264,7 @@ export default function AiChatPage() {
           <button
             onClick={() => setSidebarOpen(o => !o)}
             className="btn btn-ghost btn-sm"
-            title={sidebarOpen ? 'Скрыть историю' : 'Показать историю'}
+            title={sidebarOpen ? tt('Скрыть историю') : tt('Показать историю')}
             style={{ padding: '6px 10px' }}
           >
             {sidebarOpen ? '«' : '»'}
@@ -277,14 +279,14 @@ export default function AiChatPage() {
           }}>🤖</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 800, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {active?.title || 'AI-консультант'}
+              {active?.title ? tt(active.title) : tt('AI-консультант')}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>
-              DeepSeek · бизнес-консультант · ответы кратко по делу
+              DeepSeek · {tt('бизнес-консультант · ответы кратко по делу')}
             </div>
           </div>
-          <button onClick={startNewChat} className="btn btn-ghost btn-sm" title="Новый чат">
-            ✨ Новый
+          <button onClick={startNewChat} className="btn btn-ghost btn-sm" title={tt('Новый чат')}>
+            ✨ {tt('Новый')}
           </button>
         </header>
 
@@ -320,7 +322,7 @@ export default function AiChatPage() {
             {showSeeds && (
               <div style={{ marginTop: 24, marginBottom: 16 }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .6, marginBottom: 12 }}>
-                  С чего начнём?
+                  {tt('С чего начнём?')}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
                   {SEED_QUESTIONS.map((q, i) => (
@@ -341,7 +343,7 @@ export default function AiChatPage() {
                       onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)'; }}
                     >
                       <span style={{ fontSize: 18, lineHeight: 1 }}>{q.icon}</span>
-                      <span style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.45, fontWeight: 600 }}>{q.text}</span>
+                      <span style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.45, fontWeight: 600 }}>{tt(q.text)}</span>
                     </button>
                   ))}
                 </div>
@@ -351,7 +353,7 @@ export default function AiChatPage() {
             {!showSeeds && followUps.length > 0 && !typing && (
               <div style={{ marginTop: 16, marginBottom: 12 }}>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
-                  Подсказки
+                  {tt('Подсказки')}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {followUps.slice(0, 5).map((q, i) => (
@@ -365,7 +367,7 @@ export default function AiChatPage() {
                       color: 'var(--primary)',
                       fontFamily: 'inherit',
                       textAlign: 'left',
-                    }}>{q}</button>
+                    }}>{tt(q)}</button>
                   ))}
                 </div>
               </div>
@@ -401,7 +403,7 @@ export default function AiChatPage() {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder={typing ? 'AI думает...' : 'Напиши вопрос... (Enter — отправить, Shift+Enter — новая строка)'}
+                placeholder={typing ? tt('AI думает...') : tt('Напиши вопрос... (Enter — отправить, Shift+Enter — новая строка)')}
                 disabled={typing}
                 rows={1}
                 style={{
@@ -422,11 +424,11 @@ export default function AiChatPage() {
                 className="btn btn-primary"
                 style={{ padding: '8px 16px', alignSelf: 'flex-end' }}
               >
-                {typing ? '...' : '↑ Отправить'}
+                {typing ? '...' : '↑ ' + tt('Отправить')}
               </button>
             </div>
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text3)', textAlign: 'center' }}>
-              AI может ошибаться — всегда проверяй важные цифры в самой системе. История хранится локально.
+              {tt('AI может ошибаться — всегда проверяй важные цифры в самой системе. История хранится локально.')}
             </div>
           </div>
         </form>
@@ -440,6 +442,7 @@ export default function AiChatPage() {
 }
 
 function Message({ message, onCopy }) {
+  const { tt } = useTt();
   const isUser = message.role === 'user';
   const [hovered, setHovered] = useState(false);
 
@@ -476,7 +479,7 @@ function Message({ message, onCopy }) {
             wordBreak: 'break-word',
             boxShadow: isUser ? '0 4px 12px rgba(91,79,232,.20)' : 'var(--shadow-sm)',
           }}>
-            {cleanText}
+            {tt(cleanText)}
           </div>
         )}
         {chartTypes.length > 0 && (
@@ -491,11 +494,11 @@ function Message({ message, onCopy }) {
           transition: 'opacity .15s',
         }}>
           {message.ts && <span>{new Date(message.ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>}
-          {message.usage && <span>· {message.usage.completion || 0} ток.</span>}
+          {message.usage && <span>· {message.usage.completion || 0} {tt('ток.')}</span>}
           <button
             onClick={onCopy}
             style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', padding: 2, fontSize: 11 }}
-            title="Копировать"
+            title={tt('Копировать')}
           >📋</button>
         </div>
       </div>

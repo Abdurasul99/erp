@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoney, fmtNum, Pills } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 // 3×3 matrix: rows = A/B/C (revenue), cols = X/Y/Z (demand stability).
 // AX = stable cash cow → keep stocked. CZ = dead stock → liquidate.
@@ -25,6 +26,7 @@ const TABS = [
 ];
 
 export default function InventoryMgmtTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -50,39 +52,39 @@ export default function InventoryMgmtTool() {
   return (
     <>
       <PageHeader
-        title="📊 ABC / XYZ анализ"
-        sub="Топ-товары по выручке · точка заказа · мёртвый товар (90 дн)"
-        actions={<Badge tone="green">Live</Badge>}
+        title={tt('📊 ABC / XYZ анализ')}
+        sub={tt('Топ-товары по выручке · точка заказа · мёртвый товар (90 дн)')}
+        actions={<Badge tone="green">{tt('Live')}</Badge>}
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
 
       {loading ? (
-        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>Загрузка...</div></div></Card>
+        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🏆" label="Группа A" value={fmtNum((matrix.AX?.count || 0) + (matrix.AY?.count || 0) + (matrix.AZ?.count || 0))} sub="80% выручки" color="#22C55E" />
-            <Tile icon="📈" label="Группа B" value={fmtNum((matrix.BX?.count || 0) + (matrix.BY?.count || 0) + (matrix.BZ?.count || 0))} sub="15% выручки" color="#5B4FE8" />
-            <Tile icon="📉" label="Группа C" value={fmtNum((matrix.CX?.count || 0) + (matrix.CY?.count || 0) + (matrix.CZ?.count || 0))} sub="5% выручки"  color="#F59E0B" />
-            <Tile icon="💀" label="Мёртвые (CZ)" value={fmtNum(matrix.CZ?.count || 0)} sub="кандидаты на ликвидацию" color="#EF4444" />
+            <Tile icon="🏆" label={tt('Группа A')} value={fmtNum((matrix.AX?.count || 0) + (matrix.AY?.count || 0) + (matrix.AZ?.count || 0))} sub={tt('80% выручки')} color="#22C55E" />
+            <Tile icon="📈" label={tt('Группа B')} value={fmtNum((matrix.BX?.count || 0) + (matrix.BY?.count || 0) + (matrix.BZ?.count || 0))} sub={tt('15% выручки')} color="#5B4FE8" />
+            <Tile icon="📉" label={tt('Группа C')} value={fmtNum((matrix.CX?.count || 0) + (matrix.CY?.count || 0) + (matrix.CZ?.count || 0))} sub={tt('5% выручки')}  color="#F59E0B" />
+            <Tile icon="💀" label={tt('Мёртвые (CZ)')} value={fmtNum(matrix.CZ?.count || 0)} sub={tt('кандидаты на ликвидацию')} color="#EF4444" />
           </div>
 
-          <Card icon="🎯" title="Матрица ABC × XYZ" style={{ marginBottom: 16 }}>
+          <Card icon="🎯" title={tt('Матрица ABC × XYZ')} style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ minWidth: 600 }}>
                 <thead>
                   <tr>
                     <th></th>
-                    <th style={{ textAlign: 'center' }}>X — стабильный спрос</th>
-                    <th style={{ textAlign: 'center' }}>Y — средние колебания</th>
-                    <th style={{ textAlign: 'center' }}>Z — нестабильный</th>
+                    <th style={{ textAlign: 'center' }}>{tt('X — стабильный спрос')}</th>
+                    <th style={{ textAlign: 'center' }}>{tt('Y — средние колебания')}</th>
+                    <th style={{ textAlign: 'center' }}>{tt('Z — нестабильный')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {['A', 'B', 'C'].map(row => (
                     <tr key={row}>
-                      <td style={{ fontWeight: 800, fontSize: 14 }}>{row} — {row === 'A' ? 'топ выручки' : row === 'B' ? 'средние' : 'хвост'}</td>
+                      <td style={{ fontWeight: 800, fontSize: 14 }}>{row} — {row === 'A' ? tt('топ выручки') : row === 'B' ? tt('средние') : tt('хвост')}</td>
                       {['X', 'Y', 'Z'].map(col => {
                         const cell = row + col;
                         const meta = CELL_META[cell] || {};
@@ -90,9 +92,9 @@ export default function InventoryMgmtTool() {
                         return (
                           <td key={col} style={{ background: meta.color + '14', padding: 14, textAlign: 'center' }}>
                             <div style={{ fontSize: 22, fontWeight: 900, color: meta.color }} className="mono">{data.count}</div>
-                            <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>товаров</div>
+                            <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 2 }}>{tt('товаров')}</div>
                             <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 4 }}>{fmtMoney(data.revenue)} UZS</div>
-                            <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 6, lineHeight: 1.3 }}>{meta.advice}</div>
+                            <div style={{ fontSize: 10, color: 'var(--text2)', marginTop: 6, lineHeight: 1.3 }}>{tt(meta.advice)}</div>
                           </td>
                         );
                       })}
@@ -103,21 +105,21 @@ export default function InventoryMgmtTool() {
             </div>
           </Card>
 
-          <Card icon="📋" title={`Товары (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS} />}>
+          <Card icon="📋" title={`${tt('Товары')} (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS.map(t => ({ ...t, label: tt(t.label) }))} />}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Товар</th>
+                    <th>{tt('Товар')}</th>
                     <th style={{ textAlign: 'center' }}>ABC × XYZ</th>
-                    <th style={{ textAlign: 'right' }}>Выручка 90д</th>
-                    <th style={{ textAlign: 'right' }}>Кол-во</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Выручка 90д')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Кол-во')}</th>
                     <th style={{ textAlign: 'right' }}>CoV</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет товаров</td></tr>
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>{tt('Нет товаров')}</td></tr>
                   ) : filtered.slice(0, 200).map(it => {
                     const meta = CELL_META[it.cell] || {};
                     return (

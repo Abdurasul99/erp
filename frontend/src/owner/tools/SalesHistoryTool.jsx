@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 const PERIODS = [
   { value: 'today', label: 'Сегодня' },
@@ -34,6 +35,7 @@ function periodFrom(p) {
 }
 
 export default function SalesHistoryTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [period, setPeriod] = useState('month');
   const [pm, setPm] = useState('all');
@@ -72,33 +74,33 @@ export default function SalesHistoryTool() {
   return (
     <>
       <PageHeader
-        title="📋 История продаж"
-        sub="Все продажи компании · реальные данные"
-        actions={<Pills value={period} onChange={setPeriod} options={PERIODS} label="Период" />}
+        title={tt('📋 История продаж')}
+        sub={tt('Все продажи компании · реальные данные')}
+        actions={<Pills value={period} onChange={setPeriod} options={PERIODS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Период')} />}
       />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label="Чеков сегодня" value={fmtNum(kpi.today_count || 0)} sub={`${fmtMoneyFull(kpi.today_sum || 0)} сум`} color="#5B4FE8" />
-        <Tile icon="💰" label="Сумма за период" value={fmtMoneyFull(kpi.period_sum || 0)} sub="сум" color="#22C55E" />
-        <Tile icon="🧮" label="Средний чек" value={fmtMoneyFull(kpi.avg_check || 0)} sub="сум" color="#FF6B2B" />
-        <Tile icon="🏢" label="B2B доля" value={(kpi.b2b_share || 0) + '%'} sub={`${fmtNum(kpi.b2b_count || 0)} сделок`} color="#0EA5E9" />
+        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={`${fmtMoneyFull(kpi.today_sum || 0)} ${tt('сум')}`} color="#5B4FE8" />
+        <Tile icon="💰" label={tt('Сумма за период')} value={fmtMoneyFull(kpi.period_sum || 0)} sub={tt('сум')} color="#22C55E" />
+        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум')} color="#FF6B2B" />
+        <Tile icon="🏢" label={tt('B2B доля')} value={(kpi.b2b_share || 0) + '%'} sub={`${fmtNum(kpi.b2b_count || 0)} ${tt('сделок')}`} color="#0EA5E9" />
       </div>
 
       {kpi.debt_count > 0 && (
         <Card style={{ marginBottom: 14, borderLeft: '4px solid var(--orange)' }}>
           <div style={{ fontSize: 13, fontWeight: 700 }}>
-            ⚠️ {fmtNum(kpi.debt_count)} продаж с непогашенным долгом — проверьте раздел «Долги клиентов»
+            ⚠️ {fmtNum(kpi.debt_count)} {tt('продаж с непогашенным долгом — проверьте раздел')} «{tt('Долги клиентов')}»
           </div>
         </Card>
       )}
 
       <Card>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
-          <input className="input" placeholder="🔍 Товар, клиент или № продажи…"
+          <input className="input" placeholder={tt('🔍 Товар, клиент или № продажи…')}
             value={search} onChange={e => setSearch(e.target.value)}
-            style={{ flex: '1 1 240px', maxWidth: 360 }} aria-label="Поиск по продажам" />
-          <Pills value={pm} onChange={setPm} options={PM_FILTERS} label="Способ оплаты" />
-          <Pills value={type} onChange={setType} options={TYPE_FILTERS} label="Тип продажи" />
+            style={{ flex: '1 1 240px', maxWidth: 360 }} aria-label={tt('Поиск по продажам')} />
+          <Pills value={pm} onChange={setPm} options={PM_FILTERS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Способ оплаты')} />
+          <Pills value={type} onChange={setType} options={TYPE_FILTERS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Тип продажи')} />
         </div>
 
         {loading && !data ? (
@@ -106,23 +108,23 @@ export default function SalesHistoryTool() {
         ) : error ? (
           <div style={{ color: 'var(--red)', padding: 16, fontWeight: 600 }}>⚠️ {error}</div>
         ) : rows.length === 0 ? (
-          <EmptyState icon="🧾" title="Продаж не найдено"
-            description="За выбранный период и фильтры продаж нет. Измените период или сбросьте фильтры." />
+          <EmptyState icon="🧾" title={tt('Продаж не найдено')}
+            description={tt('За выбранный период и фильтры продаж нет. Измените период или сбросьте фильтры.')} />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table>
               <thead>
                 <tr>
                   <th>№</th>
-                  <th>Дата</th>
-                  <th>Товар</th>
-                  <th style={{ textAlign: 'right' }}>Кол-во</th>
-                  <th style={{ textAlign: 'right' }}>Сумма</th>
-                  <th>Оплата</th>
-                  <th>Клиент</th>
-                  <th>Тип</th>
-                  <th>Филиал</th>
-                  <th>Продавец</th>
+                  <th>{tt('Дата')}</th>
+                  <th>{tt('Товар')}</th>
+                  <th style={{ textAlign: 'right' }}>{tt('Кол-во')}</th>
+                  <th style={{ textAlign: 'right' }}>{tt('Сумма')}</th>
+                  <th>{tt('Оплата')}</th>
+                  <th>{tt('Клиент')}</th>
+                  <th>{tt('Тип')}</th>
+                  <th>{tt('Филиал')}</th>
+                  <th>{tt('Продавец')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -134,10 +136,10 @@ export default function SalesHistoryTool() {
                     <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(s.qty)} {s.unit}</td>
                     <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(s.total)}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {PM_LABEL[s.pm] || s.pm}
-                      {s.payment_status !== 'paid' && <Badge tone="orange">долг</Badge>}
+                      {PM_LABEL[s.pm] ? tt(PM_LABEL[s.pm]) : s.pm}
+                      {s.payment_status !== 'paid' && <Badge tone="orange">{tt('долг')}</Badge>}
                     </td>
-                    <td>{s.customer || <span style={{ color: 'var(--text3)' }}>розница</span>}</td>
+                    <td>{s.customer || <span style={{ color: 'var(--text3)' }}>{tt('розница')}</span>}</td>
                     <td><Badge tone={s.type === 'B2B' ? 'purple' : 'blue'}>{s.type}</Badge></td>
                     <td style={{ color: 'var(--text2)' }}>{s.branch || '—'}</td>
                     <td style={{ color: 'var(--text2)' }}>{s.seller || '—'}</td>
@@ -147,7 +149,7 @@ export default function SalesHistoryTool() {
             </table>
             {rows.length >= 300 && (
               <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text3)' }}>
-                Показаны последние 300 продаж. Уточните период или фильтры для более точного среза.
+                {tt('Показаны последние 300 продаж. Уточните период или фильтры для более точного среза.')}
               </div>
             )}
           </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 // «Касса B2C» в окне руководителя — это НЕ терминал продажи (продажи ведут
 // кассиры/продавцы в своём приложении). Здесь руководитель видит РЕАЛЬНЫЙ
@@ -12,6 +13,7 @@ const PM_LABEL = {
 const PM_COLOR = { cash: '#22C55E', card: '#5B4FE8', transfer: '#0EA5E9', wire: '#7c3aed', debt: '#FF6B2B' };
 
 export default function PosTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -48,30 +50,30 @@ export default function PosTool() {
 
   return (
     <>
-      <PageHeader title="🛒 Касса · монитор смены" sub="Реальные продажи за сегодня · режим наблюдения" />
+      <PageHeader title={tt('🛒 Касса · монитор смены')} sub={tt('Реальные продажи за сегодня · режим наблюдения')} />
 
       <Card style={{ marginBottom: 16, borderLeft: '4px solid var(--primary)' }}>
         <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.5 }}>
-          ℹ️ Это <strong>монитор для руководителя</strong> — здесь видно, что продаётся в реальном времени.
-          Сами продажи кассиры и продавцы проводят в своём приложении (POS на телефоне).
-          Цифры ниже — настоящие, обновляются по мере продаж.
+          ℹ️ {tt('Это')} <strong>{tt('монитор для руководителя')}</strong> — {tt('здесь видно, что продаётся в реальном времени.')}
+          {' '}{tt('Сами продажи кассиры и продавцы проводят в своём приложении (POS на телефоне).')}
+          {' '}{tt('Цифры ниже — настоящие, обновляются по мере продаж.')}
         </div>
       </Card>
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label="Чеков сегодня" value={fmtNum(kpi.today_count || 0)} sub="за смену" color="#5B4FE8" />
-        <Tile icon="💰" label="Выручка сегодня" value={fmtMoneyFull(kpi.today_sum || 0)} sub="сум" color="#22C55E" />
-        <Tile icon="🧮" label="Средний чек" value={fmtMoneyFull(kpi.avg_check || 0)} sub="сум · за период" color="#FF6B2B" />
-        <Tile icon="📋" label="В долг" value={fmtNum(kpi.debt_count || 0)} sub="непогашено" color={kpi.debt_count > 0 ? '#EF4444' : '#9094B0'} />
+        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={tt('за смену')} color="#5B4FE8" />
+        <Tile icon="💰" label={tt('Выручка сегодня')} value={fmtMoneyFull(kpi.today_sum || 0)} sub={tt('сум')} color="#22C55E" />
+        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум · за период')} color="#FF6B2B" />
+        <Tile icon="📋" label={tt('В долг')} value={fmtNum(kpi.debt_count || 0)} sub={tt('непогашено')} color={kpi.debt_count > 0 ? '#EF4444' : '#9094B0'} />
       </div>
 
       <div className="grid-2" style={{ marginBottom: 16 }}>
         {/* Разбивка по способам оплаты — реальная */}
-        <Card icon="💳" title="Выручка по способам оплаты">
+        <Card icon="💳" title={tt('Выручка по способам оплаты')}>
           {loading && !data ? (
             <div>{[0, 1, 2].map(i => <Skeleton key={i} height={28} style={{ marginBottom: 8 }} />)}</div>
           ) : pmEntries.length === 0 ? (
-            <EmptyState icon="💤" title="Сегодня продаж ещё не было" description="Как только кассир проведёт продажу — она появится здесь." />
+            <EmptyState icon="💤" title={tt('Сегодня продаж ещё не было')} description={tt('Как только кассир проведёт продажу — она появится здесь.')} />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
               {pmEntries.map(([method, sum]) => {
@@ -79,8 +81,8 @@ export default function PosTool() {
                 return (
                   <div key={method}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-                      <span style={{ fontWeight: 700 }}>{PM_LABEL[method] || method}</span>
-                      <span className="mono" style={{ fontWeight: 800 }}>{fmtMoneyFull(sum)} сум · {pct}%</span>
+                      <span style={{ fontWeight: 700 }}>{PM_LABEL[method] ? tt(PM_LABEL[method]) : method}</span>
+                      <span className="mono" style={{ fontWeight: 800 }}>{fmtMoneyFull(sum)} {tt('сум')} · {pct}%</span>
                     </div>
                     <div style={{ height: 8, background: 'var(--bg-2)', borderRadius: 6, overflow: 'hidden' }}>
                       <div style={{ width: pct + '%', height: '100%', background: PM_COLOR[method] || '#5B4FE8', borderRadius: 6 }} />
@@ -93,20 +95,20 @@ export default function PosTool() {
         </Card>
 
         {/* Последние продажи смены — реальные */}
-        <Card icon="🕐" title="Последние продажи">
+        <Card icon="🕐" title={tt('Последние продажи')}>
           {loading && !data ? (
             <div>{[0, 1, 2, 3].map(i => <Skeleton key={i} height={32} style={{ marginBottom: 8 }} />)}</div>
           ) : error ? (
             <div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div>
           ) : rows.length === 0 ? (
-            <EmptyState icon="🧾" title="Пока пусто" description="Продажи смены появятся здесь в реальном времени." />
+            <EmptyState icon="🧾" title={tt('Пока пусто')} description={tt('Продажи смены появятся здесь в реальном времени.')} />
           ) : (
             <div className="list">
               {rows.slice(0, 8).map(s => (
                 <div key={s.id} className="list-item">
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="list-item-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.product}</div>
-                    <div className="list-item-sub">{fmtTime(s.date)} · {PM_LABEL[s.pm] || s.pm}{s.customer ? ' · ' + s.customer : ''}</div>
+                    <div className="list-item-sub">{fmtTime(s.date)} · {PM_LABEL[s.pm] ? tt(PM_LABEL[s.pm]) : s.pm}{s.customer ? ' · ' + s.customer : ''}</div>
                   </div>
                   <div className="mono" style={{ fontWeight: 800, color: 'var(--primary)', fontSize: 13 }}>{fmtMoneyFull(s.total)}</div>
                 </div>

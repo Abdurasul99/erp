@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { useTt } from '../tt.js';
 
 const SEVERITY_META = {
   critical: { color: '#EF4444', badge: 'red',    label: 'Критично' },
@@ -26,6 +27,7 @@ const TABS = [
 ];
 
 export default function RiskControlTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -56,32 +58,32 @@ export default function RiskControlTool() {
   return (
     <>
       <PageHeader
-        title="⚠️ Контроль рисков"
-        sub="Единая лента критических событий по всему бизнесу"
+        title={tt('⚠️ Контроль рисков')}
+        sub={tt('Единая лента критических событий по всему бизнесу')}
         actions={<Badge tone={summary.critical > 0 ? 'red' : 'green'}>
-          {summary.critical > 0 ? `${summary.critical} критичных` : 'Всё спокойно'}
+          {summary.critical > 0 ? `${summary.critical} ${tt('критичных')}` : tt('Всё спокойно')}
         </Badge>}
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
 
       {loading ? (
-        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>Загрузка...</div></div></Card>
+        <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🔴" label="Критичные" value={fmtNum(summary.critical)} sub="требуют действия сейчас" color="#EF4444" />
-            <Tile icon="🟡" label="Внимание"  value={fmtNum(summary.warning)}  sub="разобраться в течение недели" color="#F59E0B" />
-            <Tile icon="🔵" label="Инфо"      value={fmtNum(summary.info)}     sub="к сведению" color="#5B4FE8" />
-            <Tile icon="📊" label="Всего"     value={fmtNum(summary.total)}    sub="алертов" color="#5B4FE8" />
+            <Tile icon="🔴" label={tt('Критичные')} value={fmtNum(summary.critical)} sub={tt('требуют действия сейчас')} color="#EF4444" />
+            <Tile icon="🟡" label={tt('Внимание')}  value={fmtNum(summary.warning)}  sub={tt('разобраться в течение недели')} color="#F59E0B" />
+            <Tile icon="🔵" label={tt('Инфо')}      value={fmtNum(summary.info)}     sub={tt('к сведению')} color="#5B4FE8" />
+            <Tile icon="📊" label={tt('Всего')}     value={fmtNum(summary.total)}    sub={tt('алертов')} color="#5B4FE8" />
           </div>
 
-          <Card icon="📋" title={`Алерты (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS} />}
+          <Card icon="📋" title={`${tt('Алерты')} (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS.map(t => ({ ...t, label: tt(t.label) }))} />}
             style={{ marginBottom: 16 }}>
             <div className="list">
               {filtered.length === 0 ? (
                 <div style={{ padding: '20px 0', color: 'var(--text3)', textAlign: 'center', fontSize: 13 }}>
-                  ✓ Нет алертов в этой категории — отличная работа!
+                  {tt('✓ Нет алертов в этой категории — отличная работа!')}
                 </div>
               ) : filtered.map((a, i) => {
                 const sev = SEVERITY_META[a.severity];
@@ -94,14 +96,14 @@ export default function RiskControlTool() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <div className="list-item-title">{a.title}</div>
-                        <Badge tone={sev.badge}>{sev.label}</Badge>
-                        <Badge tone="gray">{cat.label}</Badge>
+                        <Badge tone={sev.badge}>{tt(sev.label)}</Badge>
+                        <Badge tone="gray">{tt(cat.label)}</Badge>
                       </div>
                       <div className="list-item-sub" style={{ marginTop: 3 }}>{a.detail}</div>
                     </div>
                     {a.action_url && (
                       <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(a.action_url); }}>
-                        Решить →
+                        {tt('Решить →')}
                       </button>
                     )}
                   </div>
@@ -111,14 +113,14 @@ export default function RiskControlTool() {
           </Card>
 
           {Object.keys(byCategory).length > 0 && (
-            <Card icon="📊" title="По категориям">
+            <Card icon="📊" title={tt('По категориям')}>
               <div className="grid-4">
                 {Object.entries(byCategory).map(([cat, count]) => {
                   const meta = CATEGORY_META[cat] || { icon: '📌', label: cat };
                   return (
                     <div key={cat} style={{ padding: 14, background: 'var(--bg-2)', borderRadius: 12 }}>
                       <div style={{ fontSize: 22, marginBottom: 4 }}>{meta.icon}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{meta.label}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text2)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt(meta.label)}</div>
                       <div style={{ fontSize: 22, fontWeight: 900, color: 'var(--primary)', marginTop: 4 }} className="mono">{count}</div>
                     </div>
                   );

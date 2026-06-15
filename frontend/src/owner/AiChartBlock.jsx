@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../api.js';
 import { AreaChart, Bars, Skeleton, fmtMoney } from './ui.jsx';
+import { useTt } from './tt.js';
 
 const CHART_META = {
   monthly_revenue:  { icon: '📈', kind: 'bars-with-labels' },
@@ -11,6 +12,7 @@ const CHART_META = {
 };
 
 export default function AiChartBlock({ chartType }) {
+  const { tt } = useTt();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -50,7 +52,7 @@ export default function AiChartBlock({ chartType }) {
         background: 'var(--bg-2)', borderRadius: 12,
         fontSize: 12, color: 'var(--text3)',
       }}>
-        🚫 График недоступен: {error || 'нет данных'}
+        🚫 {tt('График недоступен')}: {error || tt('Нет данных')}
       </div>
     );
   }
@@ -78,8 +80,9 @@ export default function AiChartBlock({ chartType }) {
 }
 
 function MonthlyBarsChart({ points }) {
+  const { tt } = useTt();
   if (!points || points.length === 0) {
-    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Нет данных</div>;
+    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>{tt('Нет данных')}</div>;
   }
   const max = Math.max(...points.map(p => p.value), 1);
   return (
@@ -91,16 +94,17 @@ function MonthlyBarsChart({ points }) {
         ))}
       </div>
       <div style={{ marginTop: 10, padding: 8, background: 'var(--bg-2)', borderRadius: 8, fontSize: 11, color: 'var(--text2)' }}>
-        Период: <strong>{points[0].label}</strong> — <strong>{points[points.length - 1].label}</strong>.
-        Максимум: <strong>{fmtMoney(max)}</strong>. Сумма: <strong>{fmtMoney(points.reduce((s, p) => s + p.value, 0))}</strong>.
+        {tt('Период')}: <strong>{points[0].label}</strong> — <strong>{points[points.length - 1].label}</strong>.
+        {tt('Максимум')}: <strong>{fmtMoney(max)}</strong>. {tt('Сумма')}: <strong>{fmtMoney(points.reduce((s, p) => s + p.value, 0))}</strong>.
       </div>
     </div>
   );
 }
 
 function HorizontalBarChart({ points }) {
+  const { tt } = useTt();
   if (!points || points.length === 0) {
-    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Нет данных</div>;
+    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>{tt('Нет данных')}</div>;
   }
   const max = Math.max(...points.map(p => p.value), 1);
   return (
@@ -145,8 +149,9 @@ function HorizontalBarChart({ points }) {
 }
 
 function PeriodCompareChart({ current, prev }) {
+  const { tt } = useTt();
   if (!current || current.length === 0) {
-    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>Нет данных за период</div>;
+    return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>{tt('Нет данных за период')}</div>;
   }
   const curVals = current.map(p => p.value);
   const prevVals = (prev || []).map(p => p.value);
@@ -159,11 +164,11 @@ function PeriodCompareChart({ current, prev }) {
       <div style={{ display: 'flex', gap: 14, marginTop: 10, fontSize: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 14, height: 3, background: '#22C55E', borderRadius: 2 }} />
-          <span style={{ color: 'var(--text2)' }}>Сейчас: <strong>{fmtMoney(curSum)}</strong></span>
+          <span style={{ color: 'var(--text2)' }}>{tt('Сейчас')}: <strong>{fmtMoney(curSum)}</strong></span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 14, height: 0, borderTop: '2px dashed #9094B0' }} />
-          <span style={{ color: 'var(--text2)' }}>Раньше: <strong>{fmtMoney(prevSum)}</strong></span>
+          <span style={{ color: 'var(--text2)' }}>{tt('Раньше')}: <strong>{fmtMoney(prevSum)}</strong></span>
         </div>
         {delta != null && (
           <div style={{ marginLeft: 'auto', fontWeight: 800, color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>

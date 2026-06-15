@@ -1,5 +1,6 @@
 import React from 'react';
 import { Card, PageHeader, Badge } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const ATTRS = [
   { type: 'Одежда', attrs: ['цвет', 'размер (S/M/L/XL)', 'материал', 'пол'] },
@@ -10,14 +11,15 @@ const ATTRS = [
 ];
 
 export default function AttrsTool() {
+  const { tt } = useTt();
   return (
     <>
-      <PageHeader title="⚙️ Атрибуты товаров" sub="Кастомные поля по типу товара" />
+      <PageHeader title={tt('⚙️ Атрибуты товаров')} sub={tt('Кастомные поля по типу товара')} />
       {ATTRS.map(a => (
-        <Card key={a.type} icon="🏷️" title={a.type} style={{ marginBottom: 14 }}
-          actions={<button className="btn btn-ghost btn-sm">+ Атрибут</button>}>
+        <Card key={a.type} icon="🏷️" title={tt(a.type)} style={{ marginBottom: 14 }}
+          actions={<button className="btn btn-ghost btn-sm">{tt('+ Атрибут')}</button>}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {a.attrs.map(x => <Badge key={x} tone="purple">{x}</Badge>)}
+            {a.attrs.map(x => <Badge key={x} tone="purple">{tt(x)}</Badge>)}
           </div>
         </Card>
       ))}

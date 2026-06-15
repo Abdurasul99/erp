@@ -1,6 +1,7 @@
 import React from 'react';
 import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
 import { toast } from '../Modal.jsx';
+import { useTt } from '../tt.js';
 
 const ORDERS = [
   { id: 'PO-031', sup: 'Tashkent Wood', items: '4 поз · 280 м³', sum: '14.2M', s: 'wait',  due: '4ч ⚠️' },
@@ -11,19 +12,20 @@ const ORDERS = [
 ];
 
 export default function ProcurementTool() {
+  const { tt } = useTt();
   return (
     <>
-      <PageHeader title="📋 Закупки" sub="Заказы поставщикам · 24ч подтверждение · авто-замена"
-        actions={<><button className="btn btn-ghost btn-sm">🌐 Портал</button><button className="btn btn-primary btn-sm" onClick={() => toast('Новый заказ')}>+ Заказ</button></>} />
+      <PageHeader title={tt('📋 Закупки')} sub={tt('Заказы поставщикам · 24ч подтверждение · авто-замена')}
+        actions={<><button className="btn btn-ghost btn-sm">{tt('🌐 Портал')}</button><button className="btn btn-primary btn-sm" onClick={() => toast(tt('Новый заказ'))}>{tt('+ Заказ')}</button></>} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label="Открытых" value="14" color="#5B4FE8" />
-        <Tile icon="⏳" label="Ждут 24ч" value="3" color="#F59E0B" />
-        <Tile icon="🏢" label="Поставщиков" value="48" color="#0EA5E9" />
-        <Tile icon="💰" label="Долг" value="18.5M" color="#EF4444" />
+        <Tile icon="📦" label={tt('Открытых')} value="14" color="#5B4FE8" />
+        <Tile icon="⏳" label={tt('Ждут 24ч')} value="3" color="#F59E0B" />
+        <Tile icon="🏢" label={tt('Поставщиков')} value="48" color="#0EA5E9" />
+        <Tile icon="💰" label={tt('Долг')} value="18.5M" color="#EF4444" />
       </div>
       <Card>
         <table>
-          <thead><tr><th>#</th><th>Поставщик</th><th>Состав</th><th>Сумма</th><th>Статус</th><th>Подтвердить до</th><th></th></tr></thead>
+          <thead><tr><th>#</th><th>{tt('Поставщик')}</th><th>{tt('Состав')}</th><th>{tt('Сумма')}</th><th>{tt('Статус')}</th><th>{tt('Подтвердить до')}</th><th></th></tr></thead>
           <tbody>
             {ORDERS.map(r => (
               <tr key={r.id}>
@@ -31,9 +33,9 @@ export default function ProcurementTool() {
                 <td style={{ fontWeight: 700 }}>{r.sup}</td>
                 <td>{r.items}</td>
                 <td className="mono" style={{ fontWeight: 800, color: 'var(--primary)' }}>{r.sum}</td>
-                <td>{r.s === 'wait' && <Badge tone="yellow">⏳ Ждёт</Badge>}{r.s === 'confirmed' && <Badge tone="blue">✓ Подтверждено</Badge>}{r.s === 'shipping' && <Badge tone="purple">🚚 В пути</Badge>}{r.s === 'delivered' && <Badge tone="green">✓ Доставлено</Badge>}</td>
+                <td>{r.s === 'wait' && <Badge tone="yellow">{tt('⏳ Ждёт')}</Badge>}{r.s === 'confirmed' && <Badge tone="blue">{tt('✓ Подтверждено')}</Badge>}{r.s === 'shipping' && <Badge tone="purple">{tt('🚚 В пути')}</Badge>}{r.s === 'delivered' && <Badge tone="green">{tt('✓ Доставлено')}</Badge>}</td>
                 <td style={{ color: r.due.includes('⚠️') ? 'var(--red)' : 'var(--text3)', fontWeight: 700 }}>{r.due}</td>
-                <td><button className="btn btn-ghost btn-sm" onClick={() => toast('Открыта детализация ' + r.id)}>👁️</button></td>
+                <td><button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Открыта детализация') + ' ' + r.id)}>👁️</button></td>
               </tr>
             ))}
           </tbody>

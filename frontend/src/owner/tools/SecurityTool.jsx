@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, fmtNum } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 // Матрица Роли × Права — это РЕАЛЬНЫЕ правила доступа, зашитые в backend
 // (auth() middleware в server.js). Это не настройка, а документация системы.
@@ -20,6 +21,7 @@ const ROLE_RU = {
 };
 
 export default function SecurityTool() {
+  const { tt } = useTt();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -37,7 +39,7 @@ export default function SecurityTool() {
 
   return (
     <>
-      <PageHeader title="🔐 Безопасность" sub="Роли · права · доступы · реальные данные" />
+      <PageHeader title={tt('🔐 Безопасность')} sub={tt('Роли · права · доступы · реальные данные')} />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={160} /></Card>
@@ -46,38 +48,38 @@ export default function SecurityTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
-            <Tile icon="👥" label="Пользователей" value={fmtNum(data.users_total)} sub="в компании" color="#5B4FE8" />
-            <Tile icon="🔄" label="Смен ролей" value={fmtNum(data.role_changes_30d)} sub="за 30 дней" color={data.role_changes_30d > 0 ? '#F59E0B' : '#22C55E'} />
-            <Tile icon="🤖" label="AI-запросов" value={fmtNum(data.ai_requests_30d)} sub="за 30 дней" color="#0EA5E9" />
-            <Tile icon="🏭" label="Филиалов" value={fmtNum((data.branches || []).length)} sub="активных" color="#FF6B2B" />
+            <Tile icon="👥" label={tt('Пользователей')} value={fmtNum(data.users_total)} sub={tt('в компании')} color="#5B4FE8" />
+            <Tile icon="🔄" label={tt('Смен ролей')} value={fmtNum(data.role_changes_30d)} sub={tt('за 30 дней')} color={data.role_changes_30d > 0 ? '#F59E0B' : '#22C55E'} />
+            <Tile icon="🤖" label={tt('AI-запросов')} value={fmtNum(data.ai_requests_30d)} sub={tt('за 30 дней')} color="#0EA5E9" />
+            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum((data.branches || []).length)} sub={tt('активных')} color="#FF6B2B" />
           </div>
 
-          <Card icon="👥" title="Команда по ролям" style={{ marginBottom: 16 }}>
+          <Card icon="👥" title={tt('Команда по ролям')} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {Object.entries(byRole).map(([role, c]) => (
                 <div key={role} style={{ padding: '10px 16px', background: 'var(--bg-2)', borderRadius: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{ROLE_RU[role] || role}</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{tt(ROLE_RU[role] || role)}</div>
                   <div className="mono" style={{ fontSize: 18, fontWeight: 900 }}>{c}</div>
                 </div>
               ))}
             </div>
           </Card>
 
-          <Card icon="👮" title="Роли × Права (правила системы)" style={{ marginBottom: 16 }}>
+          <Card icon="👮" title={tt('Роли × Права (правила системы)')} style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
-                  <tr><th>Роль</th><th>Каталог</th><th>Продажи</th><th>Финансы</th><th>HR</th><th>Настройки</th><th>AI</th></tr>
+                  <tr><th>{tt('Роль')}</th><th>{tt('Каталог')}</th><th>{tt('Продажи')}</th><th>{tt('Финансы')}</th><th>{tt('HR')}</th><th>{tt('Настройки')}</th><th>{tt('AI')}</th></tr>
                 </thead>
                 <tbody>
                   {ROLE_MATRIX.map(r => (
                     <tr key={r.role}>
-                      <td style={{ fontWeight: 700 }}>{r.role}</td>
+                      <td style={{ fontWeight: 700 }}>{tt(r.role)}</td>
                       {['catalog', 'sales', 'finance', 'hr', 'settings', 'ai'].map(k => (
                         <td key={k}>
                           {r[k] === '—'
                             ? <span style={{ color: 'var(--text3)' }}>—</span>
-                            : <Badge tone={String(r[k]).startsWith('RW') ? 'green' : String(r[k]) === '✓' ? 'purple' : 'blue'}>{r[k]}</Badge>}
+                            : <Badge tone={String(r[k]).startsWith('RW') ? 'green' : String(r[k]) === '✓' ? 'purple' : 'blue'}>{tt(r[k])}</Badge>}
                         </td>
                       ))}
                     </tr>
@@ -86,19 +88,19 @@ export default function SecurityTool() {
               </table>
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--text3)', marginTop: 10 }}>
-              Эти правила применяются сервером на каждом запросе (auth-middleware) — обойти их из браузера нельзя.
+              {tt('Эти правила применяются сервером на каждом запросе (auth-middleware) — обойти их из браузера нельзя.')}
             </div>
           </Card>
 
-          <Card icon="🛡" title="Как защищена система">
+          <Card icon="🛡" title={tt('Как защищена система')}>
             <div className="list">
               {[
-                ['🔑', 'Пароли', 'Хранятся как bcrypt-хеши — исходный пароль восстановить нельзя'],
-                ['🎫', 'Сессии', 'JWT-токены с автоистечением через 24 часа'],
-                ['🏢', 'Изоляция компаний', 'Каждый запрос фильтруется по вашей компании — чужие данные недоступны'],
-                ['🏭', 'Изоляция филиалов', 'Менеджер видит только свой филиал — проверяется на сервере'],
-                ['📋', 'Журнал', 'Смены ролей и AI-запросы логируются'],
-                ['🤖', 'AI-доступ', 'Только учредитель и ген. директор — менеджерам и кассирам закрыт'],
+                ['🔑', tt('Пароли'), tt('Хранятся как bcrypt-хеши — исходный пароль восстановить нельзя')],
+                ['🎫', tt('Сессии'), tt('JWT-токены с автоистечением через 24 часа')],
+                ['🏢', tt('Изоляция компаний'), tt('Каждый запрос фильтруется по вашей компании — чужие данные недоступны')],
+                ['🏭', tt('Изоляция филиалов'), tt('Менеджер видит только свой филиал — проверяется на сервере')],
+                ['📋', tt('Журнал'), tt('Смены ролей и AI-запросы логируются')],
+                ['🤖', tt('AI-доступ'), tt('Только учредитель и ген. директор — менеджерам и кассирам закрыт')],
               ].map(([icon, title, sub]) => (
                 <div key={title} className="list-item">
                   <div style={{ fontSize: 18 }} aria-hidden="true">{icon}</div>

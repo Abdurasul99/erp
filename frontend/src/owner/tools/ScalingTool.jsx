@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, fmtNum, fmtMoneyFull } from '../ui.jsx';
+import { useTt } from '../tt.js';
 
 const CURR_FLAG = { UZS: '🇺🇿', USD: '🇺🇸', EUR: '🇪🇺', RUB: '🇷🇺', KZT: '🇰🇿', CNY: '🇨🇳', TRY: '🇹🇷', KRW: '🇰🇷', GBP: '🇬🇧', AED: '🇦🇪' };
 
 export default function ScalingTool() {
+  const { tt } = useTt();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -23,7 +25,7 @@ export default function ScalingTool() {
 
   return (
     <>
-      <PageHeader title="🌍 Масштабирование" sub="Филиалы · валюты · языки · реальные данные" />
+      <PageHeader title={tt('🌍 Масштабирование')} sub={tt('Филиалы · валюты · языки · реальные данные')} />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={160} /></Card>
@@ -32,14 +34,14 @@ export default function ScalingTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
-            <Tile icon="🏢" label="Компания" value={data.company?.name || '—'} sub="ваш аккаунт" color="#5B4FE8" />
-            <Tile icon="🏭" label="Филиалов" value={fmtNum(branches.length)} sub="работают в системе" color="#FF6B2B" />
-            <Tile icon="💱" label="Валют в обороте" value={fmtNum(currencies.length)} sub="по реальным операциям" color="#22C55E" />
-            <Tile icon="🌐" label="Языков" value={(data.languages || []).length} sub={(data.languages || []).join(' · ')} color="#0EA5E9" />
+            <Tile icon="🏢" label={tt('Компания')} value={data.company?.name || '—'} sub={tt('ваш аккаунт')} color="#5B4FE8" />
+            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum(branches.length)} sub={tt('работают в системе')} color="#FF6B2B" />
+            <Tile icon="💱" label={tt('Валют в обороте')} value={fmtNum(currencies.length)} sub={tt('по реальным операциям')} color="#22C55E" />
+            <Tile icon="🌐" label={tt('Языков')} value={(data.languages || []).length} sub={(data.languages || []).join(' · ')} color="#0EA5E9" />
           </div>
 
           <div className="grid-2">
-            <Card icon="🏭" title="Филиалы">
+            <Card icon="🏭" title={tt('Филиалы')}>
               <div className="list">
                 {branches.map(b => (
                   <div key={b.id} className="list-item">
@@ -47,21 +49,21 @@ export default function ScalingTool() {
                     <div style={{ flex: 1 }}>
                       <div className="list-item-title">{b.name}</div>
                       <div className="list-item-sub">
-                        в системе с {new Date(b.created_at).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
+                        {tt('в системе с')} {new Date(b.created_at).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}
                       </div>
                     </div>
-                    <Badge tone="green">Активен</Badge>
+                    <Badge tone="green">{tt('Активен')}</Badge>
                   </div>
                 ))}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-                Новый филиал добавляется через раздел «Персонал → Сотрудники» или администратором системы.
+                {tt('Новый филиал добавляется через раздел «Персонал → Сотрудники» или администратором системы.')}
               </div>
             </Card>
 
-            <Card icon="💱" title="Валюты в обороте (из ваших операций)">
+            <Card icon="💱" title={tt('Валюты в обороте (из ваших операций)')}>
               {currencies.length === 0 ? (
-                <div style={{ color: 'var(--text3)', fontSize: 13, padding: '14px 0' }}>Операций пока нет</div>
+                <div style={{ color: 'var(--text3)', fontSize: 13, padding: '14px 0' }}>{tt('Операций пока нет')}</div>
               ) : (
                 <div className="list">
                   {currencies.map(c => (
@@ -69,18 +71,18 @@ export default function ScalingTool() {
                       <div style={{ fontSize: 16 }} aria-hidden="true">{CURR_FLAG[c.currency] || '💱'}</div>
                       <div style={{ flex: 1 }}>
                         <div className="list-item-title">{c.currency}</div>
-                        <div className="list-item-sub">{fmtNum(c.tx_count)} операций</div>
+                        <div className="list-item-sub">{fmtNum(c.tx_count)} {tt('операций')}</div>
                       </div>
                       <div className="mono" style={{ fontWeight: 800, fontSize: 13 }}>
                         {c.currency === 'UZS' ? '1' : (c.last_rate ? fmtMoneyFull(c.last_rate) : '—')}
-                        <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 4 }}>сум</span>
+                        <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 4 }}>{tt('сум')}</span>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
               <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-                Курс — последний использованный в операциях (кассир вводит уличный курс при продаже).
+                {tt('Курс — последний использованный в операциях (кассир вводит уличный курс при продаже).')}
               </div>
             </Card>
           </div>

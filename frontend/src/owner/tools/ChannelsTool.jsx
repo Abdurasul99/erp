@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
+import { useTt } from '../tt.js';
 
 const CH_OPTIONS = [
   { value: 'instagram', label: '📷 Instagram' },
@@ -15,6 +16,7 @@ const CH_OPTIONS = [
 ];
 
 export default function ChannelsTool() {
+  const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -51,7 +53,7 @@ export default function ChannelsTool() {
 
   return (
     <>
-      <PageHeader title="📡 Каналы и ROI" sub="Откуда приходят клиенты · ROI каждого канала · LTV по источнику" />
+      <PageHeader title={tt('📡 Каналы и ROI')} sub={tt('Откуда приходят клиенты · ROI каждого канала · LTV по источнику')} />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={200} /></Card>
@@ -59,30 +61,30 @@ export default function ChannelsTool() {
         <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div></Card>
       ) : !hasAnySource ? (
         <Card>
-          <EmptyState icon="🧭" title="Источник клиентов не заполнен"
-            description="Чтобы видеть какой канал приносит деньги — указывайте «Откуда пришёл клиент» при создании клиента (раздел «Клиенты»). Как появятся источники — здесь будет ROI каждого канала." />
+          <EmptyState icon="🧭" title={tt('Источник клиентов не заполнен')}
+            description={tt('Чтобы видеть какой канал приносит деньги — указывайте «Откуда пришёл клиент» при создании клиента (раздел «Клиенты»). Как появятся источники — здесь будет ROI каждого канала.')} />
         </Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🏆" label="Лучший канал" value={best ? (best.label) : '—'} sub={best ? `ROI ${best.roi}x` : 'добавьте расходы'} color="#22C55E" />
-            <Tile icon="💰" label="Выручка с каналов" value={fmtMoneyFull(totalRevenue)} sub="сум · всё время" color="#5B4FE8" />
-            <Tile icon="📣" label="Всего на рекламу" value={fmtMoneyFull(totalSpend)} sub="сум · введено" color="#FF6B2B" />
-            <Tile icon="🎯" label="Общий ROI" value={totalSpend > 0 ? (Math.round((totalRevenue / totalSpend) * 100) / 100) + 'x' : '—'} sub={`${fmtNum(totalBuyers)} покупателей`} color="#0EA5E9" />
+            <Tile icon="🏆" label={tt('Лучший канал')} value={best ? (tt(best.label)) : '—'} sub={best ? `ROI ${best.roi}x` : tt('добавьте расходы')} color="#22C55E" />
+            <Tile icon="💰" label={tt('Выручка с каналов')} value={fmtMoneyFull(totalRevenue)} sub={tt('сум · всё время')} color="#5B4FE8" />
+            <Tile icon="📣" label={tt('Всего на рекламу')} value={fmtMoneyFull(totalSpend)} sub={tt('сум · введено')} color="#FF6B2B" />
+            <Tile icon="🎯" label={tt('Общий ROI')} value={totalSpend > 0 ? (Math.round((totalRevenue / totalSpend) * 100) / 100) + 'x' : '—'} sub={`${fmtNum(totalBuyers)} ${tt('покупателей')}`} color="#0EA5E9" />
           </div>
 
-          <Card icon="📊" title="Каналы привлечения" style={{ marginBottom: 16 }}>
+          <Card icon="📊" title={tt('Каналы привлечения')} style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
-                    <th>Канал</th>
-                    <th style={{ textAlign: 'right' }}>Клиентов</th>
-                    <th style={{ textAlign: 'right' }}>Купили</th>
-                    <th style={{ textAlign: 'right' }}>Выручка</th>
-                    <th style={{ textAlign: 'right' }}>Средний LTV</th>
-                    <th style={{ textAlign: 'right' }}>Повторные</th>
-                    <th style={{ textAlign: 'right' }}>Расход</th>
+                    <th>{tt('Канал')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Клиентов')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Купили')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Выручка')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Средний LTV')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Повторные')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Расход')}</th>
                     <th style={{ textAlign: 'right' }}>ROI</th>
                     <th style={{ textAlign: 'right' }}>CAC</th>
                   </tr>
@@ -105,39 +107,39 @@ export default function ChannelsTool() {
               </table>
             </div>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-              ROI = выручка с канала ÷ расход на него. CAC = расход ÷ кол-во покупателей. Чтобы посчитать ROI — внесите расходы ниже.
+              {tt('ROI = выручка с канала ÷ расход на него. CAC = расход ÷ кол-во покупателей. Чтобы посчитать ROI — внесите расходы ниже.')}
             </div>
           </Card>
 
-          <Card icon="💸" title="Расходы на каналы (для ROI)" style={{ marginBottom: 16 }}>
+          <Card icon="💸" title={tt('Расходы на каналы (для ROI)')} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
               <div>
-                <label className="label">Канал</label>
+                <label className="label">{tt('Канал')}</label>
                 <select className="input" value={spendForm.channel} onChange={e => setSpendForm({ ...spendForm, channel: e.target.value })}>
-                  {CH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {CH_OPTIONS.map(o => <option key={o.value} value={o.value}>{tt(o.label)}</option>)}
                 </select>
               </div>
               <div>
-                <label className="label">Месяц</label>
+                <label className="label">{tt('Месяц')}</label>
                 <input className="input" type="month" value={spendForm.month} onChange={e => setSpendForm({ ...spendForm, month: e.target.value })} />
               </div>
               <div>
-                <label className="label">Расход (сум)</label>
+                <label className="label">{tt('Расход (сум)')}</label>
                 <input className="input" type="number" min="0" value={spendForm.amount} onChange={e => setSpendForm({ ...spendForm, amount: e.target.value })} placeholder="0" />
               </div>
-              <button className="btn btn-primary btn-sm" onClick={saveSpend} disabled={saving || !spendForm.amount}>{saving ? '...' : '💾 Сохранить'}</button>
+              <button className="btn btn-primary btn-sm" onClick={saveSpend} disabled={saving || !spendForm.amount}>{saving ? '...' : '💾 ' + tt('Сохранить')}</button>
             </div>
             {spendRows.length > 0 && (
               <div style={{ overflowX: 'auto' }}>
                 <table>
-                  <thead><tr><th>Канал</th><th>Месяц</th><th style={{ textAlign: 'right' }}>Расход</th><th></th></tr></thead>
+                  <thead><tr><th>{tt('Канал')}</th><th>{tt('Месяц')}</th><th style={{ textAlign: 'right' }}>{tt('Расход')}</th><th></th></tr></thead>
                   <tbody>
                     {spendRows.map(s => (
                       <tr key={s.id}>
-                        <td>{(CH_OPTIONS.find(o => o.value === s.channel)?.label) || s.channel}</td>
+                        <td>{tt((CH_OPTIONS.find(o => o.value === s.channel)?.label) || s.channel)}</td>
                         <td className="mono">{s.month}</td>
-                        <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(s.amount)} сум</td>
-                        <td style={{ textAlign: 'right' }}><button className="action-btn action-btn-del" onClick={() => delSpend(s.id)} title="Удалить">🗑</button></td>
+                        <td className="mono" style={{ textAlign: 'right' }}>{fmtMoneyFull(s.amount)} {tt('сум')}</td>
+                        <td style={{ textAlign: 'right' }}><button className="action-btn action-btn-del" onClick={() => delSpend(s.id)} title={tt('Удалить')}>🗑</button></td>
                       </tr>
                     ))}
                   </tbody>
