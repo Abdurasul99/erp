@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
-import { useTt } from '../tt.js';
+import { useTt, fmtDate } from '../tt.js';
 
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -87,49 +87,58 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money' }) {
   );
 }
 
-// Бар-чарт для хиро-плитки: закруглённые белые бары + чип со значением пика.
-// (Кривую-«кардиограмму» убрали по фидбеку — бары читаются привычнее.)
-function HeroAreaChart({ points, labels }) {
+// Хиро-чарт: дневная выручка агрегируется в НЕДЕЛИ → толстые читаемые столбцы.
+// Пик-неделя ярче + чип суммы, пунктир «среднего», подсказка с диапазоном дат при наведении.
+function HeroWeeklyChart({ daily, dates, lang }) {
   const { tt } = useTt();
-  const max = Math.max(...points, 1);
-  const n = points.length;
-  if (n < 2) return null;
-  const peakIdx = points.indexOf(Math.max(...points));
-  const peakXPct = ((peakIdx + 0.5) / n) * 100;
+  if (!daily || daily.length < 2 || !dates) return null;
+  // Группируем подряд идущие дни в календарные недели (новая неделя — с понедельника).
+  const weeks = [];
+  daily.forEach((v, i) => {
+    const d = new Date(dates[i]);
+    const startNew = !weeks.length || (d.getDay() === 1 && weeks[weeks.length - 1].n > 0);
+    if (startNew) weeks.push({ sum: 0, n: 0, start: dates[i], end: dates[i] });
+    const w = weeks[weeks.length - 1];
+    w.sum += (v || 0); w.n += 1; w.end = dates[i];
+  });
+  if (weeks.length < 2) return null;
+  const max = Math.max(...weeks.map(w => w.sum), 1);
+  const peakIdx = weeks.reduce((bi, w, i, a) => (w.sum > a[bi].sum ? i : bi), 0);
+  const avg = weeks.reduce((s, w) => s + w.sum, 0) / weeks.length;
+  const avgPct = Math.min((avg / max) * 100, 100);
+  const range = (w) => fmtDate(w.start, { day: 'numeric' }, lang) + '–' + fmtDate(w.end, { day: 'numeric', month: 'short' }, lang);
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 40 }}>
-      {/* Чип со значением пика — над самым высоким баром, с воздухом до бара */}
-      <div style={{
-        position: 'absolute', top: 0,
-        left: `${Math.min(Math.max(peakXPct, 12), 88)}%`,
-        transform: 'translateX(-50%)',
-        background: 'rgba(255,255,255,.95)', color: '#15803d',
-        borderRadius: 8, padding: '3px 9px', fontSize: 11, fontWeight: 800,
-        fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap',
-        boxShadow: '0 4px 12px rgba(0,0,0,.12)',
-      }}>
-        {fmtMoneyFull(points[peakIdx])}
-      </div>
-      <div style={{
-        display: 'flex', alignItems: 'flex-end', gap: 2,
-        height: '100%', borderBottom: '1.5px solid rgba(255,255,255,.35)',
-      }}>
-        {points.map((v, i) => {
-          const hPct = Math.max((v / max) * 100, v > 0 ? 4 : 0);
+    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 28 }}>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 10, height: 108, borderBottom: '1.5px solid rgba(255,255,255,.4)' }}>
+        {avg > 0 && (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${avgPct}%`, borderTop: '1.5px dashed rgba(255,255,255,.55)', pointerEvents: 'none' }}>
+            <span style={{ position: 'absolute', right: 0, top: -13, fontSize: 9.5, fontWeight: 800, opacity: .85 }}>{tt('среднее')}</span>
+          </div>
+        )}
+        {weeks.map((w, i) => {
+          const hPct = w.sum > 0 ? Math.max((w.sum / max) * 100, 6) : 0;
+          const isPeak = i === peakIdx && w.sum > 0;
           return (
-            <div key={i} className="chart-col" data-tip={`${labels[i] || ''} · ${fmtMoneyFull(v)} ${tt('сум')}`} style={{
-              flex: 1, minWidth: 0, height: '100%',
-              display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+            <div key={i} className="chart-col" data-tip={`${range(w)} · ${fmtMoneyFull(w.sum)} ${tt('сум')}`} style={{
+              flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', alignItems: 'center', position: 'relative',
             }}>
-              <div style={{
-                width: 'min(65%, 12px)', height: `${hPct}%`,
-                background: i === peakIdx ? '#ffffff' : 'rgba(255,255,255,.85)',
-                borderRadius: 99, minHeight: v > 0 ? 3 : 0,
-              }} />
+              {isPeak && (
+                <div style={{ position: 'absolute', top: -22, background: 'rgba(255,255,255,.96)', color: '#15803d', borderRadius: 7, padding: '2px 8px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 3px 10px rgba(0,0,0,.14)' }}>
+                  {fmtMoney(w.sum)}
+                </div>
+              )}
+              <div style={{ width: '100%', maxWidth: 44, height: `${hPct}%`, background: isPeak ? '#ffffff' : 'rgba(255,255,255,.6)', borderRadius: '9px 9px 0 0', minHeight: w.sum > 0 ? 4 : 0, transition: 'height .3s ease' }} />
             </div>
           );
         })}
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+        {weeks.map((w, i) => (
+          <div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', fontSize: 9.5, fontWeight: 700, opacity: i === peakIdx ? 1 : .7, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {range(w)}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -343,7 +352,7 @@ export default function Dashboard() {
               ) : (
                 data?.prev_totals != null && (
                   <div style={{ fontSize: 11, fontWeight: 700, opacity: .75 }}>
-                    Прошлый период пуст — сравнение появится позже
+                    {tt('Прошлый период пуст — сравнение появится позже')}
                   </div>
                 )
               )}
@@ -352,18 +361,14 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Правая колонка — плавная кривая, фикс. высота */}
+            {/* Правая колонка — недельные столбцы, фикс. высота */}
             {trendValues.length > 1 && trendValues.some(v => v > 0) && (
               <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroAreaChart
-                  points={trendValues}
-                  labels={trend.map(x => new Date(x.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }))}
+                <HeroWeeklyChart
+                  daily={trendValues}
+                  dates={trend.map(x => x.date)}
+                  lang={lang}
                 />
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, fontWeight: 700, opacity: .75, fontFamily: "'JetBrains Mono', monospace" }}>
-                  {[0, Math.floor(trend.length / 2), trend.length - 1].map((idx, k) => (
-                    <span key={k}>{trend[idx] ? new Date(trend[idx].date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : ''}</span>
-                  ))}
-                </div>
               </div>
             )}
           </div>
