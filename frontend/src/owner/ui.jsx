@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTt, fmtDate } from './tt.js';
+import { PageHeaderContext } from './PageHeaderContext.js';
 
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
@@ -237,16 +238,16 @@ export function Progress({ value, max = 100, color = '#5B4FE8' }) {
   );
 }
 
+// Заголовок страницы вынесен в ТОПБАР: PageHeader ничего не рисует в контенте,
+// а «публикует» {title, sub, actions} в топбар шелла через PageHeaderContext.
 export function PageHeader({ title, sub, actions }) {
-  return (
-    <div className="page-header">
-      <div>
-        <div className="page-title">{title}</div>
-        {sub && <div className="page-sub">{sub}</div>}
-      </div>
-      {actions && <div style={{ display: 'flex', gap: 8 }}>{actions}</div>}
-    </div>
-  );
+  const setHeader = React.useContext(PageHeaderContext);
+  React.useEffect(() => {
+    setHeader({ title, sub, actions });
+    return () => setHeader({ title: '', sub: null, actions: null });
+    // actions намеренно не в deps (JSX — новый объект каждый рендер → цикл); ок для статичных actions
+  }, [title, sub, setHeader]);
+  return null;
 }
 
 export function Pills({ value, onChange, options, label = 'Выбор' }) {

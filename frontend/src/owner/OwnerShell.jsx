@@ -3,6 +3,7 @@ import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-
 import { AuthContext } from '../App.jsx';
 import { getSectionsForRole } from './modules.js';
 import { useTt } from './tt.js';
+import { PageHeaderContext } from './PageHeaderContext.js';
 import api from '../api.js';
 import './styles.css';
 
@@ -81,6 +82,9 @@ export default function OwnerShell() {
   // AI chat drawer state
   const [aiOpen, setAiOpen] = useState(false);
 
+  // Заголовок текущей страницы — «публикуется» компонентом PageHeader в топбар.
+  const [pageHead, setPageHead] = useState({ title: '', sub: null, actions: null });
+
   useEffect(() => {
     if (!isOwner) return;
     api.get('/branches').then(r => setBranches(r.data || [])).catch(() => {});
@@ -102,6 +106,7 @@ export default function OwnerShell() {
 
   return (
     <BranchScope.Provider value={{ branchId, setBranchId, branches, role, isOwner, period, periodFrom: range.from, periodTo: range.to, periodLabel, setPeriod, customFrom, customTo, setCustomRange }}>
+     <PageHeaderContext.Provider value={setPageHead}>
       <div className={'owner-shell' + (collapsed ? ' collapsed' : '')}>
         <aside className="o-sidebar">
           <div className="o-brand" onClick={() => navigate('/owner')}>
@@ -176,9 +181,13 @@ export default function OwnerShell() {
 
         <div className="o-main">
           <header className="o-topbar">
-            {/* Заголовок секции и дата убраны из топбара — они дублировали
-                заголовок страницы ниже. Пустой спейсер держит правые контролы справа. */}
-            <div style={{ minWidth: 0, flex: 1 }} />
+            {/* Заголовок текущей страницы — вынесен сюда из контента (PageHeader → топбар) */}
+            <div style={{ minWidth: 0, flex: 1 }}>
+              {pageHead.title && <div className="o-topbar-title">{pageHead.title}</div>}
+              {pageHead.sub && <div className="o-topbar-sub">{pageHead.sub}</div>}
+            </div>
+
+            {pageHead.actions && <div style={{ display: 'flex', gap: 8 }}>{pageHead.actions}</div>}
 
             {/* Глобальный фильтр периода — действует на все окна */}
             <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
@@ -235,6 +244,7 @@ export default function OwnerShell() {
 
         {isOwner && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
       </div>
+     </PageHeaderContext.Provider>
     </BranchScope.Provider>
   );
 }
