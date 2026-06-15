@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../../api.js';
-import AiChartBlock, { parseChartTags } from '../AiChartBlock.jsx';
+import AiChartBlock, { parseChartTags, RichText } from '../AiChartBlock.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
 const SEED_QUESTIONS = [
@@ -468,18 +468,21 @@ function Message({ message, onCopy }) {
       }}>
         {cleanText && (
           <div style={{
-            padding: '12px 16px',
+            padding: isUser ? '12px 16px' : '14px 18px',
             borderRadius: isUser ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
             background: isUser
               ? 'linear-gradient(135deg, #5B4FE8, #3D33C4)'
               : (message.error ? 'rgba(239,68,68,.10)' : 'var(--bg-2)'),
             color: isUser ? '#fff' : (message.error ? '#b91c1c' : 'var(--text)'),
-            fontSize: 13.5, lineHeight: 1.6,
-            whiteSpace: 'pre-wrap',
+            fontFamily: isUser ? 'inherit' : "'Inter', 'Nunito', system-ui, sans-serif",
+            fontSize: isUser ? 13.5 : 14.5,
+            lineHeight: isUser ? 1.6 : 1.72,
+            letterSpacing: isUser ? 0 : '-0.1px',
+            whiteSpace: isUser ? 'pre-wrap' : 'normal',
             wordBreak: 'break-word',
             boxShadow: isUser ? '0 4px 12px rgba(91,79,232,.20)' : 'var(--shadow-sm)',
           }}>
-            {tt(cleanText)}
+            {isUser ? tt(cleanText) : <RichText text={cleanText} />}
           </div>
         )}
         {chartTypes.length > 0 && (

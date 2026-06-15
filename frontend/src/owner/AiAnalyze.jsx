@@ -2,6 +2,7 @@ import React, { useState, useContext } from 'react';
 import api from '../api.js';
 import { BranchScope } from './OwnerShell.jsx';
 import { Card } from './ui.jsx';
+import { RichText } from './AiChartBlock.jsx';
 import { useTt } from './tt.js';
 
 // Кнопка «🤖 AI-анализ» — отправляет topic на backend, который ПЕРЕСЧИТЫВАЕТ
@@ -47,8 +48,8 @@ export default function AiAnalyze({ topic, branchId }) {
               <button className="btn btn-ghost btn-sm" onClick={run} style={{ marginLeft: 10 }}>{tt('Повторить')}</button>
             </div>
           ) : (
-            <div style={{ fontSize: 13.5, lineHeight: 1.65, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
-              {analysis}
+            <div style={{ fontFamily: "'Inter', 'Nunito', system-ui, sans-serif", fontSize: 14.5, lineHeight: 1.72, letterSpacing: '-0.1px', color: 'var(--text)' }}>
+              <RichText text={analysis} />
             </div>
           )}
           <style>{`.ai-spinner{width:16px;height:16px;border:2px solid var(--border,#e6e8f2);border-top-color:var(--primary,#5B4FE8);border-radius:50%;display:inline-block;animation:aispin .7s linear infinite}@keyframes aispin{to{transform:rotate(360deg)}}`}</style>

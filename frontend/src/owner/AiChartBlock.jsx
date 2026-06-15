@@ -189,3 +189,46 @@ export function parseChartTags(text) {
   const cleanText = text.replace(re, (_, t) => { types.push(t); return ''; }).replace(/\n{3,}/g, '\n\n').trim();
   return { cleanText, chartTypes: types };
 }
+
+// Лёгкий рендер markdown в ответах AI: **жирный**, `код`, списки (1. / - / •), абзацы.
+// Без внешних зависимостей — иначе модель выдаёт сырые «**» и текст выглядит грязно.
+function renderInline(text, kp) {
+  const out = [];
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0, m, i = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] != null) out.push(<strong key={kp + 'b' + i++} style={{ fontWeight: 800, color: 'var(--text)' }}>{m[1]}</strong>);
+    else out.push(<code key={kp + 'c' + i++} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '.92em', background: 'rgba(127,127,127,.14)', padding: '1px 5px', borderRadius: 5 }}>{m[2]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+export function RichText({ text }) {
+  const lines = String(text || '').split('\n');
+  return (
+    <>
+      {lines.map((line, i) => {
+        const t = line.trim();
+        if (!t) return <div key={i} style={{ height: 7 }} />;
+        const numbered = t.match(/^(\d+)[.)]\s+(.*)$/);
+        const bullet = t.match(/^[-*•]\s+(.*)$/);
+        if (numbered) return (
+          <div key={i} style={{ display: 'flex', gap: 9, marginBottom: 5 }}>
+            <span style={{ fontWeight: 800, color: 'var(--primary)', flexShrink: 0 }}>{numbered[1]}.</span>
+            <span>{renderInline(numbered[2], i + '-')}</span>
+          </div>
+        );
+        if (bullet) return (
+          <div key={i} style={{ display: 'flex', gap: 9, marginBottom: 5 }}>
+            <span style={{ color: 'var(--primary)', fontWeight: 800, flexShrink: 0 }}>•</span>
+            <span>{renderInline(bullet[1], i + '-')}</span>
+          </div>
+        );
+        return <div key={i} style={{ marginBottom: 5 }}>{renderInline(t, i + '-')}</div>;
+      })}
+    </>
+  );
+}

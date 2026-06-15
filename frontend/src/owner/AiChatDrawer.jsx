@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../api.js';
-import AiChartBlock, { parseChartTags } from './AiChartBlock.jsx';
+import AiChartBlock, { parseChartTags, RichText } from './AiChartBlock.jsx';
 import { useTt } from './tt.js';
 
 const SEED_QUESTIONS = [
@@ -134,16 +134,18 @@ export default function AiChatDrawer({ open, onClose }) {
                 {cleanText && (
                   <div style={{
                     maxWidth: '92%',
-                    padding: '10px 14px',
+                    padding: isUser ? '10px 14px' : '12px 15px',
                     borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
                     background: isUser ? 'linear-gradient(135deg, #5B4FE8, #3D33C4)' : 'var(--bg-2)',
                     color: isUser ? '#fff' : 'var(--text)',
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                    whiteSpace: 'pre-wrap',
+                    fontFamily: isUser ? 'inherit' : "'Inter', 'Nunito', system-ui, sans-serif",
+                    fontSize: isUser ? 13 : 14,
+                    lineHeight: isUser ? 1.5 : 1.7,
+                    letterSpacing: isUser ? 0 : '-0.1px',
+                    whiteSpace: isUser ? 'pre-wrap' : 'normal',
                     wordBreak: 'break-word',
                   }}>
-                    {cleanText}
+                    {isUser ? cleanText : <RichText text={cleanText} />}
                   </div>
                 )}
                 {chartTypes.length > 0 && (
