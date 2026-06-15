@@ -5,29 +5,6 @@ import { BranchScope } from '../OwnerShell.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
-const PERIOD_OPTIONS = [
-  { value: 'today', label: 'Сегодня' },
-  { value: 'week',  label: 'Неделя' },
-  { value: 'month', label: 'Месяц' },
-  { value: 'year',  label: 'Год' },
-  { value: 'all',   label: 'Всё' },
-];
-
-function periodRange(p) {
-  const now = new Date();
-  let from = null;
-  if (p === 'today') {
-    from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  } else if (p === 'week') {
-    from = new Date(now); from.setDate(now.getDate() - 7);
-  } else if (p === 'month') {
-    from = new Date(now); from.setMonth(now.getMonth() - 1);
-  } else if (p === 'year') {
-    from = new Date(now); from.setFullYear(now.getFullYear() - 1);
-  }
-  return { from: from ? from.toISOString() : null, to: null };
-}
-
 // Дельта к прошлому периоду. Если прошлый период пуст (0) — процент роста
 // не имеет смысла («▲100% от нуля» вводит в заблуждение) → возвращаем null,
 // и UI показывает «нет данных за прошлый период».
@@ -178,8 +155,7 @@ const CHART_RANGE_LABEL = {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { tt, lang } = useTt();
-  const { branchId, isOwner, role, branches: allBranches } = useContext(BranchScope);
-  const [period, setPeriod] = useState('month');
+  const { branchId, isOwner, role, branches: allBranches, periodFrom, periodTo, periodLabel } = useContext(BranchScope);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -196,17 +172,16 @@ export default function Dashboard() {
     // перезаписать свежий (защита от out-of-order ответов).
     let ignore = false;
     setLoading(true); setError(null);
-    const { from, to } = periodRange(period);
     const params = {};
-    if (from) params.from = from;
-    if (to) params.to = to;
+    if (periodFrom) params.from = periodFrom;
+    if (periodTo) params.to = periodTo;
     if (branchId) params.branch_id = branchId;
     api.get('/company/dashboard', { params })
       .then(r => { if (!ignore) setData(r.data); })
       .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
-  }, [period, branchId]);
+  }, [periodFrom, periodTo, branchId]);
 
   useEffect(() => {
     let ignore = false;
@@ -268,8 +243,6 @@ export default function Dashboard() {
     ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `${tt('Филиал')} #${branchId}`) : tt('Все филиалы'))
     : (role === 'manager' ? tt('Мой филиал') : '');
 
-  const periodLabel = tt(PERIOD_OPTIONS.find(p => p.value === period)?.label || '');
-
   // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/gen_dir — суммарно по всем)
   const branchSummary = (() => {
     if (!isOwner && branches.length === 1) {
@@ -298,7 +271,6 @@ export default function Dashboard() {
       <PageHeader
         title={tt('Главная панель')}
         sub={`${scopeLabel} · ${todayLabel(lang)}`}
-        actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Главная панель')} />}
       />
 
       {error && (

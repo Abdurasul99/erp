@@ -13,13 +13,39 @@ import AiChatDrawer from './AiChatDrawer.jsx';
 import AiChatPage from './pages/AiChatPage.jsx';
 
 // BranchScope — what slice of data the current view is showing.
+// Также несёт глобальный период (preset или произвольный диапазон дат) — он
+// живёт в шелле и доступен всем окнам через контекст.
 export const BranchScope = createContext({
   branchId: null,
   setBranchId: () => {},
   branches: [],
   role: 'manager',
   isOwner: false,
+  period: 'month',
+  periodFrom: null,
+  periodTo: null,
+  periodLabel: '',
+  setPeriod: () => {},
+  setCustomRange: () => {},
 });
+
+export const PERIOD_PRESETS = [
+  { value: 'today', label: 'Сегодня' },
+  { value: 'week',  label: 'Неделя' },
+  { value: 'month', label: 'Месяц' },
+  { value: 'year',  label: 'Год' },
+  { value: 'all',   label: 'Всё' },
+];
+
+function presetRange(p) {
+  const now = new Date();
+  let from = null;
+  if (p === 'today') from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  else if (p === 'week') { from = new Date(now); from.setDate(now.getDate() - 7); }
+  else if (p === 'month') { from = new Date(now); from.setMonth(now.getMonth() - 1); }
+  else if (p === 'year') { from = new Date(now); from.setFullYear(now.getFullYear() - 1); }
+  return { from: from ? from.toISOString() : null, to: null };
+}
 
 export default function OwnerShell() {
   const { user, logout } = useContext(AuthContext);
@@ -34,6 +60,19 @@ export default function OwnerShell() {
     if (role === 'manager') return user?.branch_id || null;
     return null;
   });
+
+  // Глобальный период: preset ('today'…'all') ИЛИ 'custom' с произвольным диапазоном.
+  const [period, setPeriod] = useState('month');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const setCustomRange = (f, t) => { setCustomFrom(f); setCustomTo(t); setPeriod('custom'); };
+  const range = period === 'custom'
+    ? { from: customFrom ? new Date(customFrom + 'T00:00:00').toISOString() : null,
+        to: customTo ? new Date(customTo + 'T23:59:59.999').toISOString() : null }
+    : presetRange(period);
+  const periodLabel = period === 'custom'
+    ? (customFrom && customTo ? `${customFrom} — ${customTo}` : tt('Период'))
+    : tt(PERIOD_PRESETS.find(p => p.value === period)?.label || '');
 
   // Sidebar collapse — persisted to localStorage so the choice survives reloads.
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('owner_sidebar_collapsed') === '1');
@@ -62,7 +101,7 @@ export default function OwnerShell() {
   })();
 
   return (
-    <BranchScope.Provider value={{ branchId, setBranchId, branches, role, isOwner }}>
+    <BranchScope.Provider value={{ branchId, setBranchId, branches, role, isOwner, period, periodFrom: range.from, periodTo: range.to, periodLabel, setPeriod, customFrom, customTo, setCustomRange }}>
       <div className={'owner-shell' + (collapsed ? ' collapsed' : '')}>
         <aside className="o-sidebar">
           <div className="o-brand" onClick={() => navigate('/owner')}>
@@ -141,6 +180,10 @@ export default function OwnerShell() {
                 заголовок страницы ниже. Пустой спейсер держит правые контролы справа. */}
             <div style={{ minWidth: 0, flex: 1 }} />
 
+            {/* Глобальный фильтр периода — действует на все окна */}
+            <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
+              setCustomRange={setCustomRange} periodLabel={periodLabel} tt={tt} />
+
             {/* Переключатель языка RU / UZ */}
             <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
               {['ru', 'uz'].map(l => (
@@ -193,6 +236,61 @@ export default function OwnerShell() {
         {isOwner && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
       </div>
     </BranchScope.Provider>
+  );
+}
+
+// Глобальный фильтр периода в топбаре: быстрые пресеты + произвольный диапазон (календарь).
+function PeriodFilter({ period, setPeriod, customFrom, customTo, setCustomRange, periodLabel, tt }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState(customFrom || '');
+  const [t, setT] = useState(customTo || '');
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  useEffect(() => { setF(customFrom || ''); setT(customTo || ''); }, [customFrom, customTo]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setOpen(o => !o)} className="o-branch-pick"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+        📅 {periodLabel} <span style={{ opacity: .6 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 50,
+          background: 'var(--surface, #fff)', border: '1px solid var(--border)', borderRadius: 12,
+          boxShadow: '0 10px 30px rgba(0,0,0,.14)', padding: 12, minWidth: 240,
+        }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            {PERIOD_PRESETS.map(p => (
+              <button key={p.value} type="button" onClick={() => { setPeriod(p.value); setOpen(false); }}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '6px 11px', borderRadius: 8, fontFamily: 'inherit',
+                  fontWeight: 700, fontSize: 12,
+                  background: period === p.value ? 'var(--primary)' : 'var(--bg-2)',
+                  color: period === p.value ? '#fff' : 'var(--text2)',
+                }}>{tt(p.label)}</button>
+            ))}
+          </div>
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginBottom: 6 }}>{tt('Произвольный период')}</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <input type="date" className="input" value={f} max={t || undefined} onChange={e => setF(e.target.value)} style={{ flex: 1, fontSize: 12, padding: '6px 8px' }} />
+              <span style={{ color: 'var(--text3)' }}>—</span>
+              <input type="date" className="input" value={t} min={f || undefined} onChange={e => setT(e.target.value)} style={{ flex: 1, fontSize: 12, padding: '6px 8px' }} />
+            </div>
+            <button type="button" className="btn btn-primary btn-sm" style={{ width: '100%' }} disabled={!f || !t}
+              onClick={() => { if (f && t) { setCustomRange(f, t); setOpen(false); } }}>
+              {tt('Применить')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -979,6 +979,7 @@ export const TOOLS_UZ = {
   "Продажи смены появятся здесь в реальном времени.": "Smena sotuvlari bu yerda real vaqtda paydo bo'ladi.",
   "Продажи, маржа и эффективность сотрудников": "Sotuvlar, marja va xodimlar samaradorligi",
   "Производители · доля в продажах": "Ishlab chiqaruvchilar · sotuvdagi ulush",
+  "Произвольный период": "Ixtiyoriy davr",
   "Промо: «Косметика» −25%": "Promo: «Kosmetika» −25%",
   "Промоутеры": "Promouterlar",
   "Просмотры": "Ko'rishlar",
