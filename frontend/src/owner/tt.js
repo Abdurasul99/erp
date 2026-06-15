@@ -172,3 +172,26 @@ export function useTt() {
 
 // Локаль для дат по языку
 export const dateLocale = (lang) => (lang === 'uz' ? 'uz-UZ' : 'ru-RU');
+
+// Узбекские названия (латиница) — не полагаемся на Intl 'uz-UZ': во многих
+// браузерах/ICU-сборках узбекская локаль дат отсутствует и даёт «M06 15, Mon».
+const UZ_MONTHS       = ['yanvar', 'fevral', 'mart', 'aprel', 'may', 'iyun', 'iyul', 'avgust', 'sentabr', 'oktabr', 'noyabr', 'dekabr'];
+const UZ_MONTHS_SHORT = ['yan', 'fev', 'mar', 'apr', 'may', 'iyun', 'iyul', 'avg', 'sen', 'okt', 'noy', 'dek'];
+const UZ_WEEKDAYS     = ['yakshanba', 'dushanba', 'seshanba', 'chorshanba', 'payshanba', 'juma', 'shanba'];
+
+// Локаль-безопасный формат даты. Для uz собираем строку вручную, для ru — через Intl.
+// opts поддерживает: day:'numeric', month:'long'|'short', year:'numeric', weekday:'long'.
+export function fmtDate(value, opts = {}, lang) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d)) return '';
+  if (lang !== 'uz') return d.toLocaleDateString('ru-RU', opts);
+  const head = [];
+  if (opts.day) head.push(String(d.getDate()));
+  if (opts.month === 'long') head.push(UZ_MONTHS[d.getMonth()]);
+  else if (opts.month === 'short') head.push(UZ_MONTHS_SHORT[d.getMonth()]);
+  else if (opts.month) head.push(String(d.getMonth() + 1).padStart(2, '0'));
+  if (opts.year) head.push(String(d.getFullYear()));
+  let s = head.join(' ');
+  if (opts.weekday) s += (s ? ', ' : '') + UZ_WEEKDAYS[d.getDay()];
+  return s;
+}

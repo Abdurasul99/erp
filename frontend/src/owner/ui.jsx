@@ -1,5 +1,5 @@
 import React from 'react';
-import { useTt } from './tt.js';
+import { useTt, fmtDate } from './tt.js';
 
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
@@ -390,12 +390,9 @@ export const fmtAxis = (v) => {
 export const fmtNum = (v) => (parseFloat(v) || 0).toLocaleString('ru-RU');
 
 // Сегодня в виде «9 июня 2026, вторник» (или по-узбекски при lang='uz')
-export const todayLabel = (lang) => {
-  const locale = lang === 'uz' ? 'uz-UZ' : 'ru-RU';
-  return new Date().toLocaleDateString(locale, {
-    day: 'numeric', month: 'long', year: 'numeric', weekday: 'long',
-  });
-};
+export const todayLabel = (lang) => fmtDate(new Date(), {
+  day: 'numeric', month: 'long', year: 'numeric', weekday: 'long',
+}, lang);
 
 export function shade(hex, percent) {
   const num = parseInt(hex.replace('#', ''), 16);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../../api.js';
 import AiChartBlock, { parseChartTags } from '../AiChartBlock.jsx';
-import { useTt, dateLocale } from '../tt.js';
+import { useTt, fmtDate } from '../tt.js';
 
 const SEED_QUESTIONS = [
   { icon: '📈', text: 'Растёт ли моя выручка по сравнению с прошлым периодом?' },
@@ -234,7 +234,7 @@ export default function AiChatPage() {
                   {tt(s.title)}
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
-                  {s.messages.length} {tt('сообщений')} · {new Date(s.updated_at).toLocaleDateString(dateLocale(lang), { day: 'numeric', month: 'short' })}
+                  {s.messages.length} {tt('сообщений')} · {fmtDate(s.updated_at, { day: 'numeric', month: 'short' }, lang)}
                 </div>
               </div>
               <button

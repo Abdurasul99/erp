@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect, useRef, createContext } from 'r
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
 import { getSectionsForRole } from './modules.js';
-import { useTt, dateLocale } from './tt.js';
+import { useTt, fmtDate } from './tt.js';
 import api from '../api.js';
 import './styles.css';
 
@@ -143,7 +143,7 @@ export default function OwnerShell() {
                 {tt((sections.find(s => s.id === activeSection) || sections[0])?.title)}
               </div>
               <div className="o-topbar-sub">
-                {new Date().toLocaleDateString(dateLocale(lang), { weekday: 'long', day: 'numeric', month: 'long' })}
+                {fmtDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' }, lang)}
               </div>
             </div>
 

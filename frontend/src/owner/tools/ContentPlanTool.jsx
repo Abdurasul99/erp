@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../api.js';
 import { Card, Badge, PageHeader, Tile, Pills, EmptyState, Skeleton, fmtNum } from '../ui.jsx';
-import { useTt, dateLocale } from '../tt.js';
+import { useTt, fmtDate } from '../tt.js';
 
 const PLATFORM_META = {
   instagram: { icon: '📷', label: 'Instagram', color: '#E1306C' },
@@ -277,7 +277,7 @@ export default function ContentPlanTool() {
                   return (
                     <tr key={c.id}>
                       <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                        {c.scheduled_for ? new Date(c.scheduled_for).toLocaleDateString(dateLocale(lang), { day: 'numeric', month: 'short' }) : '—'}
+                        {c.scheduled_for ? fmtDate(c.scheduled_for, { day: 'numeric', month: 'short' }, lang) : '—'}
                       </td>
                       <td>{fn ? <Badge tone={fn.tone}>{fn.short}</Badge> : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
                       <td><span title={tt(meta.label)} style={{ fontSize: 16 }}>{meta.icon}</span> <span style={{ fontSize: 12, color: 'var(--text2)' }}>{FORMAT_META[c.format] ? tt(FORMAT_META[c.format]) : c.format}</span></td>

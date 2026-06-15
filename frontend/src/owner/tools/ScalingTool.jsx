@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, fmtNum, fmtMoneyFull } from '../ui.jsx';
-import { useTt, dateLocale } from '../tt.js';
+import { useTt, fmtDate } from '../tt.js';
 
 const CURR_FLAG = { UZS: '🇺🇿', USD: '🇺🇸', EUR: '🇪🇺', RUB: '🇷🇺', KZT: '🇰🇿', CNY: '🇨🇳', TRY: '🇹🇷', KRW: '🇰🇷', GBP: '🇬🇧', AED: '🇦🇪' };
 
@@ -49,7 +49,7 @@ export default function ScalingTool() {
                     <div style={{ flex: 1 }}>
                       <div className="list-item-title">{b.name}</div>
                       <div className="list-item-sub">
-                        {tt('в системе с')} {new Date(b.created_at).toLocaleDateString(dateLocale(lang), { month: 'long', year: 'numeric' })}
+                        {tt('в системе с')} {fmtDate(b.created_at, { month: 'long', year: 'numeric' }, lang)}
                       </div>
                     </div>
                     <Badge tone="green">{tt('Активен')}</Badge>
