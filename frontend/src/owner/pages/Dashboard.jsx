@@ -67,61 +67,36 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
   );
 }
 
-// Хиро-чарт: СВЕЧНОЙ (как крипто-биржа) на тёмной панели. Свеча = день:
-// зелёная если выручка выросла к прошлому дню, красная если упала. Ось цен справа, тултип.
-function HeroCandleChart({ daily, dates, lang }) {
+// Хиро-чарт: простые цветные столбики выручки по дням. Пик темнее, тултип при наведении.
+function HeroBars({ daily, dates, lang }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
   if (!daily || daily.length < 2 || !dates) return null;
   const n = daily.length;
-  const maxAll = Math.max(...daily, 1);
-  const candles = daily.map((c, i) => {
-    const o = i === 0 ? c : daily[i - 1];
-    return { o, c, up: c >= o, top: Math.max(o, c), bot: Math.min(o, c) };
-  });
-  const pct = (v) => (1 - (v || 0) / maxAll) * 100; // 0% = верх (max), 100% = низ (0)
-  const axis = [maxAll, maxAll * 0.5, 0];
-  const PLOT_H = 134;
+  const max = Math.max(...daily, 1);
+  const peak = Math.max(...daily);
+  const left = hover != null ? ((hover + 0.5) / n) * 100 : 0;
 
   return (
-    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 4 }}>
-      <div style={{ background: 'linear-gradient(180deg,#0f172a 0%,#13203a 100%)', borderRadius: 12, padding: '8px 46px 6px 10px', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.06)' }}>
-        <div style={{ position: 'relative', height: PLOT_H }} onMouseLeave={() => setHover(null)}>
-          {/* Сетка + ось цен справа */}
-          {axis.map((v, k) => (
-            <React.Fragment key={k}>
-              <div style={{ position: 'absolute', left: 0, right: 0, top: `${pct(v)}%`, borderTop: '1px dashed rgba(255,255,255,.08)', pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', right: -42, top: `${pct(v)}%`, transform: 'translateY(-50%)', fontSize: 9, color: 'rgba(255,255,255,.45)', fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', pointerEvents: 'none' }}>{fmtMoney(v)}</div>
-            </React.Fragment>
-          ))}
-          {/* Свечи */}
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'stretch', gap: n > 40 ? 1 : 2 }}>
-            {candles.map((cd, i) => {
-              const topPct = pct(cd.top);
-              const hPct = Math.max(pct(cd.bot) - pct(cd.top), 1.4);
-              const col = cd.up ? '#22C55E' : '#EF4444';
-              return (
-                <div key={i} onMouseEnter={() => setHover(i)} style={{ flex: 1, minWidth: 0, position: 'relative', cursor: 'crosshair' }}>
-                  <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', width: '62%', maxWidth: 14, minWidth: 2, top: `${topPct}%`, height: `${hPct}%`, background: col, borderRadius: 1.5, boxShadow: `0 0 6px ${col}66`, opacity: hover == null || hover === i ? 1 : .45 }} />
-                </div>
-              );
-            })}
-          </div>
-          {/* Тултип */}
-          {hover != null && (() => {
-            const cd = candles[hover];
-            const left = ((hover + 0.5) / n) * 100;
-            const delta = cd.o > 0 ? Math.round(((cd.c - cd.o) / cd.o) * 100) : null;
-            return (
-              <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'rgba(15,23,42,.97)', color: '#fff', border: '1px solid rgba(255,255,255,.14)', borderRadius: 8, padding: '5px 9px', fontSize: 10.5, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 6px 16px rgba(0,0,0,.4)', pointerEvents: 'none', zIndex: 2 }}>
-                <div style={{ color: cd.up ? '#4ade80' : '#f87171' }}>{fmtMoneyFull(cd.c)} {tt('сум')} {delta != null && <span>· {delta >= 0 ? '+' : ''}{delta}%</span>}</div>
-                <div style={{ fontSize: 9, color: 'rgba(255,255,255,.55)' }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
-              </div>
-            );
-          })()}
-        </div>
+    <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: n > 40 ? 1 : 2, height: 124, borderBottom: '1.5px solid var(--border)' }} onMouseLeave={() => setHover(null)}>
+        {daily.map((v, i) => {
+          const hPct = v > 0 ? Math.max((v / max) * 100, 2) : 0;
+          const isPeak = v === peak && v > 0;
+          return (
+            <div key={i} onMouseEnter={() => setHover(i)} style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', cursor: 'crosshair' }}>
+              <div style={{ width: '72%', maxWidth: 16, minWidth: 2, height: `${hPct}%`, background: isPeak ? 'linear-gradient(180deg,#15803d,#22C55E)' : 'linear-gradient(180deg,#34d399,#10b981)', borderRadius: '4px 4px 0 0', minHeight: v > 0 ? 3 : 0, opacity: hover == null || hover === i ? 1 : .45, transition: 'opacity .15s' }} />
+            </div>
+          );
+        })}
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingRight: 44, fontSize: 9.5, fontWeight: 700, opacity: .8, fontFamily: "'JetBrains Mono', monospace" }}>
+      {hover != null && (
+        <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.2)', pointerEvents: 'none', zIndex: 2 }}>
+          {fmtMoneyFull(daily[hover])} {tt('сум')}
+          <div style={{ fontSize: 9, opacity: .7, fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
         {[0, Math.floor((n - 1) / 2), n - 1].map((idx, k) => (
           <span key={k}>{dates[idx] ? fmtDate(dates[idx], { day: 'numeric', month: 'short' }, lang) : ''}</span>
         ))}
@@ -327,11 +302,12 @@ export default function Dashboard() {
               под соседние колонки → нет пустоты). Слева цифры, справа плавная
               area-кривая с точкой пика. Плитки — отдельным рядом ниже. */}
           <div style={{
-            background: 'linear-gradient(135deg, #16a34a 0%, #22C55E 60%, #4ade80 100%)',
+            background: '#fff',
             borderRadius: 18,
             padding: '22px 26px',
-            color: '#fff',
-            boxShadow: '0 8px 28px rgba(34,197,94,.32)',
+            color: 'var(--text)',
+            boxShadow: 'var(--shadow)',
+            border: '1px solid var(--border)',
             display: 'flex', gap: 28, flexWrap: 'wrap',
             marginBottom: 14,
           }}>
@@ -343,29 +319,29 @@ export default function Dashboard() {
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
                 💰 {tt('ВЫРУЧКА')} · {periodLabel}
               </div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5 }}>
-                {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, opacity: .7 }}>{tt('сум')}</span>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5, color: '#16a34a' }}>
+                {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, color: 'var(--text3)' }}>{tt('сум')}</span>
               </div>
               {revDelta != null ? (
-                <div style={{ fontSize: 11.5, fontWeight: 800 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 800, color: revDelta >= 0 ? 'var(--green, #16a34a)' : 'var(--red, #EF4444)' }}>
                   {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% {tt('к прошлому периоду')}
                 </div>
               ) : (
                 data?.prev_totals != null && (
-                  <div style={{ fontSize: 11, fontWeight: 700, opacity: .75 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>
                     {tt('Прошлый период пуст — сравнение появится позже')}
                   </div>
                 )
               )}
               <div style={{ marginTop: 8 }}>
-                <MethodBreakdown data={byMethod.revenue} lightOnDark usdOrig={byMethod.revenue_usd_orig} />
+                <MethodBreakdown data={byMethod.revenue} usdOrig={byMethod.revenue_usd_orig} />
               </div>
             </div>
 
             {/* Правая колонка — недельные столбцы, фикс. высота */}
             {trendValues.length > 1 && trendValues.some(v => v > 0) && (
               <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroCandleChart
+                <HeroBars
                   daily={trendValues}
                   dates={trend.map(x => x.date)}
                   lang={lang}
