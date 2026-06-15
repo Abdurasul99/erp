@@ -183,10 +183,13 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  // График продаж живёт на своей гранулярности (независимо от периода плиток)
-  const [chartGran, setChartGran] = useState('day');
-  const [chart, setChart] = useState(null);
-  const [chartLoading, setChartLoading] = useState(true);
+  // Два графика — каждый со СВОЕЙ гранулярностью (независимо друг от друга и от плиток)
+  const [salesGran, setSalesGran] = useState('day');
+  const [salesChart, setSalesChart] = useState(null);
+  const [salesLoading, setSalesLoading] = useState(true);
+  const [compareGran, setCompareGran] = useState('day');
+  const [compareChart, setCompareChart] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(true);
 
   useEffect(() => {
     // ignore-флаг: при быстром переключении периода старый ответ не должен
@@ -207,15 +210,27 @@ export default function Dashboard() {
 
   useEffect(() => {
     let ignore = false;
-    setChartLoading(true);
-    const params = { granularity: chartGran };
+    setSalesLoading(true);
+    const params = { granularity: salesGran };
     if (branchId) params.branch_id = branchId;
     api.get('/company/sales-chart', { params })
-      .then(r => { if (!ignore) setChart(r.data); })
-      .catch(() => { if (!ignore) setChart(null); })
-      .finally(() => { if (!ignore) setChartLoading(false); });
+      .then(r => { if (!ignore) setSalesChart(r.data); })
+      .catch(() => { if (!ignore) setSalesChart(null); })
+      .finally(() => { if (!ignore) setSalesLoading(false); });
     return () => { ignore = true; };
-  }, [chartGran, branchId]);
+  }, [salesGran, branchId]);
+
+  useEffect(() => {
+    let ignore = false;
+    setCompareLoading(true);
+    const params = { granularity: compareGran };
+    if (branchId) params.branch_id = branchId;
+    api.get('/company/sales-chart', { params })
+      .then(r => { if (!ignore) setCompareChart(r.data); })
+      .catch(() => { if (!ignore) setCompareChart(null); })
+      .finally(() => { if (!ignore) setCompareLoading(false); });
+    return () => { ignore = true; };
+  }, [compareGran, branchId]);
 
   const t = data?.totals || {};
   const prev = data?.prev_totals || {};
@@ -232,13 +247,17 @@ export default function Dashboard() {
 
   const trendValues = useMemo(() => trend.map(x => x.revenue), [trend]);
 
-  // Данные бар-чарта с бэкенда: бакеты уже агрегированы по chartGran (день/неделя/месяц/год)
-  const chartValues = useMemo(() => (chart?.buckets || []).map(b => b.revenue), [chart]);
-  const chartPrevValues = useMemo(() => (chart?.prev_buckets || []).map(b => b.revenue), [chart]);
-  const chartLabels = useMemo(() => (chart?.buckets || []).map(b => b.label), [chart]);
-  const chartTotal = chart?.total || 0;
-  const chartPrevTotal = chart?.prev_total || 0;
-  const chartDelta = deltaPct(chartTotal, chartPrevTotal);
+  // Данные бар-чартов с бэкенда: бакеты агрегированы по своей гранулярности у каждого графика
+  const salesValues = useMemo(() => (salesChart?.buckets || []).map(b => b.revenue), [salesChart]);
+  const salesLabels = useMemo(() => (salesChart?.buckets || []).map(b => b.label), [salesChart]);
+  const salesTotal = salesChart?.total || 0;
+
+  const compareValues = useMemo(() => (compareChart?.buckets || []).map(b => b.revenue), [compareChart]);
+  const comparePrevValues = useMemo(() => (compareChart?.prev_buckets || []).map(b => b.revenue), [compareChart]);
+  const compareLabels = useMemo(() => (compareChart?.buckets || []).map(b => b.label), [compareChart]);
+  const compareTotal = compareChart?.total || 0;
+  const comparePrevTotal = compareChart?.prev_total || 0;
+  const compareDelta = deltaPct(compareTotal, comparePrevTotal);
 
   const revDelta = deltaPct(t.sales_revenue, prev.sales_revenue);
   const profitDelta = deltaPct(t.gross_profit, prev.gross_profit);
@@ -442,29 +461,30 @@ export default function Dashboard() {
           {/* Динамика продаж — единый переключатель масштаба + две карты-близнеца.
               Один бар = день / неделя / месяц / год (как в банковских приложениях). */}
           {(() => {
-            const hasPrev = chartPrevValues.some(v => v > 0);
-            const peak = chartValues.length ? Math.max(...chartValues) : 0;
-            const peakIdx = chartValues.indexOf(peak);
-            const peakLabel = peakIdx >= 0 ? (chartLabels[peakIdx] || '') : '';
+            const hasPrev = comparePrevValues.some(v => v > 0);
+            const peak = salesValues.length ? Math.max(...salesValues) : 0;
+            const peakIdx = salesValues.indexOf(peak);
+            const peakLabel = peakIdx >= 0 ? (salesLabels[peakIdx] || '') : '';
+            const granOpts = CHART_GRAN_OPTIONS.map(o => ({ ...o, label: tt(o.label) }));
             return (
               <>
-                {/* Тулбар: заголовок секции слева, переключатель масштаба справа */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 {tt('Динамика продаж')}</div>
-                  <Pills value={chartGran} onChange={setChartGran} options={CHART_GRAN_OPTIONS.map(o => ({ ...o, label: tt(o.label) }))} label={tt('Динамика продаж')} />
-                </div>
+                {/* Заголовок секции — у каждой карты свой переключатель масштаба */}
+                <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)', marginBottom: 12 }}>📊 {tt('Динамика продаж')}</div>
 
                 <div className="grid-2 dashboard-charts-row" style={{ marginBottom: 16, alignItems: 'stretch' }}>
-                  {/* Карта 1 — Продажи */}
+                  {/* Карта 1 — Продажи (свой переключатель) */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-                    <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
-                      label={tt('Продажи') + ' · ' + tt(CHART_RANGE_LABEL[chartGran])}>
-                      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
-                        {fmtMoneyFull(chartTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt('сум')}</span>
-                      </div>
-                    </ChartHead>
-                    {chartLoading && !chart ? <Skeleton height={150} /> : (
-                      <BarChart data={chartValues} labels={chartLabels} color="#2563EB" height={150} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                      <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
+                        label={tt('Продажи') + ' · ' + tt(CHART_RANGE_LABEL[salesGran])}>
+                        <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
+                          {fmtMoneyFull(salesTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt('сум')}</span>
+                        </div>
+                      </ChartHead>
+                      <Pills value={salesGran} onChange={setSalesGran} options={granOpts} label={tt('Продажи')} />
+                    </div>
+                    {salesLoading && !salesChart ? <Skeleton height={150} /> : (
+                      <BarChart data={salesValues} labels={salesLabels} color="#2563EB" height={150} />
                     )}
                     {/* Футер для выравнивания высоты с правой картой */}
                     <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text2)', minHeight: 18 }}>
@@ -472,31 +492,34 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Карта 2 — Сравнение с предыдущим аналогичным диапазоном */}
+                  {/* Карта 2 — Сравнение (свой переключатель) */}
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-                    <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
-                      label={tt('Сравнение') + ' · ' + tt(CHART_RANGE_LABEL[chartGran])}>
-                      <div className="mono" style={{
-                        fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
-                        color: chartDelta == null ? 'var(--text3)' : chartDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
-                      }}>
-                        {chartDelta != null
-                          ? <>{chartDelta >= 0 ? '▲' : '▼'} {Math.abs(chartDelta)}%</>
-                          : <span style={{ fontSize: 13, fontWeight: 700 }}>{tt('нет базы для сравнения')}</span>}
-                      </div>
-                    </ChartHead>
-                    {chartLoading && !chart ? <Skeleton height={150} /> : (
-                      <BarChart data={chartValues} prevData={hasPrev ? chartPrevValues : undefined} labels={chartLabels}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                      <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
+                        label={tt('Сравнение') + ' · ' + tt(CHART_RANGE_LABEL[compareGran])}>
+                        <div className="mono" style={{
+                          fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
+                          color: compareDelta == null ? 'var(--text3)' : compareDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
+                        }}>
+                          {compareDelta != null
+                            ? <>{compareDelta >= 0 ? '▲' : '▼'} {Math.abs(compareDelta)}%</>
+                            : <span style={{ fontSize: 13, fontWeight: 700 }}>{tt('нет базы для сравнения')}</span>}
+                        </div>
+                      </ChartHead>
+                      <Pills value={compareGran} onChange={setCompareGran} options={granOpts} label={tt('Сравнение')} />
+                    </div>
+                    {compareLoading && !compareChart ? <Skeleton height={150} /> : (
+                      <BarChart data={compareValues} prevData={hasPrev ? comparePrevValues : undefined} labels={compareLabels}
                         color="#22C55E" prevColor="#C3C8D4" height={150} />
                     )}
                     <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12, flexWrap: 'wrap', minHeight: 18 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 3 }} />
-                        <span style={{ color: 'var(--text2)' }}>{tt('Текущий')}: <strong className="mono">{fmtMoneyFull(chartTotal)} {tt('сум')}</strong></span>
+                        <span style={{ color: 'var(--text2)' }}>{tt('Текущий')}: <strong className="mono">{fmtMoneyFull(compareTotal)} {tt('сум')}</strong></span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ width: 10, height: 10, background: '#C3C8D4', borderRadius: 3 }} />
-                        <span style={{ color: 'var(--text2)' }}>{tt('Предыдущие')}: <strong className="mono">{fmtMoneyFull(chartPrevTotal)} {tt('сум')}</strong></span>
+                        <span style={{ color: 'var(--text2)' }}>{tt('Предыдущие')}: <strong className="mono">{fmtMoneyFull(comparePrevTotal)} {tt('сум')}</strong></span>
                       </div>
                     </div>
                   </div>
