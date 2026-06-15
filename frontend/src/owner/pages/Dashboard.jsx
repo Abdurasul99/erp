@@ -4,6 +4,7 @@ import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
 import { RichText } from '../AiChartBlock.jsx';
+import { Modal, toast } from '../Modal.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
 // Дельта к прошлому периоду. Если прошлый период пуст (0) — процент роста
@@ -153,7 +154,7 @@ function BusinessStateChart({ data, lang, isOwner }) {
 
 // «Спросить у AI» про состояние бизнеса — ТОЛЬКО владелец (у менеджера AI нет).
 // Шлёт реальный тренд выручки/прибыли + вопрос, показывает ответ.
-function StateAsk({ trend, lang }) {
+function StateAsk({ trend, bizState, lang }) {
   const { tt } = useTt();
   const [q, setQ] = useState('');
   const [ans, setAns] = useState('');
@@ -165,7 +166,7 @@ function StateAsk({ trend, lang }) {
     if (!text) return;
     setBusy(true); setErr(''); setAns('');
     try {
-      const r = await api.post('/ai/explain-state', { question: text, trend, lang });
+      const r = await api.post('/ai/explain-state', { question: text, trend, biz_state: bizState, lang });
       setAns(r.data?.answer || tt('Пустой ответ от AI.'));
     } catch (e) { setErr(e.response?.data?.error || e.message); }
     setBusy(false);
@@ -191,6 +192,134 @@ function StateAsk({ trend, lang }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Мини-баланс: горизонтальная полоса Активы = 100%, зелёный = Капитал, красный = Обязательства.
+// Учредитель видит суммы + разбивку; менеджер — только проценты (сервер прислал ratio без сумм).
+function BizStateBar({ bs, isOwner, onEdit }) {
+  const { tt } = useTt();
+  if (!bs) return null;
+  const GREEN = '#16a34a', RED = '#EF4444';
+  // Нет данных для баланса — не показываем вводящий в заблуждение «Капитал 100%».
+  const hasData = isOwner ? ((bs.assets || 0) > 0 || (bs.liabilities || 0) > 0)
+    : ((bs.equity_ratio || 0) !== 0 || (bs.liability_ratio || 0) !== 0);
+  if (!hasData) {
+    return (
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, color: 'var(--text3)', fontSize: 13 }}>
+        <span>📊 {tt('Нет данных для баланса')}</span>
+        {isOwner && onEdit && <button className="btn btn-ghost btn-sm" onClick={onEdit}>✏️ {tt('Заполнить')}</button>}
+      </div>
+    );
+  }
+  const assets = isOwner ? (bs.assets || 0) : null;
+  const eqR = isOwner ? (assets > 0 ? bs.equity / assets : (bs.equity >= 0 ? 1 : 0)) : (bs.equity_ratio || 0);
+  const liR = isOwner ? (assets > 0 ? bs.liabilities / assets : (bs.equity >= 0 ? 0 : 1)) : (bs.liability_ratio || 0);
+  let gPct = Math.max(0, eqR * 100), rPct = Math.max(0, liR * 100);
+  if (gPct + rPct > 100) { const s = gPct + rPct; gPct = gPct / s * 100; rPct = rPct / s * 100; }
+  const negEquity = (isOwner ? bs.equity : eqR) < 0;
+  const b = bs.breakdown || {};
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {isOwner && (
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 10, alignItems: 'flex-end', fontFamily: "'JetBrains Mono', monospace" }}>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего активов')}</div><div style={{ fontSize: 18, fontWeight: 900 }}>{fmtMoneyFull(bs.assets)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего обязательств')}</div><div style={{ fontSize: 18, fontWeight: 900, color: RED }}>{fmtMoneyFull(bs.liabilities)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Собственный капитал')}</div><div style={{ fontSize: 18, fontWeight: 900, color: negEquity ? RED : GREEN }}>{fmtMoneyFull(bs.equity)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+          {onEdit && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={onEdit}>✏️ {tt('Заполнить')}</button>}
+        </div>
+      )}
+      <div style={{ display: 'flex', height: 26, borderRadius: 8, overflow: 'hidden', background: 'var(--bg-2)' }}>
+        {gPct > 0 && <div title={tt('Собственный капитал')} style={{ width: `${gPct}%`, background: GREEN, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden' }}>{gPct > 16 ? `${tt('Капитал')} ${Math.round(gPct)}%` : ''}</div>}
+        {rPct > 0 && <div title={tt('Обязательства')} style={{ width: `${rPct}%`, background: RED, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden' }}>{rPct > 16 ? `${tt('Обязательства')} ${Math.round(rPct)}%` : ''}</div>}
+      </div>
+      {!isOwner && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11.5, fontWeight: 800 }}>
+          <span style={{ color: GREEN }}>{tt('Капитал')} {Math.round(gPct)}%</span>
+          <span style={{ color: RED }}>{tt('Обязательства')} {Math.round(rPct)}%</span>
+        </div>
+      )}
+      {isOwner && bs.breakdown && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 16, flexWrap: 'wrap', fontFamily: "'JetBrains Mono', monospace" }}>
+          <span><b style={{ color: GREEN }}>{tt('Активы')}:</b> 💵{fmtMoney(b.cash)} · 📦{fmtMoney(b.inventory)} · 📥{fmtMoney(b.receivables)} · 🏭{fmtMoney(b.fixed_assets)}</span>
+          <span><b style={{ color: RED }}>{tt('Обязательства')}:</b> 📤{fmtMoney(b.payables)} · 🏦{fmtMoney(b.loans)} · 📋{fmtMoney(b.tax_payable)} · 💼{fmtMoney(b.wages_payable)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const FIN_TABS = [
+  { key: 'fixed-assets', label: '🏭 Основные средства', amount: 'acquisition_cost', title: 'name', fields: [
+    { name: 'category', label: 'Категория', type: 'select', options: [['equipment', 'Оборудование'], ['vehicle', 'Транспорт'], ['real_estate', 'Недвижимость']] },
+    { name: 'name', label: 'Название', type: 'text' },
+    { name: 'acquisition_cost', label: 'Стоимость (сум)', type: 'number' },
+  ] },
+  { key: 'loans', label: '🏦 Кредиты', amount: 'remaining_balance', title: 'lender', fields: [
+    { name: 'lender', label: 'Кредитор', type: 'text' },
+    { name: 'remaining_balance', label: 'Остаток долга (сум)', type: 'number' },
+  ] },
+  { key: 'tax-obligations', label: '📋 Налоги', amount: 'amount_accrued', title: 'kind', fields: [
+    { name: 'kind', label: 'Вид налога', type: 'text' },
+    { name: 'amount_accrued', label: 'Начислено (сум)', type: 'number' },
+    { name: 'amount_paid', label: 'Оплачено (сум)', type: 'number' },
+  ] },
+  { key: 'payroll-liab', label: '💼 Зарплаты', amount: 'gross_accrued', title: 'employee_name', fields: [
+    { name: 'employee_name', label: 'Сотрудник', type: 'text' },
+    { name: 'gross_accrued', label: 'Начислено (сум)', type: 'number' },
+    { name: 'amount_paid', label: 'Выплачено (сум)', type: 'number' },
+  ] },
+];
+
+// Ручной ввод активов/обязательств (основные средства, кредиты, налоги, зарплаты).
+function FinManualEditor({ open, onClose, onChanged }) {
+  const { tt } = useTt();
+  const [tab, setTab] = useState(FIN_TABS[0].key);
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({});
+  const [busy, setBusy] = useState(false);
+  const cfg = FIN_TABS.find(t => t.key === tab);
+  const load = async (key) => { try { const r = await api.get('/finance/' + key); setRows(r.data?.rows || []); } catch { setRows([]); } };
+  useEffect(() => { if (open) { setRows([]); setForm({}); load(tab); } }, [tab, open]);
+  const add = async () => {
+    setBusy(true);
+    try { await api.post('/finance/' + tab, form); setForm({}); await load(tab); onChanged && onChanged(); toast(tt('Добавлено')); }
+    catch (e) { toast(e.response?.data?.error || e.message, 'error'); }
+    setBusy(false);
+  };
+  const del = async (id) => { try { await api.delete('/finance/' + tab + '/' + id); await load(tab); onChanged && onChanged(); } catch (e) { toast(e.response?.data?.error || e.message, 'error'); } };
+  return (
+    <Modal open={open} onClose={onClose} icon="🧮" title={tt('Активы и обязательства')} width={620}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+        {FIN_TABS.map(t => (
+          <button key={t.key} className="btn btn-sm" onClick={() => setTab(t.key)}
+            style={{ background: tab === t.key ? 'var(--primary)' : 'var(--bg-2)', color: tab === t.key ? '#fff' : 'var(--text2)', border: 'none', fontWeight: 700 }}>{tt(t.label)}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+        {cfg.fields.map(f => (
+          <div key={f.name} style={{ flex: f.type === 'number' ? '1 1 130px' : '1 1 120px' }}>
+            <label className="label">{tt(f.label)}</label>
+            {f.type === 'select'
+              ? <select className="input" value={form[f.name] || f.options[0][0]} onChange={e => setForm({ ...form, [f.name]: e.target.value })}>{f.options.map(o => <option key={o[0]} value={o[0]}>{tt(o[1])}</option>)}</select>
+              : <input className="input" type={f.type === 'number' ? 'number' : 'text'} value={form[f.name] || ''} onChange={e => setForm({ ...form, [f.name]: e.target.value })} />}
+          </div>
+        ))}
+        <button className="btn btn-primary btn-sm" disabled={busy} onClick={add}>{busy ? '…' : tt('Добавить')}</button>
+      </div>
+      <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+        {rows.length === 0 ? <div style={{ color: 'var(--text3)', fontSize: 13, padding: '8px 0' }}>{tt('Пока пусто — добавьте записи выше')}</div> :
+          rows.map(r => (
+            <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ minWidth: 0 }}><b>{r[cfg.title] || '—'}</b> <span style={{ color: 'var(--text3)', fontSize: 12 }}>{cfg.fields.filter(f => f.type === 'select').map(f => tt(((f.options.find(o => o[0] === r[f.name])) || [])[1] || '')).join(' ')}</span></div>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexShrink: 0 }}>
+                <span className="mono" style={{ fontWeight: 700 }}>{fmtMoneyFull(r[cfg.amount])} {tt('сум')}</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => del(r.id)} title={tt('Удалить')} style={{ color: 'var(--red)' }}>🗑</button>
+              </div>
+            </div>
+          ))}
+      </div>
+    </Modal>
   );
 }
 
@@ -236,6 +365,8 @@ export default function Dashboard() {
   const [compareGran, setCompareGran] = useState('day');
   const [compareChart, setCompareChart] = useState(null);
   const [compareLoading, setCompareLoading] = useState(true);
+  const [finEditOpen, setFinEditOpen] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0); // бамп после правки активов/обязательств
 
   useEffect(() => {
     // ignore-флаг: при быстром переключении периода старый ответ не должен
@@ -251,7 +382,7 @@ export default function Dashboard() {
       .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
-  }, [periodFrom, periodTo, branchId]);
+  }, [periodFrom, periodTo, branchId, reloadTick]);
 
   useEffect(() => {
     let ignore = false;
@@ -430,12 +561,16 @@ export default function Dashboard() {
 
           {/* Диаграмма состояния бизнеса — отдельная широкая карта.
               Учредитель видит суммы (выручка+прибыль) и AI-разбор; менеджер — только состояние. */}
-          {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
+          {(data?.biz_state || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
-              <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
-              {isOwner && <StateAsk trend={trend} lang={lang} />}
+              <BizStateBar bs={data?.biz_state} isOwner={isOwner} onEdit={isOwner ? () => setFinEditOpen(true) : null} />
+              {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
+                <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
+              )}
+              {isOwner && <StateAsk trend={trend} bizState={data?.biz_state} lang={lang} />}
             </Card>
           )}
+          {isOwner && <FinManualEditor open={finEditOpen} onClose={() => setFinEditOpen(false)} onChanged={() => setReloadTick(t => t + 1)} />}
 
           {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
           <div className="grid-3" style={{ marginBottom: 16 }}>

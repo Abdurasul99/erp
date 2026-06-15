@@ -1059,6 +1059,43 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     totals.client_debts = parseFloat(debtsQ.rows[0]?.client_debts || 0);
     totals.supplier_debts = parseFloat(debtsQ.rows[0]?.supplier_debts || 0);
 
+    // === СОСТОЯНИЕ БИЗНЕСА (мини-баланс): активы / обязательства / капитал ===
+    // Авто: касса + склад(по себестоимости) + дебиторка | долг поставщикам.
+    // Ручные: основные средства / кредиты / налоги / зарплаты (из manual-таблиц).
+    const stockCostQ = await pool.query(
+      `SELECT COALESCE(SUM(ps.quantity * COALESCE(p.price_buy,0)),0) AS v
+       FROM product_stock ps JOIN products p ON p.id = ps.product_id
+       WHERE ps.branch_id IN ${branchIdsList}`);
+    const inventory_cost = parseFloat(stockCostQ.rows[0]?.v || 0);
+    // manual-таблицы создаются в ensureSchema; на холодном старте их может ещё не быть —
+    // деградируем до 0, не роняя дашборд.
+    let fixedAssets = 0, loansBal = 0, taxPayable = 0, wagesPayable = 0;
+    try {
+      const manualQ = await pool.query(`
+        SELECT
+          (SELECT COALESCE(SUM(acquisition_cost),0) FROM fixed_assets WHERE company_id=$1 AND (branch_id IS NULL OR branch_id IN ${branchIdsList})) AS fixed_assets,
+          (SELECT COALESCE(SUM(remaining_balance),0) FROM loans WHERE company_id=$1 AND closed_at IS NULL AND (branch_id IS NULL OR branch_id IN ${branchIdsList})) AS loans,
+          (SELECT COALESCE(SUM(amount_accrued-amount_paid),0) FROM tax_obligations WHERE company_id=$1 AND (branch_id IS NULL OR branch_id IN ${branchIdsList})) AS tax_payable,
+          (SELECT COALESCE(SUM(gross_accrued-amount_paid),0) FROM payroll_liab WHERE company_id=$1 AND (branch_id IS NULL OR branch_id IN ${branchIdsList})) AS wages_payable`,
+        [companyId]);
+      const mq = manualQ.rows[0] || {};
+      fixedAssets = parseFloat(mq.fixed_assets || 0);
+      loansBal = parseFloat(mq.loans || 0);
+      taxPayable = parseFloat(mq.tax_payable || 0);
+      wagesPayable = parseFloat(mq.wages_payable || 0);
+    } catch (bsErr) { console.error('biz_state manual query', bsErr.message); }
+    const bsAssets = totals.cash_balance + inventory_cost + totals.client_debts + fixedAssets;
+    const bsLiab = totals.supplier_debts + loansBal + taxPayable + wagesPayable;
+    const bsEquity = bsAssets - bsLiab;
+    const round3 = (x) => Math.round(x * 1000) / 1000;
+    // Менеджер видит только ПРОПОРЦИИ (без сумм) — защита на уровне данных.
+    const biz_state = isManager
+      ? { equity_ratio: bsAssets > 0 ? round3(bsEquity / bsAssets) : 0, liability_ratio: bsAssets > 0 ? round3(bsLiab / bsAssets) : 0 }
+      : {
+          assets: bsAssets, liabilities: bsLiab, equity: bsEquity,
+          breakdown: { cash: totals.cash_balance, inventory: inventory_cost, receivables: totals.client_debts, fixed_assets: fixedAssets, payables: totals.supplier_debts, loans: loansBal, tax_payable: taxPayable, wages_payable: wagesPayable },
+        };
+
     // Top 5 products by revenue in period
     const topProdQ = await pool.query(`
       SELECT p.id, p.name_ru, p.unit,
@@ -1127,6 +1164,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       branches: perBranch,
       totals,
       prev_totals,
+      biz_state,
       sales_trend: sales_trend_out,
       prev_trend,
       top_products: topProdQ.rows.map(r => ({ id: r.id, name: r.name_ru, unit: r.unit, qty: parseFloat(r.qty), revenue: parseFloat(r.revenue) })),
@@ -6168,13 +6206,17 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
 app.post('/api/ai/explain-state', auth(AI_ROLES), async (req, res) => {
   try {
     if (!process.env.DEEPSEEK_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
-    const { question, trend, lang } = req.body || {};
+    const { question, trend, biz_state, lang } = req.body || {};
     const q = (typeof question === 'string' && question.trim()) ? question.trim().slice(0, 300) : 'Объясни состояние бизнеса по этому графику.';
     const rows = Array.isArray(trend) ? trend.slice(-62) : [];
     const fmtN = (x) => Math.round(parseFloat(x) || 0).toLocaleString('ru-RU');
-    const factSheet = rows.length
+    let factSheet = rows.length
       ? 'Динамика по дням (дата · выручка · валовая прибыль, сум):\n' + rows.map(r => `${r.date}: ${fmtN(r.revenue)} · ${fmtN(r.profit)}`).join('\n')
       : 'Данных по дням за период нет.';
+    if (biz_state && biz_state.assets != null) {
+      const b = biz_state.breakdown || {};
+      factSheet += `\n\nБаланс (состояние) сейчас, сум:\nАктивы ${fmtN(biz_state.assets)} (касса ${fmtN(b.cash)}, склад ${fmtN(b.inventory)}, дебиторка ${fmtN(b.receivables)}, осн.средства ${fmtN(b.fixed_assets)})\nОбязательства ${fmtN(biz_state.liabilities)} (поставщики ${fmtN(b.payables)}, кредиты ${fmtN(b.loans)}, налоги ${fmtN(b.tax_payable)}, зарплаты ${fmtN(b.wages_payable)})\nСобственный капитал ${fmtN(biz_state.equity)}`;
+    }
     const sys = await buildSystemPrompt(req.user, lang);
     const userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.`;
     const r = await fetch(DEEPSEEK_URL, {
@@ -6192,6 +6234,43 @@ app.post('/api/ai/explain-state', auth(AI_ROLES), async (req, res) => {
     res.json({ answer });
   } catch (e) { console.error('explain-state err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
+
+// === Ручной ввод активов/обязательств для «Состояния бизнеса» — только владелец ===
+const FIN_OWNER_ROLES = ['admin', 'founder', 'gen_dir'];
+const MANUAL_FIN = {
+  'fixed-assets':    { table: 'fixed_assets',  cols: ['category', 'name', 'acquisition_cost', 'acquired_at', 'note'] },
+  'loans':           { table: 'loans',         cols: ['lender', 'remaining_balance', 'annual_rate', 'monthly_payment', 'closed_at', 'note'] },
+  'tax-obligations': { table: 'tax_obligations',cols: ['kind', 'amount_accrued', 'amount_paid', 'due_date', 'note'] },
+  'payroll-liab':    { table: 'payroll_liab',  cols: ['employee_name', 'gross_accrued', 'amount_paid', 'note'] },
+};
+for (const [routePath, cfg] of Object.entries(MANUAL_FIN)) {
+  // table/cols — фиксированный whitelist, не пользовательский ввод; значения параметризованы.
+  app.get(`/api/finance/${routePath}`, auth(FIN_OWNER_ROLES), async (req, res) => {
+    try {
+      const r = await pool.query(`SELECT * FROM ${cfg.table} WHERE company_id=$1 ORDER BY id DESC`, [req.user.company_id]);
+      res.json({ rows: r.rows });
+    } catch (e) { console.error('fin-manual list', e); res.status(500).json({ error: e.message }); }
+  });
+  app.post(`/api/finance/${routePath}`, auth(FIN_OWNER_ROLES), async (req, res) => {
+    try {
+      if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
+      const vals = cfg.cols.map(c => { const v = req.body[c]; return (v === undefined || v === '') ? null : v; });
+      const colList = ['company_id', ...cfg.cols, 'created_by'];
+      const phs = colList.map((_, i) => `$${i + 1}`).join(',');
+      const r = await pool.query(`INSERT INTO ${cfg.table} (${colList.join(',')}) VALUES (${phs}) RETURNING *`,
+        [req.user.company_id, ...vals, req.user.id]);
+      res.json({ row: r.rows[0] });
+    } catch (e) { console.error('fin-manual post', e); res.status(500).json({ error: e.message }); }
+  });
+  app.delete(`/api/finance/${routePath}/:id`, auth(FIN_OWNER_ROLES), async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isInteger(id)) return res.status(400).json({ error: 'bad id' });
+      await pool.query(`DELETE FROM ${cfg.table} WHERE id=$1 AND company_id=$2`, [id, req.user.company_id]);
+      res.json({ ok: true });
+    } catch (e) { console.error('fin-manual del', e); res.status(500).json({ error: 'Ошибка удаления' }); }
+  });
+}
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
@@ -6303,6 +6382,65 @@ async function ensureSchema() {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_company_integrations_co ON company_integrations(company_id)`);
+
+    // Ручные активы/обязательства для «Состояния бизнеса» (баланса) — то, что система
+    // не отслеживает автоматически: основные средства, кредиты, налоги, зарплаты.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fixed_assets (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        branch_id INT,
+        category VARCHAR(20) NOT NULL DEFAULT 'equipment',
+        name VARCHAR(160) NOT NULL,
+        acquisition_cost NUMERIC(16,2) NOT NULL DEFAULT 0,
+        acquired_at DATE,
+        note TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_fixed_assets_company ON fixed_assets(company_id)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS loans (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        branch_id INT,
+        lender VARCHAR(160),
+        remaining_balance NUMERIC(16,2) NOT NULL DEFAULT 0,
+        annual_rate NUMERIC(7,3),
+        monthly_payment NUMERIC(16,2),
+        closed_at DATE,
+        note TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_loans_company ON loans(company_id)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tax_obligations (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        branch_id INT,
+        kind VARCHAR(60),
+        amount_accrued NUMERIC(16,2) NOT NULL DEFAULT 0,
+        amount_paid NUMERIC(16,2) NOT NULL DEFAULT 0,
+        due_date DATE,
+        note TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_tax_obligations_company ON tax_obligations(company_id)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS payroll_liab (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        branch_id INT,
+        employee_name VARCHAR(160),
+        gross_accrued NUMERIC(16,2) NOT NULL DEFAULT 0,
+        amount_paid NUMERIC(16,2) NOT NULL DEFAULT 0,
+        note TEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_payroll_liab_company ON payroll_liab(company_id)`);
 
     console.log('schema OK');
   } catch (e) {
