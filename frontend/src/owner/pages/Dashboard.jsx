@@ -139,7 +139,9 @@ function BusinessStateChart({ data, lang, isOwner }) {
                 </>
               ) : (
                 <div style={{ color: pctChg == null ? '#fff' : pctChg >= 0 ? '#4ade80' : '#f87171' }}>
-                  {pctChg == null ? tt('Состояние') : `${pctChg >= 0 ? '▲' : '▼'} ${Math.abs(pctChg)}% ${tt('к пред. дню')}`}
+                  {pctChg == null
+                    ? tt('Нет сравнения с прошлым днём')
+                    : `${pctChg >= 0 ? '▲ ' : '▼ '}${tt(pctChg >= 0 ? 'Рост' : 'Спад')} ${Math.abs(pctChg)}% ${tt('к прошлому дню')}`}
                 </div>
               )}
               <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{fmtDate(data[hover].date, { day: 'numeric', month: 'short' }, lang)}</div>
