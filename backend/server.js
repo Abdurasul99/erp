@@ -922,6 +922,18 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     for (const k of Object.keys(avgCheckBuckets)) {
       avgCheckBuckets[k] = dealsBuckets[k] > 0 ? Math.round(revBuckets[k] / dealsBuckets[k]) : 0;
     }
+    // Долларовый остаток кассы в исходных $ (приход USD − расход USD, накопленно)
+    const usdBalQ = await pool.query(`
+      SELECT
+        (SELECT COALESCE(SUM(original_amount),0) FROM cash_income
+           WHERE branch_id IN ${branchIdsList} AND is_settled IS NOT FALSE
+             AND COALESCE(payment_method,'cash')='cash' AND COALESCE(currency,'UZS')='USD')
+        -
+        (SELECT COALESCE(SUM(original_amount),0) FROM cash_expense
+           WHERE branch_id IN ${branchIdsList}
+             AND COALESCE(payment_method,'cash')='cash' AND COALESCE(currency,'UZS')='USD')
+        AS usd_balance`);
+    const cashUsdOrig = Math.round(parseFloat(usdBalQ.rows[0]?.usd_balance) || 0);
     totals.by_method = {
       revenue:   revBuckets,
       cash_in:   cashBalBuckets,   // для плитки «Касса (баланс)» показываем накопленный баланс
@@ -929,6 +941,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       deals:     dealsBuckets,
       avg_check: avgCheckBuckets,
       revenue_usd_orig: Math.round(revUsdOrig), // исходные доллары в выручке (для скобки рядом с «Доллар»)
+      cash_in_usd_orig: cashUsdOrig,            // исходные доллары в остатке кассы
     };
 
     // Sales trend covering the selected period (revenue per day).

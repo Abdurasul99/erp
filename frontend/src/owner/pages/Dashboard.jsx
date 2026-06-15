@@ -371,7 +371,7 @@ export default function Dashboard() {
           {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
           <div className="grid-3" style={{ marginBottom: 16 }}>
             <CompactTile icon="🏦" label={tt('Касса (баланс)')} value={fmtMoneyFull(t.cash_balance)} sub={tt('сум') + ' · ' + tt('остаток на сейчас')}
-              breakdown={byMethod.cash_in} color="#0EA5E9" />
+              breakdown={byMethod.cash_in} usdOrig={byMethod.cash_in_usd_orig} color="#0EA5E9" />
             <CompactTile icon="📦" label={tt('Продаж')} value={fmtNum(t.deals_count)} sub={tt('за период')}
               breakdown={byMethod.deals} delta={dealsDelta} color="#5B4FE8" countMode="шт" />
             <CompactTile icon="🧾" label={tt('Средний чек')} value={fmtMoneyFull(t.avg_check)} sub={tt('сум')}
@@ -622,7 +622,7 @@ export default function Dashboard() {
 
 // Compact tile for the right column next to the hero. Now supports breakdown by payment method.
 // countMode — если задан, breakdown показывает счётчик (шт), а не суммы.
-function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMode = null }) {
+function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMode = null, usdOrig = 0 }) {
   return (
     <div style={{
       background: '#fff',
@@ -651,7 +651,7 @@ function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMo
         </div>
         {sub && <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600, marginTop: 1 }}>{sub}</div>}
       </div>
-      {breakdown && <MethodBreakdown data={breakdown} unit={countMode ? 'count' : 'money'} />}
+      {breakdown && <MethodBreakdown data={breakdown} unit={countMode ? 'count' : 'money'} usdOrig={usdOrig} />}
     </div>
   );
 }
