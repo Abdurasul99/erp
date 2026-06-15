@@ -67,35 +67,71 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
   );
 }
 
-// Хиро-чарт: простые цветные столбики выручки по дням. Пик темнее, тултип при наведении.
-function HeroBars({ daily, dates, lang }) {
+// Хиро-чарт: крипто-стайл ЛИНИЯ с разноцветным градиентом по высоте
+// (зелёный сверху → жёлтый → красный снизу) + заливка, точка «сейчас», тултип.
+function HeroLineChart({ daily, dates, lang }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
   if (!daily || daily.length < 2 || !dates) return null;
   const n = daily.length;
+  const W = 1000, H = 120, TOP = 8;
   const max = Math.max(...daily, 1);
-  const peak = Math.max(...daily);
-  const left = hover != null ? ((hover + 0.5) / n) * 100 : 0;
+  const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
+  const yAt = (v) => TOP + (1 - (v || 0) / max) * (H - TOP);
+  const pts = daily.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
+
+  let line = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  const area = `${line} L ${W} ${H} L 0 ${H} Z`;
+  const last = pts[n - 1];
+  const lastRatio = (daily[n - 1] || 0) / max;
+  const dotColor = lastRatio > 0.66 ? '#22C55E' : lastRatio > 0.33 ? '#EAB308' : '#EF4444';
+  const left = hover != null ? (xAt(hover) / W) * 100 : 0;
+  const hyTop = hover != null ? (yAt(daily[hover]) / H) * 100 : 0;
 
   return (
     <div style={{ position: 'relative', flex: 1, minHeight: 130, paddingTop: 18 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: n > 40 ? 1 : 2, height: 124, borderBottom: '1.5px solid var(--border)' }} onMouseLeave={() => setHover(null)}>
-        {daily.map((v, i) => {
-          const hPct = v > 0 ? Math.max((v / max) * 100, 2) : 0;
-          const isPeak = v === peak && v > 0;
-          return (
-            <div key={i} onMouseEnter={() => setHover(i)} style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', cursor: 'crosshair' }}>
-              <div style={{ width: '72%', maxWidth: 16, minWidth: 2, height: `${hPct}%`, background: isPeak ? 'linear-gradient(180deg,#15803d,#22C55E)' : 'linear-gradient(180deg,#34d399,#10b981)', borderRadius: '4px 4px 0 0', minHeight: v > 0 ? 3 : 0, opacity: hover == null || hover === i ? 1 : .45, transition: 'opacity .15s' }} />
+      <div style={{ position: 'relative', height: H, cursor: 'crosshair' }}
+        onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))))); }}
+        onMouseLeave={() => setHover(null)}>
+        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+          <defs>
+            <linearGradient id="heroLineGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2={H}>
+              <stop offset="0%" stopColor="#16a34a" />
+              <stop offset="50%" stopColor="#EAB308" />
+              <stop offset="100%" stopColor="#EF4444" />
+            </linearGradient>
+            <linearGradient id="heroAreaGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2={H}>
+              <stop offset="0%" stopColor="#22C55E" stopOpacity="0.22" />
+              <stop offset="55%" stopColor="#EAB308" stopOpacity="0.08" />
+              <stop offset="100%" stopColor="#EF4444" stopOpacity="0.03" />
+            </linearGradient>
+          </defs>
+          <path d={area} fill="url(#heroAreaGrad)" />
+          <path d={line} fill="none" stroke="url(#heroLineGrad)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          {hover != null && (
+            <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={H} stroke="rgba(0,0,0,.18)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+          )}
+        </svg>
+
+        <span style={{ position: 'absolute', left: `${(last.x / W) * 100}%`, top: `${(last.y / H) * 100}%`, transform: 'translate(-50%,-50%)', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `3px solid ${dotColor}`, boxShadow: `0 0 8px ${dotColor}88`, pointerEvents: 'none' }} />
+
+        {hover != null && (
+          <>
+            <span style={{ position: 'absolute', left: `${left}%`, top: `${hyTop}%`, transform: 'translate(-50%,-50%)', width: 8, height: 8, borderRadius: '50%', background: '#fff', border: '2px solid var(--text)', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', left: `${left}%`, top: -4, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.2)', pointerEvents: 'none', zIndex: 2 }}>
+              {fmtMoneyFull(daily[hover])} {tt('сум')}
+              <div style={{ fontSize: 9, opacity: .7, fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
             </div>
-          );
-        })}
+          </>
+        )}
       </div>
-      {hover != null && (
-        <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 12px rgba(0,0,0,.2)', pointerEvents: 'none', zIndex: 2 }}>
-          {fmtMoneyFull(daily[hover])} {tt('сум')}
-          <div style={{ fontSize: 9, opacity: .7, fontWeight: 700 }}>{fmtDate(dates[hover], { day: 'numeric', month: 'short' }, lang)}</div>
-        </div>
-      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 9.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
         {[0, Math.floor((n - 1) / 2), n - 1].map((idx, k) => (
           <span key={k}>{dates[idx] ? fmtDate(dates[idx], { day: 'numeric', month: 'short' }, lang) : ''}</span>
@@ -341,7 +377,7 @@ export default function Dashboard() {
             {/* Правая колонка — недельные столбцы, фикс. высота */}
             {trendValues.length > 1 && trendValues.some(v => v > 0) && (
               <div style={{ flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', minHeight: 170 }}>
-                <HeroBars
+                <HeroLineChart
                   daily={trendValues}
                   dates={trend.map(x => x.date)}
                   lang={lang}
