@@ -2188,6 +2188,141 @@ app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (
   } catch (e) { console.error('settings/overview err', e); res.status(500).json({ error: e.message }); }
 });
 
+// ── Интеграции: реальное подключение и синхронизация внешних сервисов ──────
+// Self-serve для владельца (founder/gen_dir/admin). Секреты в company_integrations.config.
+const INTEG_ROLES = ['admin', 'founder', 'gen_dir'];
+
+async function tgApi(token, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return r.json().catch(() => ({ ok: false, description: 'bad response' }));
+}
+
+// Отправить сообщение в Telegram компании, если интеграция подключена. Безопасно: не бросает.
+async function notifyTelegram(companyId, text) {
+  try {
+    if (!companyId) return false;
+    const { rows } = await pool.query(
+      `SELECT config FROM company_integrations WHERE company_id=$1 AND type='telegram' AND status='connected'`, [companyId]);
+    const cfg = rows[0]?.config;
+    if (!cfg?.bot_token || !cfg?.chat_id) return false;
+    const res = await tgApi(cfg.bot_token, 'sendMessage', { chat_id: cfg.chat_id, text, parse_mode: 'HTML', disable_web_page_preview: true });
+    return !!res.ok;
+  } catch (e) { console.error('notifyTelegram err', e.message); return false; }
+}
+
+// Список интеграций компании — реальные статусы из БД (секреты не отдаём)
+app.get('/api/integrations', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { rows } = await pool.query(
+      `SELECT type, status, last_event, last_event_at, connected_at, config FROM company_integrations WHERE company_id=$1`, [companyId]);
+    const byType = {};
+    for (const r of rows) {
+      byType[r.type] = {
+        status: r.status, last_event: r.last_event, last_event_at: r.last_event_at, connected_at: r.connected_at,
+        info: r.type === 'telegram' ? { bot_username: r.config?.bot_username || null, chat_id: r.config?.chat_id || null } : {},
+      };
+    }
+    res.json({ integrations: byType, env: { deepseek: !!process.env.DEEPSEEK_API_KEY } });
+  } catch (e) { console.error('integrations list err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Подключить Telegram: валидируем токен (getMe), шлём приветствие в chat_id, сохраняем
+app.post('/api/integrations/telegram/connect', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Нет компании' });
+    const bot_token = (req.body.bot_token || '').trim();
+    const chat_id = (req.body.chat_id || '').toString().trim();
+    if (!bot_token || !chat_id) return res.status(400).json({ error: 'Укажите токен бота и chat_id' });
+
+    const me = await tgApi(bot_token, 'getMe');
+    if (!me.ok) return res.status(400).json({ error: 'Неверный токен бота — Telegram getMe не прошёл' });
+
+    const hello = await tgApi(bot_token, 'sendMessage', {
+      chat_id, parse_mode: 'HTML',
+      text: `✅ <b>WareApp</b> подключён к этому чату.\nБот: @${me.result.username}\nСюда будут приходить отчёты и уведомления.`,
+    });
+    if (!hello.ok) return res.status(400).json({ error: 'Бот не может писать в этот chat_id. Откройте чат с ботом и отправьте ему /start (или добавьте бота в группу), затем повторите. ' + (hello.description || '') });
+
+    const config = { bot_token, chat_id, bot_username: me.result.username };
+    await pool.query(`
+      INSERT INTO company_integrations (company_id, type, status, config, last_event, last_event_at, connected_by, connected_at, updated_at)
+      VALUES ($1,'telegram','connected',$2::jsonb,'Подключено',NOW(),$3,NOW(),NOW())
+      ON CONFLICT (company_id, type) DO UPDATE SET status='connected', config=$2::jsonb, last_event='Переподключено', last_event_at=NOW(), connected_by=$3, updated_at=NOW()
+    `, [companyId, JSON.stringify(config), req.user.id]);
+    audit(req, 'connect', 'integration', companyId, null, { type: 'telegram', bot: me.result.username });
+    res.json({ ok: true, bot_username: me.result.username, chat_id });
+  } catch (e) { console.error('telegram connect err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Автоопределение chat_id: пользователь пишет боту /start, мы читаем getUpdates
+app.post('/api/integrations/telegram/detect', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    const bot_token = (req.body.bot_token || '').trim();
+    if (!bot_token) return res.status(400).json({ error: 'Укажите токен бота' });
+    const me = await tgApi(bot_token, 'getMe');
+    if (!me.ok) return res.status(400).json({ error: 'Неверный токен бота' });
+    const upd = await tgApi(bot_token, 'getUpdates', {});
+    const chats = {};
+    for (const u of (upd.result || [])) {
+      const c = u.message?.chat || u.channel_post?.chat || u.my_chat_member?.chat;
+      if (c) chats[c.id] = {
+        id: String(c.id), type: c.type,
+        title: c.title || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.username || ('chat ' + c.id),
+      };
+    }
+    res.json({ bot_username: me.result.username, chats: Object.values(chats) });
+  } catch (e) { console.error('telegram detect err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Тестовое сообщение
+app.post('/api/integrations/telegram/test', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    const ok = await notifyTelegram(req.user.company_id, `🔔 Тест от WareApp · ${new Date().toLocaleString('ru-RU')}\nИнтеграция работает.`);
+    if (!ok) return res.status(400).json({ error: 'Не удалось отправить. Проверьте подключение.' });
+    await pool.query(`UPDATE company_integrations SET last_event='Тест отправлен', last_event_at=NOW() WHERE company_id=$1 AND type='telegram'`, [req.user.company_id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Отчёт за сегодня в Telegram
+app.post('/api/integrations/telegram/report', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const q = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity*so.price),0) revenue, COUNT(*) sales
+      FROM stock_outcome so JOIN branches b ON b.id=so.branch_id
+      WHERE b.company_id=$1 AND so.status='approved' AND so.created_at::date = CURRENT_DATE`, [companyId]);
+    const cashQ = await pool.query(`
+      SELECT COALESCE(SUM(ci.amount),0) cash_in FROM cash_income ci JOIN branches b ON b.id=ci.branch_id
+      WHERE b.company_id=$1 AND ci.created_at::date = CURRENT_DATE`, [companyId]);
+    const rev = parseFloat(q.rows[0].revenue) || 0;
+    const sales = parseInt(q.rows[0].sales) || 0;
+    const cashIn = parseFloat(cashQ.rows[0].cash_in) || 0;
+    const fmt = (n) => Math.round(n).toLocaleString('ru-RU');
+    const text = `📊 <b>Отчёт за сегодня</b> · ${new Date().toLocaleDateString('ru-RU')}\n`
+      + `Выручка: <b>${fmt(rev)}</b> сум\nПродаж: <b>${sales}</b>\nПриход в кассу: <b>${fmt(cashIn)}</b> сум`;
+    const ok = await notifyTelegram(companyId, text);
+    if (!ok) return res.status(400).json({ error: 'Не удалось отправить отчёт. Проверьте подключение.' });
+    await pool.query(`UPDATE company_integrations SET last_event='Отчёт отправлен', last_event_at=NOW() WHERE company_id=$1 AND type='telegram'`, [companyId]);
+    res.json({ ok: true });
+  } catch (e) { console.error('telegram report err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Отключить Telegram
+app.delete('/api/integrations/telegram', auth(INTEG_ROLES), async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM company_integrations WHERE company_id=$1 AND type='telegram'`, [req.user.company_id]);
+    audit(req, 'disconnect', 'integration', req.user.company_id, null, { type: 'telegram' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // === HR OVERVIEW (картотека + мотивация — реальные данные) ===
 // Сотрудники компании с реальной активностью: продажи за 30 дней,
 // последняя активность, стаж. Один эндпоинт обслуживает Картотеку и Мотивацию.
@@ -6064,6 +6199,23 @@ async function ensureSchema() {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_chat_log_co_user ON ai_chat_log(company_id, user_id, created_at DESC)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS company_integrations (
+        id SERIAL PRIMARY KEY,
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        type VARCHAR(40) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'connected',
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        last_event TEXT,
+        last_event_at TIMESTAMP,
+        connected_by INT REFERENCES users(id) ON DELETE SET NULL,
+        connected_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (company_id, type)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_company_integrations_co ON company_integrations(company_id)`);
 
     console.log('schema OK');
   } catch (e) {
