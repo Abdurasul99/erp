@@ -978,6 +978,16 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       sales_trend.push({ date: key, revenue: v.revenue, profit: v.profit, deals: v.deals });
     }
 
+    // Менеджер не должен видеть денежные суммы в графике «состояния бизнеса».
+    // Отдаём только нормализованную форму idx = выручка/макс (сохраняет ±% между днями,
+    // но скрывает абсолютные суммы). Защита на уровне ДАННЫХ, а не только в UI —
+    // иначе цифры читаются в DevTools → Network.
+    let sales_trend_out = sales_trend;
+    if (isManager) {
+      const mx = Math.max(1, ...sales_trend.map(d => d.revenue || 0));
+      sales_trend_out = sales_trend.map(d => ({ date: d.date, idx: Math.round((d.revenue || 0) / mx * 1000) / 1000 }));
+    }
+
     // Previous period comparison — same length as current, ending right before `from`.
     // Lets the frontend show "growth vs previous period" tile deltas + a comparison chart.
     let prev_totals = null;
@@ -1117,7 +1127,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       branches: perBranch,
       totals,
       prev_totals,
-      sales_trend,
+      sales_trend: sales_trend_out,
       prev_trend,
       top_products: topProdQ.rows.map(r => ({ id: r.id, name: r.name_ru, unit: r.unit, qty: parseFloat(r.qty), revenue: parseFloat(r.revenue) })),
       top_sellers: topSellQ.rows.map(r => ({
@@ -6151,6 +6161,36 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
   } catch (e) {
     res.json({ questions: [] });
   }
+});
+
+// Объяснение «состояния бизнеса» по графику (выручка+прибыль по дням).
+// Только владельцу (AI_ROLES без manager) — менеджер не имеет доступа к AI и к суммам.
+app.post('/api/ai/explain-state', auth(AI_ROLES), async (req, res) => {
+  try {
+    if (!process.env.DEEPSEEK_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
+    const { question, trend, lang } = req.body || {};
+    const q = (typeof question === 'string' && question.trim()) ? question.trim().slice(0, 300) : 'Объясни состояние бизнеса по этому графику.';
+    const rows = Array.isArray(trend) ? trend.slice(-62) : [];
+    const fmtN = (x) => Math.round(parseFloat(x) || 0).toLocaleString('ru-RU');
+    const factSheet = rows.length
+      ? 'Динамика по дням (дата · выручка · валовая прибыль, сум):\n' + rows.map(r => `${r.date}: ${fmtN(r.revenue)} · ${fmtN(r.profit)}`).join('\n')
+      : 'Данных по дням за период нет.';
+    const sys = await buildSystemPrompt(req.user, lang);
+    const userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.`;
+    const r = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
+      body: JSON.stringify({ model: 'deepseek-chat', stream: false, temperature: 0.4, max_tokens: 500,
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }] }),
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); console.error('explain-state non-ok', r.status, t.slice(0, 200)); return res.status(502).json({ error: 'AI временно недоступен, попробуйте позже.' }); }
+    const j = await r.json();
+    const answer = j?.choices?.[0]?.message?.content || '';
+    const usage = j?.usage || {};
+    pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, 'deepseek-chat', null]).catch(() => {});
+    res.json({ answer });
+  } catch (e) { console.error('explain-state err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
 
 // Health check

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { BranchScope } from '../OwnerShell.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel } from '../ui.jsx';
+import { RichText } from '../AiChartBlock.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
 // Дельта к прошлому периоду. Если прошлый период пуст (0) — процент роста
@@ -76,77 +77,68 @@ function niceCeil(x) {
   return nf * p;
 }
 
-// Диаграмма СОСТОЯНИЯ БИЗНЕСА: две линии за период — Выручка (разноцветная,
-// зелёный→жёлтый→красный по высоте) и Валовая прибыль (фиолетовая). Слева ось в
-// сумах с сеткой, снизу даты, тултип с обоими значениями. Разрыв линий = себестоимость.
-function BusinessStateChart({ data, lang }) {
+// Диаграмма СОСТОЯНИЯ БИЗНЕСА. Линия окрашена по направлению: ЗЕЛЁНАЯ где рост,
+// КРАСНАЯ где спад (только красный/зелёный). Учредитель видит суммы (ось Y + тултип)
+// и тонкую линию прибыли. Менеджер видит ТОЛЬКО состояние — без сумм: ось скрыта,
+// тултип показывает только ±% к предыдущему дню.
+function BusinessStateChart({ data, lang, isOwner }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
   if (!data || data.length < 2) return null;
   const n = data.length;
-  const rev = data.map(d => d.revenue || 0);
-  const prof = data.map(d => d.profit || 0);
+  // Учредитель: реальные суммы. Менеджер: бэкенд прислал только idx (форма без сумм).
+  const rev = data.map(d => isOwner ? (d.revenue || 0) : (d.idx || 0));
+  const prof = isOwner ? data.map(d => d.profit || 0) : [];
   const yMax = niceCeil(Math.max(...rev, 1));
-  const yMin = Math.min(0, ...prof) < 0 ? -niceCeil(-Math.min(...prof)) : 0;
+  const yMin = (isOwner && Math.min(0, ...prof) < 0) ? -niceCeil(-Math.min(...prof)) : 0;
   const W = 1000, H = 200, TOP = 10, BOT = H - 4;
   const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
   const yAt = (v) => TOP + (1 - ((v || 0) - yMin) / (yMax - yMin)) * (BOT - TOP);
-
-  const smooth = (vals) => {
-    const p = vals.map((v, i) => ({ x: xAt(i), y: yAt(v) }));
-    let d = `M ${p[0].x.toFixed(1)} ${p[0].y.toFixed(1)}`;
-    for (let i = 0; i < p.length - 1; i++) {
-      const a = p[i - 1] || p[i], b = p[i], c = p[i + 1], e = p[i + 2] || c;
-      const c1x = b.x + (c.x - a.x) / 6, c1y = b.y + (c.y - a.y) / 6;
-      const c2x = c.x - (e.x - b.x) / 6, c2y = c.y - (e.y - b.y) / 6;
-      d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${c.x.toFixed(1)} ${c.y.toFixed(1)}`;
-    }
-    return d;
-  };
-  const revPath = smooth(rev);
-  const profPath = smooth(prof);
-  const revArea = `${revPath} L ${W} ${BOT} L 0 ${BOT} Z`;
+  const GREEN = '#16a34a', RED = '#EF4444';
+  const seg = (a, b) => (b >= a ? GREEN : RED);
   const grid = [0, 1, 2, 3, 4].map(k => yMin + ((yMax - yMin) * k) / 4);
   const left = hover != null ? (xAt(hover) / W) * 100 : 0;
+  const pctChg = (hover != null && hover > 0 && rev[hover - 1] > 0) ? Math.round(((rev[hover] - rev[hover - 1]) / rev[hover - 1]) * 100) : null;
   const labelIdx = [0, Math.floor((n - 1) / 3), Math.floor((2 * (n - 1)) / 3), n - 1];
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 18, marginBottom: 10, fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 16, height: 3, borderRadius: 2, background: 'linear-gradient(90deg,#16a34a,#EAB308,#EF4444)' }} /> {tt('Выручка')}</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 16, height: 3, borderRadius: 2, background: '#5B4FE8' }} /> {tt('Валовая прибыль')}</span>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 10, fontSize: 12, fontWeight: 700, color: 'var(--text2)', flexWrap: 'wrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 12, height: 3, borderRadius: 2, background: GREEN }} /> {tt('Рост')}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 12, height: 3, borderRadius: 2, background: RED }} /> {tt('Спад')}</span>
+        {isOwner && <span style={{ display: 'flex', alignItems: 'center', gap: 6, opacity: .7 }}><span style={{ width: 16, height: 0, borderTop: '2px dashed var(--text3)' }} /> {tt('Валовая прибыль')} <span style={{ opacity: .6 }}>({tt('пунктир')})</span></span>}
       </div>
-      <div style={{ position: 'relative', paddingLeft: 54, paddingRight: 4 }}>
-        {grid.map((v, k) => (
+      <div style={{ position: 'relative', paddingLeft: isOwner ? 54 : 8, paddingRight: 4 }}>
+        {isOwner && grid.map((v, k) => (
           <div key={k} style={{ position: 'absolute', left: 0, width: 48, textAlign: 'right', top: `${(yAt(v) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9.5, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace", pointerEvents: 'none' }}>{fmtMoney(v)}</div>
         ))}
         <div style={{ position: 'relative', height: H, cursor: 'crosshair' }}
           onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))))); }}
           onMouseLeave={() => setHover(null)}>
           <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-            <defs>
-              <linearGradient id="bsLineGrad" gradientUnits="userSpaceOnUse" x1="0" y1={TOP} x2="0" y2={BOT}>
-                <stop offset="0%" stopColor="#16a34a" />
-                <stop offset="50%" stopColor="#EAB308" />
-                <stop offset="100%" stopColor="#EF4444" />
-              </linearGradient>
-              <linearGradient id="bsArea" gradientUnits="userSpaceOnUse" x1="0" y1={TOP} x2="0" y2={BOT}>
-                <stop offset="0%" stopColor="#22C55E" stopOpacity="0.16" />
-                <stop offset="100%" stopColor="#22C55E" stopOpacity="0.01" />
-              </linearGradient>
-            </defs>
             {grid.map((v, k) => (
-              <line key={k} x1="0" y1={yAt(v)} x2={W} y2={yAt(v)} stroke="rgba(0,0,0,.08)" strokeWidth="1" strokeDasharray={v === 0 ? '0' : '4 4'} vectorEffect="non-scaling-stroke" />
+              <line key={k} x1="0" y1={yAt(v)} x2={W} y2={yAt(v)} stroke="rgba(0,0,0,.07)" strokeWidth="1" strokeDasharray={v === 0 ? '0' : '4 4'} vectorEffect="non-scaling-stroke" />
             ))}
-            <path d={revArea} fill="url(#bsArea)" />
-            <path d={profPath} fill="none" stroke="#5B4FE8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" opacity="0.9" />
-            <path d={revPath} fill="none" stroke="url(#bsLineGrad)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            {isOwner && prof.slice(0, -1).map((v, i) => (
+              <line key={'p' + i} x1={xAt(i)} y1={yAt(v)} x2={xAt(i + 1)} y2={yAt(prof[i + 1])} stroke={seg(v, prof[i + 1])} strokeWidth="1.6" strokeLinecap="round" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" opacity="0.55" />
+            ))}
+            {rev.slice(0, -1).map((v, i) => (
+              <line key={'r' + i} x1={xAt(i)} y1={yAt(v)} x2={xAt(i + 1)} y2={yAt(rev[i + 1])} stroke={seg(v, rev[i + 1])} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            ))}
             {hover != null && <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={BOT} stroke="rgba(0,0,0,.2)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
           </svg>
           {hover != null && (
             <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
-              <div>{tt('Выручка')}: {fmtMoneyFull(rev[hover])}</div>
-              <div style={{ color: '#a5b4fc' }}>{tt('Прибыль')}: {fmtMoneyFull(prof[hover])}</div>
+              {isOwner ? (
+                <>
+                  <div>{tt('Выручка')}: {fmtMoneyFull(rev[hover])}</div>
+                  <div style={{ opacity: .82 }}>{tt('Прибыль')}: {fmtMoneyFull(prof[hover])}</div>
+                </>
+              ) : (
+                <div style={{ color: pctChg == null ? '#fff' : pctChg >= 0 ? '#4ade80' : '#f87171' }}>
+                  {pctChg == null ? tt('Состояние') : `${pctChg >= 0 ? '▲' : '▼'} ${Math.abs(pctChg)}% ${tt('к пред. дню')}`}
+                </div>
+              )}
               <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{fmtDate(data[hover].date, { day: 'numeric', month: 'short' }, lang)}</div>
             </div>
           )}
@@ -155,6 +147,49 @@ function BusinessStateChart({ data, lang }) {
           {labelIdx.map((idx, k) => (<span key={k}>{data[idx] ? fmtDate(data[idx].date, { day: 'numeric', month: 'short' }, lang) : ''}</span>))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// «Спросить у AI» про состояние бизнеса — ТОЛЬКО владелец (у менеджера AI нет).
+// Шлёт реальный тренд выручки/прибыли + вопрос, показывает ответ.
+function StateAsk({ trend, lang }) {
+  const { tt } = useTt();
+  const [q, setQ] = useState('');
+  const [ans, setAns] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const ask = async (question) => {
+    if (busy) return;
+    const text = (question || q).trim();
+    if (!text) return;
+    setBusy(true); setErr(''); setAns('');
+    try {
+      const r = await api.post('/ai/explain-state', { question: text, trend, lang });
+      setAns(r.data?.answer || tt('Пустой ответ от AI.'));
+    } catch (e) { setErr(e.response?.data?.error || e.message); }
+    setBusy(false);
+  };
+  const presets = [tt('Почему упала выручка?'), tt('Что с прибылью?'), tt('Что сделать, чтобы росло?')];
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>🤖 {tt('Спросить про график')}</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        {presets.map((p, i) => (
+          <button key={i} className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setQ(p); ask(p); }}>{p}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input className="input" value={q} onChange={e => setQ(e.target.value)} placeholder={tt('Спросите про состояние бизнеса…')} disabled={busy}
+          onKeyDown={e => { if (e.key === 'Enter' && !busy) ask(); }} style={{ flex: 1 }} />
+        <button className="btn btn-primary btn-sm" disabled={busy || !q.trim()} onClick={() => ask()}>{busy ? '…' : tt('Спросить')}</button>
+      </div>
+      {err && <div style={{ marginTop: 8, color: 'var(--red)', fontWeight: 600, fontSize: 12 }}>⚠️ {err}</div>}
+      {ans && (
+        <div style={{ marginTop: 10, background: 'var(--bg-2)', borderRadius: 10, padding: '12px 14px', fontFamily: "'Inter', 'Nunito', system-ui, sans-serif", fontSize: 14, lineHeight: 1.7 }}>
+          <RichText text={ans} />
+        </div>
+      )}
     </div>
   );
 }
@@ -258,8 +293,6 @@ export default function Dashboard() {
   // breakdown[type] === { cash_uzs, cash_usd, card, transfer }
   // type: 'revenue' | 'cash_in' | 'cash_out' | 'deals' | 'avg_check'
   const byMethod = t.by_method || {};
-
-  const trendValues = useMemo(() => trend.map(x => x.revenue), [trend]);
 
   // Данные бар-чартов с бэкенда: бакеты агрегированы по своей гранулярности у каждого графика
   const salesValues = useMemo(() => (salesChart?.buckets || []).map(b => b.revenue), [salesChart]);
@@ -395,10 +428,12 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Диаграмма состояния бизнеса — отдельная широкая карта (выручка + прибыль) */}
-          {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0) && (
+          {/* Диаграмма состояния бизнеса — отдельная широкая карта.
+              Учредитель видит суммы (выручка+прибыль) и AI-разбор; менеджер — только состояние. */}
+          {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
-              <BusinessStateChart data={trend} lang={lang} />
+              <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
+              {isOwner && <StateAsk trend={trend} lang={lang} />}
             </Card>
           )}
 
