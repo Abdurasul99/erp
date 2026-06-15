@@ -561,13 +561,14 @@ export default function Dashboard() {
 
           {/* Диаграмма состояния бизнеса — отдельная широкая карта.
               Учредитель видит суммы (выручка+прибыль) и AI-разбор; менеджер — только состояние. */}
-          {(data?.biz_state || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
+          {((isOwner && data?.biz_state) || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
-              <BizStateBar bs={data?.biz_state} isOwner={isOwner} onEdit={isOwner ? () => setFinEditOpen(true) : null} />
+              {/* Структуру баланса (Капитал/Обязательства) видит ТОЛЬКО учредитель */}
+              {isOwner && <BizStateBar bs={data?.biz_state} isOwner={isOwner} onEdit={() => setFinEditOpen(true)} />}
               {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
                 <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
               )}
-              <StateAsk trend={trend} bizState={data?.biz_state} lang={lang} />
+              <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} />
             </Card>
           )}
           {isOwner && <FinManualEditor open={finEditOpen} onClose={() => setFinEditOpen(false)} onChanged={() => setReloadTick(t => t + 1)} />}
