@@ -2263,7 +2263,7 @@ app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (
       languages: ['RU', 'UZ'],
       integrations: {
         // Честные статусы: активна = реально работает в коде сервера
-        deepseek: !!process.env.DEEPSEEK_API_KEY,
+        deepseek: !!AI_API_KEY,
         eskiz_sms: false, telegram: false, click: false, payme: false,
         bank_client: false, accounting_1c: false, marketplaces: false,
       },
@@ -2310,7 +2310,7 @@ app.get('/api/integrations', auth(INTEG_ROLES), async (req, res) => {
         info: r.type === 'telegram' ? { bot_username: r.config?.bot_username || null, chat_id: r.config?.chat_id || null } : {},
       };
     }
-    res.json({ integrations: byType, env: { deepseek: !!process.env.DEEPSEEK_API_KEY } });
+    res.json({ integrations: byType, env: { deepseek: !!AI_API_KEY } });
   } catch (e) { console.error('integrations list err', e); res.status(500).json({ error: e.message }); }
 });
 
@@ -5567,10 +5567,15 @@ app.delete('/api/marketing/channel-spend/:id', auth(MKT_ROLES), async (req, res)
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// === AI CHAT — DeepSeek proxy ===
-// Token loaded from env (DEEPSEEK_API_KEY). Owner roles only. Logs usage to ai_chat_log.
-// Backend acts as proxy so the key never reaches the browser.
-const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
+// === AI CHAT — OpenAI-совместимый прокси ===
+// Провайдер настраивается через env (DeepSeek по умолчанию). Для LLaMA задайте на сервере:
+//   AI_API_URL=https://api.groq.com/openai/v1/chat/completions
+//   AI_API_KEY=gsk_... ; AI_MODEL=llama-3.3-70b-versatile
+// Ключ читается только из env и никогда не уходит в браузер (backend = прокси).
+const AI_API_URL = process.env.AI_API_URL || 'https://api.deepseek.com/chat/completions';
+const AI_API_KEY = process.env.AI_API_KEY || AI_API_KEY || '';
+const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
+const DEEPSEEK_URL = AI_API_URL; // алиас для существующих вызовов fetch
 const AI_ROLES = ['admin','founder','gen_dir'];
 
 function fmtUZS(v) {
@@ -5914,7 +5919,7 @@ async function buildSystemPrompt(user, lang) {
 app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
   const startedAt = Date.now();
   try {
-    if (!process.env.DEEPSEEK_API_KEY) {
+    if (!AI_API_KEY) {
       return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY на сервере.' });
     }
     const { messages, model } = req.body || {};
@@ -5929,7 +5934,7 @@ app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
 
     const sys = await buildSystemPrompt(req.user, req.body?.lang);
     const requestBody = {
-      model: model === 'deepseek-reasoner' ? 'deepseek-reasoner' : 'deepseek-chat',
+      model: AI_MODEL,
       messages: [{ role: 'system', content: sys }, ...cleaned],
       stream: false,
       temperature: 0.5,
@@ -5940,7 +5945,7 @@ app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY,
+        'Authorization': 'Bearer ' + AI_API_KEY,
       },
       body: JSON.stringify(requestBody),
     });
@@ -6117,7 +6122,7 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
     const topic = req.body?.topic;
     const meta = FIN_TOPICS[topic];
     if (!meta) return res.status(400).json({ error: 'Unknown topic' });
-    if (!process.env.DEEPSEEK_API_KEY) {
+    if (!AI_API_KEY) {
       return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
     }
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
@@ -6152,8 +6157,8 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
 
     const r = await fetch(DEEPSEEK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
-      body: JSON.stringify({ model: 'deepseek-chat', stream: false, temperature: 0.4, max_tokens: 500,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_API_KEY },
+      body: JSON.stringify({ model: AI_MODEL, stream: false, temperature: 0.4, max_tokens: 500,
         messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }] }),
     });
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('deepseek analyze non-ok', r.status, t.slice(0, 200)); return res.status(502).json({ error: 'AI временно недоступен, попробуйте позже.' }); }
@@ -6161,14 +6166,14 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
     const analysis = j?.choices?.[0]?.message?.content || '';
     const usage = j?.usage || {};
     pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
-      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, 'deepseek-chat', null]).catch(() => {});
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, AI_MODEL, null]).catch(() => {});
     res.json({ analysis, facts: factSheet });
   } catch (e) { console.error('ai/analyze err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
 
 app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
   try {
-    if (!process.env.DEEPSEEK_API_KEY) return res.json({ questions: [] });
+    if (!AI_API_KEY) return res.json({ questions: [] });
     const { last_reply, lang } = req.body || {};
     if (!last_reply || typeof last_reply !== 'string') return res.json({ questions: [] });
     const prompt = (lang === 'uz'
@@ -6177,9 +6182,9 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
       + 'Возвращай ТОЛЬКО JSON-массив строк, без пояснений. Пример: ["...","...","..."]';
     const r = await fetch(DEEPSEEK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_API_KEY },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: AI_MODEL,
         messages: [
           { role: 'system', content: prompt },
           { role: 'user', content: 'Ответ AI:\n\n' + last_reply.slice(0, 2000) },
@@ -6206,7 +6211,7 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
 // и системный промпт СТРОГО запрещает называть суммы. Учредитель — полные цифры.
 app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
   try {
-    if (!process.env.DEEPSEEK_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
+    if (!AI_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
     const { question, trend, biz_state, lang } = req.body || {};
     const q = (typeof question === 'string' && question.trim()) ? question.trim().slice(0, 300) : 'Объясни состояние бизнеса по этому графику.';
     const rows = Array.isArray(trend) ? trend.slice(-62) : [];
@@ -6237,8 +6242,8 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager'
     }
     const r = await fetch(DEEPSEEK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + process.env.DEEPSEEK_API_KEY },
-      body: JSON.stringify({ model: 'deepseek-chat', stream: false, temperature: 0.4, max_tokens: 500,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_API_KEY },
+      body: JSON.stringify({ model: AI_MODEL, stream: false, temperature: 0.4, max_tokens: 500,
         messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }] }),
     });
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('explain-state non-ok', r.status, t.slice(0, 200)); return res.status(502).json({ error: 'AI временно недоступен, попробуйте позже.' }); }
@@ -6247,7 +6252,7 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager'
     const answer = (j?.choices?.[0]?.message?.content || '').replace(/\[\[CHART:[a-z_]+\]\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
     const usage = j?.usage || {};
     pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
-      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, 'deepseek-chat', null]).catch(() => {});
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, AI_MODEL, null]).catch(() => {});
     res.json({ answer });
   } catch (e) { console.error('explain-state err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
