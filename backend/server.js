@@ -1134,11 +1134,14 @@ app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manage
     const ids = bq.rows.map(r => r.id);
     if (!ids.length) return res.json({ granularity: gran, buckets: [], prev_buckets: [], total: 0, prev_total: 0 });
 
-    const COUNT = { day: 30, week: 12, month: 12, year: 5 }[gran];
-
-    // Старты бакетов текущего диапазона (локальный календарь сервера = календарь БД)
     const now = new Date();
     const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const alignStart = (d) => {
+      if (gran === 'day') return startOf(d);
+      if (gran === 'week') { const s = startOf(d); s.setDate(s.getDate() - ((s.getDay() + 6) % 7)); return s; }
+      if (gran === 'month') return new Date(d.getFullYear(), d.getMonth(), 1);
+      return new Date(d.getFullYear(), 0, 1);
+    };
     const shift = (base, i) => {
       const d = new Date(base);
       if (gran === 'day') d.setDate(d.getDate() + i);
@@ -1147,15 +1150,25 @@ app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manage
       else return new Date(base.getFullYear() + i, 0, 1);
       return d;
     };
-    let base;
-    if (gran === 'day') base = startOf(now);
-    else if (gran === 'week') { base = startOf(now); base.setDate(base.getDate() - ((base.getDay() + 6) % 7)); }
-    else if (gran === 'month') base = new Date(now.getFullYear(), now.getMonth(), 1);
-    else base = new Date(now.getFullYear(), 0, 1);
 
-    const starts = [];
-    for (let i = COUNT - 1; i >= 0; i--) starts.push(shift(base, -i));
-    const prevStarts = starts.map(s => shift(s, -COUNT));
+    // Диапазон берём из топбар-календаря (from/to). Гранулярность = размер бакета внутри него.
+    // Если диапазон не задан (пресет «Всё») — поведение по умолчанию: фикс. окно по гранулярности.
+    const fromQ = req.query.from ? new Date(req.query.from) : null;
+    const toQ = req.query.to ? new Date(req.query.to) : now;
+    const MAX_BUCKETS = 400;
+    let starts = [];
+    if (fromQ && !isNaN(fromQ)) {
+      const end = (toQ && !isNaN(toQ)) ? toQ : now;
+      let cur = alignStart(fromQ), guard = 0;
+      while (cur <= end && guard < MAX_BUCKETS) { starts.push(cur); cur = shift(cur, 1); guard++; }
+      if (!starts.length) starts.push(alignStart(fromQ));
+    } else {
+      const COUNT = { day: 30, week: 12, month: 12, year: 5 }[gran];
+      const base = alignStart(now);
+      for (let i = COUNT - 1; i >= 0; i--) starts.push(shift(base, -i));
+    }
+    const count = starts.length;
+    const prevStarts = starts.map(s => shift(s, -count));
     const rangeFrom = prevStarts[0]; // одним SQL берём prev + current
 
     // gran из белого списка — интерполяция безопасна

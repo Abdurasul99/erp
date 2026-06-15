@@ -148,9 +148,6 @@ const CHART_GRAN_OPTIONS = [
   { value: 'month', label: 'Месяц' },
   { value: 'year',  label: 'Год' },
 ];
-const CHART_RANGE_LABEL = {
-  day: 'последние 30 дней', week: '12 недель', month: '12 месяцев', year: '5 лет',
-};
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -187,25 +184,29 @@ export default function Dashboard() {
     let ignore = false;
     setSalesLoading(true);
     const params = { granularity: salesGran };
+    if (periodFrom) params.from = periodFrom;
+    if (periodTo) params.to = periodTo;
     if (branchId) params.branch_id = branchId;
     api.get('/company/sales-chart', { params })
       .then(r => { if (!ignore) setSalesChart(r.data); })
       .catch(() => { if (!ignore) setSalesChart(null); })
       .finally(() => { if (!ignore) setSalesLoading(false); });
     return () => { ignore = true; };
-  }, [salesGran, branchId]);
+  }, [salesGran, periodFrom, periodTo, branchId]);
 
   useEffect(() => {
     let ignore = false;
     setCompareLoading(true);
     const params = { granularity: compareGran };
+    if (periodFrom) params.from = periodFrom;
+    if (periodTo) params.to = periodTo;
     if (branchId) params.branch_id = branchId;
     api.get('/company/sales-chart', { params })
       .then(r => { if (!ignore) setCompareChart(r.data); })
       .catch(() => { if (!ignore) setCompareChart(null); })
       .finally(() => { if (!ignore) setCompareLoading(false); });
     return () => { ignore = true; };
-  }, [compareGran, branchId]);
+  }, [compareGran, periodFrom, periodTo, branchId]);
 
   const t = data?.totals || {};
   const prev = data?.prev_totals || {};
@@ -448,7 +449,7 @@ export default function Dashboard() {
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
                       <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#2563EB"
-                        label={tt('Продажи') + ' · ' + tt(CHART_RANGE_LABEL[salesGran])}>
+                        label={tt('Продажи') + ' · ' + periodLabel}>
                         <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
                           {fmtMoneyFull(salesTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt('сум')}</span>
                         </div>
@@ -468,7 +469,7 @@ export default function Dashboard() {
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
                       <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
-                        label={tt('Сравнение') + ' · ' + tt(CHART_RANGE_LABEL[compareGran])}>
+                        label={tt('Сравнение') + ' · ' + periodLabel}>
                         <div className="mono" style={{
                           fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
                           color: compareDelta == null ? 'var(--text3)' : compareDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
