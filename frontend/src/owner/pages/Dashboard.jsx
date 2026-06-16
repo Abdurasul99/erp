@@ -397,7 +397,6 @@ export default function Dashboard() {
   const [compareGran, setCompareGran] = useState('day');
   const [compareChart, setCompareChart] = useState(null);
   const [compareLoading, setCompareLoading] = useState(true);
-  const [finEditOpen, setFinEditOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0); // бамп после правки активов/обязательств
 
   useEffect(() => {
@@ -595,15 +594,12 @@ export default function Dashboard() {
               Учредитель видит суммы (выручка+прибыль) и AI-разбор; менеджер — только состояние. */}
           {((isOwner && data?.biz_state) || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
-              {/* Структуру баланса (Капитал/Обязательства) видит ТОЛЬКО учредитель */}
-              {isOwner && <BizStateBar bs={data?.biz_state} isOwner={isOwner} onEdit={() => setFinEditOpen(true)} />}
               {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
                 <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} gran={data?.sales_trend_gran} />
               )}
               <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} />
             </Card>
           )}
-          {isOwner && <FinManualEditor open={finEditOpen} onClose={() => setFinEditOpen(false)} onChanged={() => setReloadTick(t => t + 1)} />}
 
           {/* Три плитки — отдельный ряд под хиро (равная высота между собой) */}
           <div className="grid-3" style={{ marginBottom: 16 }}>
