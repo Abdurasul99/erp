@@ -92,7 +92,7 @@ function niceCeil(x) {
 // КРАСНАЯ где спад (только красный/зелёный). Учредитель видит суммы (ось Y + тултип)
 // и тонкую линию прибыли. Менеджер видит ТОЛЬКО состояние — без сумм: ось скрыта,
 // тултип показывает только ±% к предыдущему дню.
-function BusinessStateChart({ data, lang, isOwner }) {
+function BusinessStateChart({ data, lang, isOwner, gran }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
   if (!data || data.length < 2) return null;
@@ -112,7 +112,21 @@ function BusinessStateChart({ data, lang, isOwner }) {
   const pctChg = (hover != null && hover > 0 && rev[hover - 1] > 0) ? Math.round(((rev[hover] - rev[hover - 1]) / rev[hover - 1]) * 100) : null;
   // Подписи дат: показываем КАЖДУЮ; если точек слишком много — прорежаем до ~31.
   const labelStep = Math.max(1, Math.ceil(n / 31));
-  const dayMon = (iso) => { const d = new Date(iso); return d.getDate() + '.' + String(d.getMonth() + 1).padStart(2, '0'); };
+  // Подпись точки по гранулярности: час → «14:00», день → «16.06», месяц → «июн».
+  const hh = (d) => String(d.getHours()).padStart(2, '0') + ':00';
+  const bucketLabel = (iso) => {
+    const d = new Date(iso);
+    if (gran === 'hour') return hh(d);
+    if (gran === 'month') return fmtDate(iso, { month: 'short' }, lang);
+    return d.getDate() + '.' + String(d.getMonth() + 1).padStart(2, '0');
+  };
+  // Дата в подсказке: час → «16 июн, 14:00», день → «16 июн», месяц → «июнь 2026».
+  const tipDate = (iso) => {
+    if (gran === 'hour') return fmtDate(iso, { day: 'numeric', month: 'short' }, lang) + ', ' + hh(new Date(iso));
+    if (gran === 'month') return fmtDate(iso, { month: 'long', year: 'numeric' }, lang);
+    return fmtDate(iso, { day: 'numeric', month: 'short' }, lang);
+  };
+  const prevWord = gran === 'hour' ? tt('к прошлому часу') : gran === 'month' ? tt('к прошлому месяцу') : tt('к прошлому дню');
 
   return (
     <div>
@@ -150,18 +164,18 @@ function BusinessStateChart({ data, lang, isOwner }) {
               ) : (
                 <div style={{ color: pctChg == null ? '#fff' : pctChg >= 0 ? '#4ade80' : '#f87171' }}>
                   {pctChg == null
-                    ? tt('Нет сравнения с прошлым днём')
-                    : `${pctChg >= 0 ? '▲ ' : '▼ '}${tt(pctChg >= 0 ? 'Рост' : 'Спад')} ${pctChg >= 1000 ? '×' + Math.round(1 + pctChg / 100) : Math.abs(pctChg) + '%'} ${tt('к прошлому дню')}`}
+                    ? tt('Нет сравнения')
+                    : `${pctChg >= 0 ? '▲ ' : '▼ '}${tt(pctChg >= 0 ? 'Рост' : 'Спад')} ${pctChg >= 1000 ? '×' + Math.round(1 + pctChg / 100) : Math.abs(pctChg) + '%'} ${prevWord}`}
                 </div>
               )}
-              <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{fmtDate(data[hover].date, { day: 'numeric', month: 'short' }, lang)}</div>
+              <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{tipDate(data[hover].date)}</div>
             </div>
           )}
         </div>
         <div style={{ display: 'flex', marginTop: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
           {data.map((d, i) => (
             <div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-              {i % labelStep === 0 ? dayMon(d.date) : ''}
+              {i % labelStep === 0 ? bucketLabel(d.date) : ''}
             </div>
           ))}
         </div>
@@ -584,7 +598,7 @@ export default function Dashboard() {
               {/* Структуру баланса (Капитал/Обязательства) видит ТОЛЬКО учредитель */}
               {isOwner && <BizStateBar bs={data?.biz_state} isOwner={isOwner} onEdit={() => setFinEditOpen(true)} />}
               {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
-                <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} />
+                <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} gran={data?.sales_trend_gran} />
               )}
               <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} />
             </Card>

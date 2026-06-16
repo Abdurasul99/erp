@@ -135,6 +135,8 @@ export const OWNER_UZ = {
   'остаток на сейчас': 'hozirgi qoldiq', 'сотр · маржа': 'xodim · marja',
   'Продажи · последние 30 дней': 'Sotuvlar · oxirgi 30 kun', 'Сравнение · последние 30 дней': 'Solishtirish · oxirgi 30 kun',
   'к прошлому периоду': "o'tgan davrga nisbatan", 'Текущий': 'Joriy', 'Прошлый': "O'tgan", 'Предыдущие': 'Oldingilari',
+  'к прошлому дню': 'oldingi kunga nisbatan', 'к прошлому часу': 'oldingi soatga nisbatan', 'к прошлому месяцу': 'oldingi oyga nisbatan',
+  'Нет сравнения': "Solishtirish yo'q",
   'Пик': 'Cho‘qqi', 'последние 30 дней': 'oxirgi 30 kun', '12 недель': '12 hafta', '12 месяцев': '12 oy', '5 лет': '5 yil',
   'День': 'Kun', 'Сравнение с прошлым периодом': "O'tgan davr bilan solishtirish",
   'Низкий остаток': 'Past qoldiq', 'товаров': 'tovar', 'Меньше 5 единиц на складе — рискуете остаться без продаж': "Omborda 5 donadan kam — sotuvsiz qolish xavfi",

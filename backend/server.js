@@ -949,11 +949,22 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     let trendFromIso = from;
     let trendToIso = to || new Date().toISOString();
     if (!trendFromIso) {
-      const d = new Date(); d.setDate(d.getDate() - 30);
+      const d = new Date(); d.setMonth(d.getMonth() - 12);
       trendFromIso = d.toISOString();
     }
+    // Авто-гранулярность: чтобы график «состояния бизнеса» не превращался в кашу из сотен
+    // точек, агрегируем по смыслу периода — день → по часам, неделя/месяц → по дням,
+    // год/всё → по месяцам (12). Значение из фикс-набора, в SQL подставляется безопасно.
+    const TREND_DAY_MS = 86400000;
+    const trendSpanMs = new Date(trendToIso) - new Date(trendFromIso);
+    const trendGran = trendSpanMs <= 2 * TREND_DAY_MS ? 'hour'
+      : trendSpanMs <= 63 * TREND_DAY_MS ? 'day' : 'month';
+    const trendKey = (dt) => {
+      const iso = new Date(dt).toISOString();
+      return trendGran === 'hour' ? iso.slice(0, 13) : trendGran === 'month' ? iso.slice(0, 7) : iso.slice(0, 10);
+    };
     const trendQ = await pool.query(`
-      SELECT date_trunc('day', so.created_at)::date AS d,
+      SELECT date_trunc('${trendGran}', so.created_at) AS d,
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
              COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
              COUNT(*) AS deals
@@ -967,15 +978,20 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     const trendMap = new Map();
     for (const r of trendQ.rows) {
       const revenue = parseFloat(r.revenue) || 0;
-      trendMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue, profit: revenue - (parseFloat(r.cost) || 0), deals: parseInt(r.deals) || 0 });
+      trendMap.set(trendKey(r.d), { revenue, profit: revenue - (parseFloat(r.cost) || 0), deals: parseInt(r.deals) || 0 });
     }
     const sales_trend = [];
-    const startDay = new Date(trendFromIso); startDay.setHours(0, 0, 0, 0);
-    const endDay = new Date(trendToIso); endDay.setHours(0, 0, 0, 0);
-    for (let d = new Date(startDay); d <= endDay; d.setDate(d.getDate() + 1)) {
-      const key = d.toISOString().slice(0, 10);
-      const v = trendMap.get(key) || { revenue: 0, profit: 0, deals: 0 };
-      sales_trend.push({ date: key, revenue: v.revenue, profit: v.profit, deals: v.deals });
+    const trendCursor = new Date(trendFromIso);
+    const trendEnd = new Date(trendToIso);
+    if (trendGran === 'hour') trendCursor.setMinutes(0, 0, 0);
+    else if (trendGran === 'month') { trendCursor.setDate(1); trendCursor.setHours(0, 0, 0, 0); }
+    else trendCursor.setHours(0, 0, 0, 0);
+    for (let guard = 0; trendCursor <= trendEnd && guard < 2000; guard++) {
+      const v = trendMap.get(trendKey(trendCursor)) || { revenue: 0, profit: 0, deals: 0 };
+      sales_trend.push({ date: trendCursor.toISOString(), revenue: v.revenue, profit: v.profit, deals: v.deals });
+      if (trendGran === 'hour') trendCursor.setHours(trendCursor.getHours() + 1);
+      else if (trendGran === 'month') trendCursor.setMonth(trendCursor.getMonth() + 1);
+      else trendCursor.setDate(trendCursor.getDate() + 1);
     }
 
     // Менеджер не должен видеть денежные суммы в графике «состояния бизнеса».
@@ -1166,6 +1182,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       prev_totals,
       biz_state,
       sales_trend: sales_trend_out,
+      sales_trend_gran: trendGran,
       prev_trend,
       top_products: topProdQ.rows.map(r => ({ id: r.id, name: r.name_ru, unit: r.unit, qty: parseFloat(r.qty), revenue: parseFloat(r.revenue) })),
       top_sellers: topSellQ.rows.map(r => ({
