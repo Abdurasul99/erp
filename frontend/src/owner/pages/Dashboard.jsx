@@ -16,6 +16,16 @@ function deltaPct(current, prev) {
   return Math.round(((current - prev) / Math.abs(prev)) * 100);
 }
 
+// Человекочитаемый показ дельты. При «низкой базе» (прошлый период почти ноль)
+// процент раздувается до тысяч — это косяк. Вместо «▲ 10692%» показываем кратность
+// «▲ ×108» (рост в 108 раз). Стрелка включена в результат; null → ничего.
+function deltaDisplay(pct) {
+  if (pct == null) return null;
+  if (pct >= 1000) return `▲ ×${Math.round(1 + pct / 100)}`;   // огромный рост → «в N раз»
+  if (pct <= -1000) return '▼ 999+%';
+  return `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}%`;
+}
+
 // Русские названия ролей для списков сотрудников
 const ROLE_RU = {
   seller: 'продавец', cashier: 'кассир', warehouse: 'складовщик',
@@ -141,7 +151,7 @@ function BusinessStateChart({ data, lang, isOwner }) {
                 <div style={{ color: pctChg == null ? '#fff' : pctChg >= 0 ? '#4ade80' : '#f87171' }}>
                   {pctChg == null
                     ? tt('Нет сравнения с прошлым днём')
-                    : `${pctChg >= 0 ? '▲ ' : '▼ '}${tt(pctChg >= 0 ? 'Рост' : 'Спад')} ${Math.abs(pctChg)}% ${tt('к прошлому дню')}`}
+                    : `${pctChg >= 0 ? '▲ ' : '▼ '}${tt(pctChg >= 0 ? 'Рост' : 'Спад')} ${pctChg >= 1000 ? '×' + Math.round(1 + pctChg / 100) : Math.abs(pctChg) + '%'} ${tt('к прошлому дню')}`}
                 </div>
               )}
               <div style={{ fontSize: 9, opacity: .65, fontWeight: 700, marginTop: 1 }}>{fmtDate(data[hover].date, { day: 'numeric', month: 'short' }, lang)}</div>
@@ -550,7 +560,7 @@ export default function Dashboard() {
               </div>
               {revDelta != null ? (
                 <div style={{ fontSize: 11.5, fontWeight: 800, color: revDelta >= 0 ? 'var(--green, #16a34a)' : 'var(--red, #EF4444)' }}>
-                  {revDelta >= 0 ? '▲' : '▼'} {Math.abs(revDelta)}% {tt('к прошлому периоду')}
+                  {deltaDisplay(revDelta)} {tt('к прошлому периоду')}
                 </div>
               ) : (
                 data?.prev_totals != null && (
@@ -632,7 +642,7 @@ export default function Dashboard() {
                   <div className="mono" style={{ fontWeight: 800, color: (t.gross_profit || 0) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: 18, marginTop: 4 }}>{fmtMoneyFull(t.gross_profit)}</div>
                   {profitDelta != null ? (
                     <div style={{ fontSize: 10, fontWeight: 800, color: profitDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                      {profitDelta >= 0 ? '▲' : '▼'} {Math.abs(profitDelta)}% {tt('к прошлому периоду')}
+                      {deltaDisplay(profitDelta)} {tt('к прошлому периоду')}
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{tt('сум · продажи − себестоимость')}</div>
@@ -691,7 +701,7 @@ export default function Dashboard() {
                           color: compareDelta == null ? 'var(--text3)' : compareDelta >= 0 ? 'var(--green, #22C55E)' : 'var(--red, #EF4444)',
                         }}>
                           {compareDelta != null
-                            ? <>{compareDelta >= 0 ? '▲' : '▼'} {Math.abs(compareDelta)}%</>
+                            ? <>{deltaDisplay(compareDelta)}</>
                             : <span style={{ fontSize: 13, fontWeight: 700 }}>{tt('нет базы для сравнения')}</span>}
                         </div>
                       </ChartHead>
@@ -858,7 +868,7 @@ function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMo
           <div className="mono" style={{ fontSize: 19, fontWeight: 900, color, lineHeight: 1.1 }}>{value}</div>
           {delta != null && (
             <div style={{ fontSize: 10, fontWeight: 800, color: delta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-              {delta >= 0 ? '▲' : '▼'} {Math.abs(delta)}%
+              {deltaDisplay(delta)}
             </div>
           )}
         </div>
