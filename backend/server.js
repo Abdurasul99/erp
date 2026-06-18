@@ -684,11 +684,132 @@ app.get('/api/suppliers/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===== BHI (Business Health Index) — индекс здоровья бизнеса 0..100 =====
+// Каркас из референса: 4 столпа (Финансы 35 / Операции 30 / Люди 20 / Рынок 15),
+// 8 блоков, адаптивные веса по зрелости данных. Считаем СТРОГО по реальным полям —
+// блок без данных не вносит вклад (веса ренормализуются). Пороги перевода метрик в
+// баллы — НАСТРАИВАЕМЫЕ константы (не данные), подобраны под узбекскую розницу.
+const BHI_BLOCK_PILLAR = {
+  revenue: 'financial', profitability: 'financial', liquidity: 'financial', risk: 'financial',
+  operations: 'operational', supply_chain: 'operational', human_capital: 'people', customer: 'market',
+};
+const BHI_BLOCK_BASE = { // базовые веса (сумма 100), выведены из весов столпов
+  revenue: 14, profitability: 12.25, liquidity: 5.25, risk: 3.5,
+  operations: 16.5, supply_chain: 13.5, human_capital: 20, customer: 15,
+};
+const BHI_PILLAR_META = {
+  financial:   { label: 'Финансы',  weight: 35, question: 'Зарабатываем?' },
+  operational: { label: 'Операции', weight: 30, question: 'Эффективны?' },
+  people:      { label: 'Люди',     weight: 20, question: 'Команда?' },
+  market:      { label: 'Рынок',    weight: 15, question: 'Растём?' },
+};
+const BHI_BLOCK_LABEL = {
+  revenue: 'Выручка', profitability: 'Прибыльность', liquidity: 'Ликвидность', risk: 'Риск',
+  operations: 'Операции', supply_chain: 'Снабжение', human_capital: 'Активность команды', customer: 'Клиенты',
+};
+const bhiClamp01 = (x) => Math.max(0, Math.min(1, x));
+const bhiBand = (v, lo, hi) => Math.round(bhiClamp01((v - lo) / (hi - lo)) * 100);
+function bhiZone(score) {
+  if (score == null) return { zone: 'na', label: 'Нет данных' };
+  if (score >= 75) return { zone: 'green', label: 'Норма' };
+  if (score >= 50) return { zone: 'yellow', label: 'Внимание' };
+  return { zone: 'red', label: 'Критично' };
+}
+// Чистая функция: числа на входе → структура BHI (без истории/цели — их добавляет роут).
+function computeBHI(ctx) {
+  const c = ctx || {};
+  const num = (x) => (Number.isFinite(+x) ? +x : 0);
+  const revenue = num(c.revenue), prevRevenue = num(c.prevRevenue), marginPct = num(c.marginPct);
+  const cash = num(c.cash), receivables = num(c.receivables), inventory = num(c.inventory);
+  const payables = num(c.payables), taxPayable = num(c.taxPayable), wagesPayable = num(c.wagesPayable);
+  const assets = num(c.assets), liab = num(c.liabilities);
+  const salesCount = num(c.salesCount), pending = num(c.pending);
+  const lowStock = num(c.lowStock), stockedSku = num(c.stockedSku), supplierDebts = num(c.supplierDebts);
+  const activeWorkers = num(c.activeWorkers), totalWorkers = num(c.totalWorkers);
+  const sellersWithSales = num(c.sellersWithSales), totalSellers = num(c.totalSellers);
+  const repeatCustomers = num(c.repeatCustomers), totalCustomers = num(c.totalCustomers);
+  const daysActive = num(c.daysActive);
+  const B = {};
+  // Revenue (рост к прошлому периоду; нет прошлого → нейтрально 50)
+  if (prevRevenue > 0) {
+    const g = ((revenue - prevRevenue) / Math.abs(prevRevenue)) * 100;
+    B.revenue = { score: bhiBand(g, -20, 30), kind: 'real', hasData: true,
+      metrics: [{ label: 'Рост к прошлому периоду', value: Math.round(g) + '%' }] };
+  } else if (revenue > 0) {
+    B.revenue = { score: 50, kind: 'partial', hasData: true,
+      metrics: [{ label: 'Нет прошлого периода для сравнения', value: '—' }] };
+  } else B.revenue = { score: null, kind: 'real', hasData: false, metrics: [] };
+  // Profitability
+  B.profitability = { score: revenue > 0 ? bhiBand(marginPct, 0, 40) : null, kind: 'real', hasData: revenue > 0,
+    metrics: [{ label: 'Маржа', value: Math.round(marginPct) + '%' }] };
+  // Liquidity (снимок)
+  { const liquid = cash + receivables + inventory, shortLiab = payables + taxPayable + wagesPayable;
+    const has = liquid > 0 || shortLiab > 0, cr = shortLiab > 0 ? liquid / shortLiab : (liquid > 0 ? 3 : 1);
+    B.liquidity = { score: has ? bhiBand(cr, 0.8, 2.0) : null, kind: 'real', hasData: has,
+      metrics: [{ label: 'Покрытие коротких обязательств', value: cr.toFixed(2) + '×' }] }; }
+  // Risk (снимок)
+  { const has = assets > 0 || liab > 0, debtRatio = assets > 0 ? liab / assets : (liab > 0 ? 1 : 0);
+    B.risk = { score: has ? bhiBand(1 - debtRatio, 0.3, 0.8) : null, kind: 'real', hasData: has,
+      metrics: [{ label: 'Долговая нагрузка', value: Math.round(debtRatio * 100) + '%' }] }; }
+  // Operations (частично — есть наличие + несогласованные)
+  { const has = stockedSku > 0 || salesCount > 0;
+    const availability = stockedSku > 0 ? bhiClamp01(1 - lowStock / stockedSku) : 1;
+    const pendingScore = salesCount > 0 ? bhiBand(1 - pending / salesCount, 0.85, 1.0) : 100;
+    B.operations = { score: has ? Math.round(0.7 * availability * 100 + 0.3 * pendingScore) : null, kind: 'partial', hasData: has,
+      metrics: [{ label: 'Наличие на складе', value: Math.round(availability * 100) + '%' }, { label: 'Несогласованных продаж', value: pending }] }; }
+  // Supply Chain (частично)
+  { const has = inventory > 0 || supplierDebts > 0 || revenue > 0;
+    const pressure = revenue > 0 ? bhiClamp01(supplierDebts / revenue) : (supplierDebts > 0 ? 1 : 0);
+    const supplierScore = bhiBand(1 - pressure, 0.5, 1.0), coverageScore = bhiBand(inventory / Math.max(revenue, 1), 0.2, 1.5);
+    B.supply_chain = { score: has ? Math.round(0.6 * supplierScore + 0.4 * coverageScore) : null, kind: 'partial', hasData: has,
+      metrics: [{ label: 'Долг поставщикам / выручка', value: Math.round(pressure * 100) + '%' }] }; }
+  // Human Capital (прокси: активность входов + участие в продажах)
+  { const has = totalWorkers > 0;
+    const activeRatio = totalWorkers > 0 ? activeWorkers / totalWorkers : 0;
+    const participation = totalSellers > 0 ? sellersWithSales / totalSellers : 0;
+    B.human_capital = { score: has ? Math.round((0.5 * activeRatio + 0.5 * participation) * 100) : null, kind: 'proxy', hasData: has,
+      metrics: [{ label: 'Активны (вход за 30 дн)', value: activeWorkers + '/' + totalWorkers }, { label: 'Продавцы с продажами', value: sellersWithSales + '/' + totalSellers }] }; }
+  // Customer (частично — только повторные покупки; нет NPS/жалоб)
+  { const has = totalCustomers > 0, repeatRate = totalCustomers > 0 ? repeatCustomers / totalCustomers : 0;
+    B.customer = { score: has ? bhiBand(repeatRate, 0.1, 0.5) : null, kind: 'partial', hasData: has,
+      metrics: [{ label: 'Повторные покупки', value: Math.round(repeatRate * 100) + '%' }] }; }
+  // Адаптивные веса по зрелости
+  const revenueWeight = daysActive < 90 ? 0.65 : daysActive < 180 ? 0.45 : 0.30;
+  const activeKeys = Object.keys(B).filter(k => B[k].hasData && B[k].score != null);
+  const weights = {};
+  if (activeKeys.includes('revenue')) {
+    weights.revenue = revenueWeight;
+    const others = activeKeys.filter(k => k !== 'revenue');
+    const sumOther = others.reduce((s, k) => s + BHI_BLOCK_BASE[k], 0);
+    for (const k of others) weights[k] = sumOther > 0 ? (1 - revenueWeight) * (BHI_BLOCK_BASE[k] / sumOther) : 0;
+  } else {
+    const sumBase = activeKeys.reduce((s, k) => s + BHI_BLOCK_BASE[k], 0);
+    for (const k of activeKeys) weights[k] = sumBase > 0 ? BHI_BLOCK_BASE[k] / sumBase : 0;
+  }
+  const score = activeKeys.length ? Math.round(activeKeys.reduce((s, k) => s + B[k].score * weights[k], 0)) : null;
+  const blocks = Object.keys(BHI_BLOCK_BASE).map(k => ({
+    key: k, label: BHI_BLOCK_LABEL[k], pillar: BHI_BLOCK_PILLAR[k], score: B[k].score,
+    weight: Math.round((weights[k] || 0) * 1000) / 10, hasData: B[k].hasData, kind: B[k].kind,
+    metrics: B[k].metrics, reason: B[k].hasData ? null : 'Нет данных',
+  }));
+  const pillars = Object.keys(BHI_PILLAR_META).map(p => {
+    const pk = blocks.filter(b => b.pillar === p && b.hasData && b.score != null);
+    const wsum = pk.reduce((s, b) => s + (weights[b.key] || 0), 0);
+    const pscore = wsum > 0 ? Math.round(pk.reduce((s, b) => s + b.score * (weights[b.key] || 0), 0) / wsum) : null;
+    return { key: p, label: BHI_PILLAR_META[p].label, question: BHI_PILLAR_META[p].question,
+      base_weight: BHI_PILLAR_META[p].weight, weight: Math.round(wsum * 1000) / 10, score: pscore, blocks: pk.map(b => b.key) };
+  });
+  const z = bhiZone(score);
+  const accuracy_tier = daysActive < 90 ? 'Базовая' : daysActive < 180 ? 'Средняя' : 'Полная';
+  return { score, zone: z.zone, zone_label: z.label, accuracy_tier, days_active: daysActive,
+    revenue_weight: revenueWeight, blocks_active: activeKeys.length, pillars, blocks };
+}
+
 // === COMPANY DASHBOARD (gen_dir/founder/manager) ===
 // Query params:
 //   from, to — ISO timestamps for sales period filter (default: lifetime)
 //   branch_id — optional drill-down for owner; manager is always pinned to own branch
-// Returns: { branches:[{...kpis}], totals:{}, sales_trend:[{date,revenue}], top_products:[], top_sellers:[], alerts:[] }
+// Returns: { branches:[{...kpis}], totals:{}, sales_trend:[{date,revenue}], top_products:[], top_sellers:[], alerts:[], bhi:{} }
 app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
@@ -1175,12 +1296,89 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       }
     }
 
+    // === BHI: считаем индекс + сохраняем снимок дня. Только реальные роли компании
+    // (admin не участвует). Значения безразмерны → отдаём и менеджеру. Деньги в computeBHI
+    // используются только на сервере. Любая ошибка не должна ронять дашборд. ===
+    let bhi = null;
+    if (req.user.role !== 'admin') {
+      try {
+        const qBranchId = req.query.branch_id ? parseInt(req.query.branch_id) : null;
+        const snapBranch = isManager ? (req.user.branch_id || 0) : (qBranchId || 0);
+        const auxQ = await pool.query(`SELECT
+            (SELECT COUNT(*) FROM product_stock ps WHERE ps.branch_id IN ${branchIdsList} AND ps.quantity > 0) AS stocked_sku,
+            (SELECT COUNT(*) FROM users u WHERE u.branch_id IN ${branchIdsList} AND u.role IN ('manager','cashier','seller','warehouse')) AS total_workers,
+            (SELECT COUNT(*) FROM users u WHERE u.branch_id IN ${branchIdsList} AND u.role IN ('manager','cashier','seller','warehouse') AND u.last_login_at >= NOW() - INTERVAL '30 days') AS active_workers,
+            (SELECT COUNT(DISTINCT so.created_by) FROM stock_outcome so WHERE so.branch_id IN ${branchIdsList} AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '30 days') AS sellers_with_sales,
+            (SELECT COUNT(*) FROM (SELECT so.customer_id FROM stock_outcome so WHERE so.branch_id IN ${branchIdsList} AND so.status='approved' AND so.customer_id IS NOT NULL GROUP BY so.customer_id) t) AS total_customers,
+            (SELECT COUNT(*) FROM (SELECT so.customer_id FROM stock_outcome so WHERE so.branch_id IN ${branchIdsList} AND so.status='approved' AND so.customer_id IS NOT NULL GROUP BY so.customer_id HAVING COUNT(*) >= 2) t) AS repeat_customers,
+            GREATEST(0, EXTRACT(DAY FROM (NOW() - c.created_at)))::int AS days_active
+          FROM companies c WHERE c.id = $1`, [companyId]);
+        const ax = auxQ.rows[0] || {};
+        const tw = parseInt(ax.total_workers || 0);
+        const computed = computeBHI({
+          revenue: totals.sales_revenue, prevRevenue: prev_totals && prev_totals.sales_revenue, marginPct: totals.margin_pct,
+          cash: totals.cash_balance, receivables: totals.client_debts, inventory: inventory_cost,
+          payables: totals.supplier_debts, taxPayable, wagesPayable, assets: bsAssets, liabilities: bsLiab,
+          salesCount: totals.deals_count, pending, lowStock, stockedSku: parseInt(ax.stocked_sku || 0), supplierDebts: totals.supplier_debts,
+          activeWorkers: parseInt(ax.active_workers || 0), totalWorkers: tw,
+          sellersWithSales: parseInt(ax.sellers_with_sales || 0), totalSellers: tw,
+          repeatCustomers: parseInt(ax.repeat_customers || 0), totalCustomers: parseInt(ax.total_customers || 0),
+          daysActive: parseInt(ax.days_active || 0),
+        });
+        const histQ = await pool.query(
+          `SELECT snapshot_date, bhi, goal_bhi FROM bhi_daily
+           WHERE company_id=$1 AND branch_id=$2 AND snapshot_date >= CURRENT_DATE - INTERVAL '90 days'
+           ORDER BY snapshot_date`, [companyId, snapBranch]);
+        const cfgQ = await pool.query('SELECT target_mode, manual_target, business_type FROM company_bhi_config WHERE company_id=$1', [companyId]);
+        const cfg = cfgQ.rows[0] || { target_mode: 'auto', manual_target: null, business_type: 'retail' };
+        let target;
+        if (cfg.target_mode === 'manual' && cfg.manual_target != null) target = parseInt(cfg.manual_target);
+        else {
+          const lmQ = await pool.query(
+            `SELECT ROUND(AVG(bhi))::int AS avg FROM bhi_daily
+             WHERE company_id=$1 AND branch_id=$2 AND snapshot_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month' AND snapshot_date < date_trunc('month', CURRENT_DATE)`,
+            [companyId, snapBranch]);
+          const lmAvg = lmQ.rows[0] && lmQ.rows[0].avg;
+          target = (computed.days_active >= 90 && lmAvg) ? Math.round(lmAvg * 1.05) : 75;
+        }
+        target = Math.max(40, Math.min(95, target));
+        pool.query(
+          `INSERT INTO bhi_daily (company_id, branch_id, snapshot_date, bhi, revenue_weight, blocks_active, accuracy_tier, pillars_json, blocks_json, goal_bhi, updated_at)
+           VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,$7,$8,$9,NOW())
+           ON CONFLICT (company_id, branch_id, snapshot_date) DO UPDATE SET
+             bhi=EXCLUDED.bhi, revenue_weight=EXCLUDED.revenue_weight, blocks_active=EXCLUDED.blocks_active,
+             accuracy_tier=EXCLUDED.accuracy_tier, pillars_json=EXCLUDED.pillars_json, blocks_json=EXCLUDED.blocks_json,
+             goal_bhi=EXCLUDED.goal_bhi, updated_at=NOW()`,
+          [companyId, snapBranch, computed.score, computed.revenue_weight, computed.blocks_active, computed.accuracy_tier,
+           JSON.stringify(computed.pillars), JSON.stringify(computed.blocks), target]
+        ).catch(e => console.error('bhi upsert', e.message));
+        const dstr = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const hist = histQ.rows.map(r => ({ date: dstr(r.snapshot_date), bhi: r.bhi, target: r.goal_bhi }));
+        const ti = hist.findIndex(h => h.date === todayStr);
+        if (ti >= 0) { hist[ti].bhi = computed.score; hist[ti].target = target; }
+        else hist.push({ date: todayStr, bhi: computed.score, target });
+        const series = hist.filter(h => h.bhi != null);
+        const sn = series.length;
+        const delta_today = sn >= 2 ? computed.score - series[sn - 2].bhi : null;
+        const delta_month = sn >= 2 ? computed.score - series[0].bhi : null;
+        let declining_streak = 0;
+        for (let i = series.length - 1; i > 0; i--) { if (series[i].bhi < series[i - 1].bhi) declining_streak++; else break; }
+        let trigger = null;
+        if (declining_streak >= 3) trigger = { tone: 'yellow', text: `Индекс падает ${declining_streak} ${plural(declining_streak, 'день', 'дня', 'дней')} подряд — обратите внимание` };
+        else if (computed.score != null && computed.score < 60) trigger = { tone: 'red', text: 'Критично — нужно вмешательство руководства' };
+        else if (computed.score != null && computed.score >= 85) trigger = { tone: 'green', text: 'Отличная работа команды! 🎉' };
+        bhi = Object.assign({}, computed, { target, target_mode: cfg.target_mode, business_type: cfg.business_type, delta_today, delta_month, declining_streak, trigger, history: hist });
+      } catch (bhiErr) { console.error('bhi compute', bhiErr.message); bhi = null; }
+    }
+
     res.json({
       company_id: companyId,
       branches: perBranch,
       totals,
       prev_totals,
       biz_state,
+      bhi,
       sales_trend: sales_trend_out,
       sales_trend_gran: trendGran,
       prev_trend,
@@ -6486,6 +6684,35 @@ async function ensureSchema() {
         created_at TIMESTAMP DEFAULT NOW()
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_payroll_liab_company ON payroll_liab(company_id)`);
+
+    // === BHI (индекс здоровья бизнеса): дневные снимки + конфиг цели ===
+    // branch_id=0 = вся компания; иначе конкретный филиал (у каждого скоупа своя линия истории).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bhi_daily (
+        company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        branch_id INT NOT NULL DEFAULT 0,
+        snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        bhi SMALLINT,
+        revenue_weight NUMERIC(4,3),
+        blocks_active SMALLINT,
+        accuracy_tier VARCHAR(8),
+        pillars_json JSONB,
+        blocks_json JSONB,
+        goal_bhi SMALLINT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (company_id, branch_id, snapshot_date)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bhi_daily_scope ON bhi_daily(company_id, branch_id, snapshot_date DESC)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS company_bhi_config (
+        company_id INT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+        target_mode VARCHAR(8) NOT NULL DEFAULT 'auto',
+        manual_target SMALLINT,
+        business_type VARCHAR(40) NOT NULL DEFAULT 'retail',
+        updated_by INT REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )`);
 
     console.log('schema OK');
   } catch (e) {
