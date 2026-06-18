@@ -92,201 +92,6 @@ function niceCeil(x) {
 // КРАСНАЯ где спад (только красный/зелёный). Учредитель видит суммы (ось Y + тултип)
 // и тонкую линию прибыли. Менеджер видит ТОЛЬКО состояние — без сумм: ось скрыта,
 // тултип показывает только ±% к предыдущему дню.
-// ===== BHI (индекс здоровья бизнеса) — блок на карточке «Состояние бизнеса» =====
-const bhiZoneColor = (s) => (s == null ? '#9ca3af' : s >= 75 ? '#16a34a' : s >= 50 ? '#f59e0b' : '#EF4444');
-
-function BHIChart({ history, target, lang, picked, setPicked }) {
-  const { tt } = useTt();
-  const pts = (history || []).filter(h => h.bhi != null);
-  if (pts.length < 1) return null;
-  const n = pts.length;
-  const W = 1000, H = 200, TOP = 8, BOT = H - 4;
-  const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
-  const yAt = (v) => TOP + (1 - (Math.max(0, Math.min(100, v)) / 100)) * (BOT - TOP);
-  const bands = [{ f: 0, t: 50, c: 'rgba(239,68,68,.07)' }, { f: 50, t: 75, c: 'rgba(245,158,11,.09)' }, { f: 75, t: 100, c: 'rgba(22,163,74,.09)' }];
-  const labelStep = Math.max(1, Math.ceil(n / 31));
-  const dm = (iso) => { const d = new Date(iso); return d.getDate() + '.' + String(d.getMonth() + 1).padStart(2, '0'); };
-  return (
-    <div style={{ position: 'relative', paddingLeft: 28, paddingRight: 4 }}>
-      {[0, 50, 75, 100].map(v => (
-        <div key={v} style={{ position: 'absolute', left: 0, width: 22, textAlign: 'right', top: `${(yAt(v) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9.5, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace", pointerEvents: 'none' }}>{v}</div>
-      ))}
-      <div style={{ position: 'relative', height: H, cursor: 'pointer' }} onMouseLeave={() => setPicked(null)}>
-        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-          {bands.map((b, i) => (<rect key={i} x="0" y={yAt(b.t)} width={W} height={yAt(b.f) - yAt(b.t)} fill={b.c} />))}
-          {[0, 50, 75, 100].map(v => (<line key={v} x1="0" y1={yAt(v)} x2={W} y2={yAt(v)} stroke="rgba(0,0,0,.07)" strokeWidth="1" strokeDasharray={v === 0 ? '0' : '4 4'} vectorEffect="non-scaling-stroke" />))}
-          {target != null && <line x1="0" y1={yAt(target)} x2={W} y2={yAt(target)} stroke="#5B4FE8" strokeWidth="1.5" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
-          {pts.slice(0, -1).map((p, i) => (<line key={'s' + i} x1={xAt(i)} y1={yAt(p.bhi)} x2={xAt(i + 1)} y2={yAt(pts[i + 1].bhi)} stroke={bhiZoneColor(pts[i + 1].bhi)} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />))}
-          {pts.map((p, i) => (<circle key={'p' + i} cx={xAt(i)} cy={yAt(p.bhi)} r={picked === i ? 4.5 : 2.8} fill={bhiZoneColor(p.bhi)} stroke="#fff" strokeWidth="1.4" vectorEffect="non-scaling-stroke" onMouseEnter={() => setPicked(i)} style={{ cursor: 'pointer' }} />))}
-        </svg>
-        {target != null && <div style={{ position: 'absolute', right: 2, top: `${(yAt(target) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9, fontWeight: 800, color: '#5B4FE8', background: '#fff', padding: '0 3px', borderRadius: 3 }}>{tt('Цель')} {target}</div>}
-        {picked != null && pts[picked] && (() => {
-          const left = (xAt(picked) / W) * 100;
-          return (<div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
-            <div>BHI: {pts[picked].bhi}</div>
-            <div style={{ fontSize: 9, opacity: .7, marginTop: 1 }}>{fmtDate(pts[picked].date, { day: 'numeric', month: 'short' }, lang)}</div>
-          </div>);
-        })()}
-      </div>
-      <div style={{ display: 'flex', marginTop: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
-        {pts.map((p, i) => (<div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden', whiteSpace: 'nowrap' }}>{i % labelStep === 0 ? dm(p.date) : ''}</div>))}
-      </div>
-    </div>
-  );
-}
-
-function PillarCard({ p }) {
-  const { tt } = useTt();
-  const has = p.score != null;
-  const col = bhiZoneColor(p.score);
-  return (
-    <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 13px', opacity: has ? 1 : .6 }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text2)' }}>{tt(p.label)}</div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 24, fontWeight: 900, color: col }}>{has ? p.score : '—'}</span>
-        <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>{tt('вес')} {Math.round(p.weight)}%</span>
-      </div>
-      <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}>{has ? tt(p.question) : tt('Нет данных')}</div>
-      <div style={{ height: 6, borderRadius: 4, background: '#eef0f4', overflow: 'hidden' }}>
-        <div style={{ width: `${has ? p.score : 0}%`, height: '100%', background: col, borderRadius: 4 }} />
-      </div>
-    </div>
-  );
-}
-
-// Модалка цели BHI (только founder/gen_dir): режим авто/ручной + тип бизнеса.
-function BhiTargetModal({ open, onClose, onSaved }) {
-  const { tt } = useTt();
-  const [mode, setMode] = useState('auto');
-  const [manual, setManual] = useState(80);
-  const [bt, setBt] = useState('retail');
-  const [resolved, setResolved] = useState(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    api.get('/company/bhi-target').then(r => {
-      const d = r.data || {};
-      setMode(d.target_mode || 'auto');
-      setManual(d.manual_target || d.resolved_target || 80);
-      setBt(d.business_type || 'retail');
-      setResolved(d.resolved_target);
-    }).catch(() => {});
-  }, [open]);
-  const save = async () => {
-    setBusy(true);
-    try {
-      await api.put('/company/bhi-target', { target_mode: mode, manual_target: manual, business_type: bt });
-      toast(tt('Цель сохранена'));
-      onSaved && onSaved();
-      onClose();
-    } catch (e) { toast(e.response?.data?.error || e.message, 'error'); }
-    setBusy(false);
-  };
-  const tgl = (opts, val, set) => (
-    <div style={{ display: 'flex', gap: 6 }}>
-      {opts.map(o => (
-        <button key={o.v} type="button" className="btn btn-sm" onClick={() => set(o.v)}
-          style={{ background: val === o.v ? '#5B4FE8' : '#eef0f4', color: val === o.v ? '#fff' : 'var(--text2)', fontWeight: 700 }}>{o.label}</button>
-      ))}
-    </div>
-  );
-  return (
-    <Modal open={open} onClose={onClose} icon="🎯" title={tt('Цель BHI')} width={440}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{tt('Режим цели')}</div>
-          {tgl([{ v: 'auto', label: tt('Авто') }, { v: 'manual', label: tt('Ручной') }], mode, setMode)}
-        </div>
-        {mode === 'manual' ? (
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('Целевой балл')} (40–95)</div>
-            <input className="input" type="number" min={40} max={95} value={manual} onChange={e => setManual(e.target.value)} style={{ width: 120 }} />
-          </div>
-        ) : (
-          <div style={{ fontSize: 12.5, color: 'var(--text2)', background: '#f7f8fb', borderRadius: 8, padding: '8px 10px' }}>
-            {tt('Авто: пока компании меньше 90 дней — отраслевой бенчмарк; дальше — среднее прошлого месяца ×1.05.')}
-            {resolved != null && <div style={{ marginTop: 6, fontWeight: 800 }}>{tt('Сейчас цель')}: {resolved}</div>}
-          </div>
-        )}
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{tt('Тип бизнеса')}</div>
-          {tgl([{ v: 'retail', label: tt('Розница') }, { v: 'wholesale', label: tt('Опт') }], bt, setBt)}
-        </div>
-        <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? tt('Сохранение…') : tt('Сохранить')}</button>
-      </div>
-    </Modal>
-  );
-}
-
-function BHIBlock({ bhi, lang, canEditTarget, onChanged }) {
-  const { tt } = useTt();
-  const [picked, setPicked] = useState(null);
-  const [showBlocks, setShowBlocks] = useState(false);
-  const [targetOpen, setTargetOpen] = useState(false);
-  if (!bhi || bhi.score == null) {
-    return <div style={{ padding: '18px 4px', color: 'var(--text3)', fontSize: 13 }}>📈 {tt('История BHI накапливается — данные появятся в ближайшие дни')}</div>;
-  }
-  const zc = bhiZoneColor(bhi.score);
-  const pts = (bhi.history || []).filter(h => h.bhi != null);
-  let best = null, worst = null;
-  for (const h of pts) { if (best == null || h.bhi > best.bhi) best = h; if (worst == null || h.bhi < worst.bhi) worst = h; }
-  const dlt = (v) => (v == null ? '—' : v >= 0 ? '▲ +' + v : '▼ ' + v);
-  const trigTone = bhi.trigger ? (bhi.trigger.tone === 'red' ? '#EF4444' : bhi.trigger.tone === 'green' ? '#16a34a' : '#f59e0b') : null;
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 40, fontWeight: 900, color: zc, lineHeight: 1 }}>{bhi.score}</span>
-          <span style={{ fontSize: 14, color: 'var(--text3)', fontWeight: 700 }}>/ 100 {tt('баллов')}</span>
-        </div>
-        <span style={{ background: zc, color: '#fff', borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 800 }}>● {tt(bhi.zone_label)}</span>
-        {bhi.delta_today != null && <span style={{ fontSize: 12, fontWeight: 800, color: bhi.delta_today >= 0 ? '#16a34a' : '#EF4444' }}>{dlt(bhi.delta_today)} {tt('vs вчера')}</span>}
-        {bhi.delta_month != null && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)' }}>{dlt(bhi.delta_month)} {tt('за месяц')}</span>}
-        {canEditTarget && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setTargetOpen(true)}>⚙ {tt('Цель')} {bhi.target}</button>}
-      </div>
-      {bhi.trigger && <div style={{ background: trigTone + '18', border: '1px solid ' + trigTone + '55', color: trigTone, borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>⚠ {bhi.trigger.text}</div>}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginBottom: 12, background: '#f7f8fb', borderRadius: 8, padding: '6px 10px' }}>
-        <span title={tt('BHI считается по доступным данным — точность растёт со временем')}>⚙️ {tt('Адаптивный режим')}</span>
-        <span>· {tt('Точность')}: {tt(bhi.accuracy_tier)}</span>
-        <span>· {tt('Активных блоков')}: {bhi.blocks_active}/8</span>
-        <span>· {tt('Вес выручки')}: {Math.round(bhi.revenue_weight * 100)}%</span>
-      </div>
-      {(best && worst && pts.length > 1) && (
-        <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{tt('Лучший день')}: <b style={{ color: '#16a34a' }}>{best.bhi}</b> · {fmtDate(best.date, { day: 'numeric', month: 'short' }, lang)}</div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>{tt('Худший день')}: <b style={{ color: '#EF4444' }}>{worst.bhi}</b> · {fmtDate(worst.date, { day: 'numeric', month: 'short' }, lang)}</div>
-        </div>
-      )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
-        {(bhi.pillars || []).map(p => <PillarCard key={p.key} p={p} />)}
-      </div>
-      <BHIChart history={bhi.history} target={bhi.target} lang={lang} picked={picked} setPicked={setPicked} />
-      <div style={{ marginTop: 12 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => setShowBlocks(s => !s)} style={{ fontSize: 12 }}>{showBlocks ? '▾' : '▸'} {tt('Уровень 2 — 8 блоков')}</button>
-        {showBlocks && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: 8, marginTop: 8 }}>
-            {(bhi.blocks || []).map(b => {
-              const has = b.hasData && b.score != null;
-              const col = bhiZoneColor(b.score);
-              const kindLbl = b.kind === 'proxy' ? tt('прокси') : b.kind === 'partial' ? tt('частично') : tt('реальные');
-              return (
-                <div key={b.key} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '8px 10px', opacity: has ? 1 : .55 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 800 }}>{tt(b.label)}</span>
-                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 900, color: col }}>{has ? b.score : '—'}</span>
-                  </div>
-                  <div style={{ fontSize: 9.5, color: 'var(--text3)', marginTop: 2 }}>{has ? `${tt('вес')} ${Math.round(b.weight)}% · ${kindLbl}` : tt(b.reason || 'Нет данных')}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      {canEditTarget && <BhiTargetModal open={targetOpen} onClose={() => setTargetOpen(false)} onSaved={onChanged} />}
-    </div>
-  );
-}
-
 function BusinessStateChart({ data, lang, isOwner, gran }) {
   const { tt } = useTt();
   const [hover, setHover] = useState(null);
@@ -381,7 +186,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
 
 // «Спросить у AI» про состояние бизнеса — ТОЛЬКО владелец (у менеджера AI нет).
 // Шлёт реальный тренд выручки/прибыли + вопрос, показывает ответ.
-function StateAsk({ trend, bizState, lang, bhi }) {
+function StateAsk({ trend, bizState, lang }) {
   const { tt } = useTt();
   const [q, setQ] = useState('');
   const [ans, setAns] = useState('');
@@ -393,7 +198,7 @@ function StateAsk({ trend, bizState, lang, bhi }) {
     if (!text) return;
     setBusy(true); setErr(''); setAns('');
     try {
-      const r = await api.post('/ai/explain-state', { question: text, trend, biz_state: bizState, bhi, lang });
+      const r = await api.post('/ai/explain-state', { question: text, trend, biz_state: bizState, lang });
       setAns(r.data?.answer || tt('Пустой ответ от AI.'));
     } catch (e) { setErr(e.response?.data?.error || e.message); }
     setBusy(false);
@@ -787,16 +592,12 @@ export default function Dashboard() {
 
           {/* Диаграмма состояния бизнеса — отдельная широкая карта.
               Учредитель видит суммы (выручка+прибыль) и AI-разбор; менеджер — только состояние. */}
-          {(data?.bhi || (isOwner && data?.biz_state) || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
+          {((isOwner && data?.biz_state) || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
-              {data?.bhi ? (
-                <BHIBlock bhi={data.bhi} lang={lang} canEditTarget={isOwner} onChanged={() => setReloadTick(t => t + 1)} />
-              ) : (
-                trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
-                  <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} gran={data?.sales_trend_gran} />
-                )
+              {trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
+                <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} gran={data?.sales_trend_gran} />
               )}
-              <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} bhi={data?.bhi} />
+              <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} />
             </Card>
           )}
 
