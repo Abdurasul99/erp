@@ -805,6 +805,45 @@ function computeBHI(ctx) {
     revenue_weight: revenueWeight, blocks_active: activeKeys.length, pillars, blocks };
 }
 
+// Отраслевой бенчмарк: средний последний BHI по всем компаниям того же типа (whole-company
+// строки branch_id=0). Приватность: при <3 компаниях типа — фоллбэк на константу (не
+// раскрываем балл единственного конкурента). Розница UZ ~72, опт ~75.
+async function getBenchmark(businessType) {
+  const bt = businessType === 'wholesale' ? 'wholesale' : 'retail';
+  try {
+    const r = await pool.query(
+      `SELECT ROUND(AVG(last_bhi))::int AS avg, COUNT(*) AS n FROM (
+         SELECT DISTINCT ON (d.company_id) d.bhi AS last_bhi
+         FROM bhi_daily d JOIN company_bhi_config cfg ON cfg.company_id = d.company_id
+         WHERE d.branch_id = 0 AND cfg.business_type = $1 AND d.bhi IS NOT NULL
+         ORDER BY d.company_id, d.snapshot_date DESC
+       ) t`, [bt]);
+    const n = parseInt((r.rows[0] && r.rows[0].n) || 0);
+    if (n >= 3 && r.rows[0].avg != null) return parseInt(r.rows[0].avg);
+  } catch (e) { console.error('getBenchmark', e.message); }
+  return bt === 'wholesale' ? 75 : 72;
+}
+
+// Резолвинг цели BHI: ручной override → иначе (≥90 дн и есть прошлый месяц → ср.×1.05) →
+// иначе отраслевой бенчмарк. clamp(40,95).
+async function resolveBhiTarget(companyId, branchId, cfg, daysActive) {
+  if (cfg && cfg.target_mode === 'manual' && cfg.manual_target != null)
+    return Math.max(40, Math.min(95, parseInt(cfg.manual_target)));
+  let target = null;
+  try {
+    if (daysActive >= 90) {
+      const lmQ = await pool.query(
+        `SELECT ROUND(AVG(bhi))::int AS avg FROM bhi_daily
+         WHERE company_id=$1 AND branch_id=$2 AND snapshot_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month' AND snapshot_date < date_trunc('month', CURRENT_DATE)`,
+        [companyId, branchId]);
+      const lmAvg = lmQ.rows[0] && lmQ.rows[0].avg;
+      if (lmAvg) target = Math.round(lmAvg * 1.05);
+    }
+  } catch (e) { console.error('resolveBhiTarget', e.message); }
+  if (target == null) target = await getBenchmark(cfg && cfg.business_type);
+  return Math.max(40, Math.min(95, target));
+}
+
 // === COMPANY DASHBOARD (gen_dir/founder/manager) ===
 // Query params:
 //   from, to — ISO timestamps for sales period filter (default: lifetime)
@@ -1331,17 +1370,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
            ORDER BY snapshot_date`, [companyId, snapBranch]);
         const cfgQ = await pool.query('SELECT target_mode, manual_target, business_type FROM company_bhi_config WHERE company_id=$1', [companyId]);
         const cfg = cfgQ.rows[0] || { target_mode: 'auto', manual_target: null, business_type: 'retail' };
-        let target;
-        if (cfg.target_mode === 'manual' && cfg.manual_target != null) target = parseInt(cfg.manual_target);
-        else {
-          const lmQ = await pool.query(
-            `SELECT ROUND(AVG(bhi))::int AS avg FROM bhi_daily
-             WHERE company_id=$1 AND branch_id=$2 AND snapshot_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '1 month' AND snapshot_date < date_trunc('month', CURRENT_DATE)`,
-            [companyId, snapBranch]);
-          const lmAvg = lmQ.rows[0] && lmQ.rows[0].avg;
-          target = (computed.days_active >= 90 && lmAvg) ? Math.round(lmAvg * 1.05) : 75;
-        }
-        target = Math.max(40, Math.min(95, target));
+        const target = await resolveBhiTarget(companyId, snapBranch, cfg, computed.days_active);
         pool.query(
           `INSERT INTO bhi_daily (company_id, branch_id, snapshot_date, bhi, revenue_weight, blocks_active, accuracy_tier, pillars_json, blocks_json, goal_bhi, updated_at)
            VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,$7,$8,$9,NOW())
@@ -1394,6 +1423,42 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
     console.error('dashboard error', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// === BHI: цель (только founder/gen_dir; admin/manager — нет) ===
+app.get('/api/company/bhi-target', auth(['founder', 'gen_dir']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const cfgQ = await pool.query('SELECT target_mode, manual_target, business_type FROM company_bhi_config WHERE company_id=$1', [companyId]);
+    const cfg = cfgQ.rows[0] || { target_mode: 'auto', manual_target: null, business_type: 'retail' };
+    const daysQ = await pool.query('SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - created_at)))::int AS d FROM companies WHERE id=$1', [companyId]);
+    const daysActive = parseInt((daysQ.rows[0] && daysQ.rows[0].d) || 0);
+    const resolved = await resolveBhiTarget(companyId, 0, cfg, daysActive);
+    res.json({ target_mode: cfg.target_mode, manual_target: cfg.manual_target, business_type: cfg.business_type, resolved_target: resolved, days_active: daysActive });
+  } catch (e) { console.error('bhi-target get', e); res.status(500).json({ error: e.message }); }
+});
+app.put('/api/company/bhi-target', auth(['founder', 'gen_dir']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Нет компании' });
+    const mode = (req.body && req.body.target_mode === 'manual') ? 'manual' : 'auto';
+    const bt = ['retail', 'wholesale'].includes(req.body && req.body.business_type) ? req.body.business_type : 'retail';
+    let manual = null;
+    if (mode === 'manual') {
+      manual = parseInt(req.body && req.body.manual_target);
+      if (!Number.isFinite(manual)) return res.status(400).json({ error: 'Укажите целевой балл (40–95)' });
+      manual = Math.max(40, Math.min(95, manual));
+    }
+    await pool.query(
+      `INSERT INTO company_bhi_config (company_id, target_mode, manual_target, business_type, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (company_id) DO UPDATE SET target_mode=EXCLUDED.target_mode, manual_target=EXCLUDED.manual_target, business_type=EXCLUDED.business_type, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [companyId, mode, manual, bt, req.user.id]);
+    const daysQ = await pool.query('SELECT GREATEST(0, EXTRACT(DAY FROM (NOW() - created_at)))::int AS d FROM companies WHERE id=$1', [companyId]);
+    const daysActive = parseInt((daysQ.rows[0] && daysQ.rows[0].d) || 0);
+    const resolved = await resolveBhiTarget(companyId, 0, { target_mode: mode, manual_target: manual, business_type: bt }, daysActive);
+    res.json({ ok: true, target_mode: mode, manual_target: manual, business_type: bt, resolved_target: resolved });
+  } catch (e) { console.error('bhi-target put', e); res.status(500).json({ error: e.message }); }
 });
 
 // === SALES CHART (банковский стиль: бар = день/неделя/месяц/год) ===
@@ -6433,11 +6498,17 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
 app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
   try {
     if (!AI_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
-    const { question, trend, biz_state, lang } = req.body || {};
+    const { question, trend, biz_state, bhi, lang } = req.body || {};
     const q = (typeof question === 'string' && question.trim()) ? question.trim().slice(0, 300) : 'Объясни состояние бизнеса по этому графику.';
     const rows = Array.isArray(trend) ? trend.slice(-62) : [];
     const fmtN = (x) => Math.round(parseFloat(x) || 0).toLocaleString('ru-RU');
     const noChart = ' НЕ используй теги вида [[CHART:...]] — здесь они не поддерживаются.';
+    // Факт-лист BHI — БЕЗРАЗМЕРНЫЕ баллы (проценты), безопасны и для менеджера.
+    const bhiFacts = (bhi && bhi.score != null)
+      ? `\n\nИндекс здоровья бизнеса (BHI), баллы 0..100 (это НЕ денежные суммы):\nBHI ${bhi.score}/100 (${bhi.zone_label}), цель ${bhi.target}, точность «${bhi.accuracy_tier}», активных блоков ${bhi.blocks_active}/8.\nСтолпы: ${(bhi.pillars || []).map(p => `${p.label} ${p.score == null ? '—' : p.score}`).join(', ')}.\nБлоки: ${(bhi.blocks || []).filter(b => b.hasData).map(b => `${b.label} ${b.score}`).join(', ')}.` +
+        ((bhi.blocks || []).some(b => !b.hasData) ? ` Нет данных по блокам: ${bhi.blocks.filter(b => !b.hasData).map(b => b.label).join(', ')}.` : '')
+      : '';
+    const bhiAsk = ' Если вопрос про индекс/BHI/здоровье бизнеса — объясни по баллам столпов и блоков (это проценты, не суммы), назови слабейший столп и 1-2 конкретных действия для его роста.';
     let sys, userMsg;
     if (req.user.role === 'manager') {
       // Менеджеру — БЕЗ сумм: на входе только относительный idx (0..1) и доли баланса.
@@ -6449,7 +6520,7 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager'
         ? `\nСтруктура баланса: капитал ${Math.round((bs.equity_ratio || 0) * 100)}% / обязательства ${Math.round((bs.liability_ratio || 0) * 100)}% от активов.`
         : '';
       sys = aiLangRule(lang) + ' ' + AI_DATA_BOUNDARY + ' Ты помощник по СОСТОЯНИЮ бизнеса для менеджера ОДНОГО филиала розничной торговли в Узбекистане. Данные относятся ТОЛЬКО к его филиалу — НЕ упоминай другие филиалы и компанию в целом, отвечай строго в рамках его филиала. Объясняй ДИНАМИКУ (рост/спад, в какие дни) по относительным данным (индекс 0..1 — доля от максимума периода). СТРОГО ЗАПРЕЩЕНО называть денежные суммы, выручку и прибыль в абсолютных цифрах — у пользователя НЕТ к ним доступа. Только относительные термины: вырос/упал, на сколько % к прошлому дню. Кратко (2-4 предложения) + 1 практический совет.' + noChart;
-      userMsg = `График «Состояние бизнеса» твоего филиала (относительные данные, БЕЗ сумм):\n${fs}${ratioLine}\n\nВопрос: ${q}\nОтветь про динамику/состояние СВОЕГО филиала, БЕЗ конкретных денежных сумм.`;
+      userMsg = `График «Состояние бизнеса» твоего филиала (относительные данные, БЕЗ сумм):\n${fs}${ratioLine}${bhiFacts}\n\nВопрос: ${q}\nОтветь про динамику/состояние СВОЕГО филиала, БЕЗ конкретных денежных сумм.${bhiAsk}`;
     } else {
       let factSheet = rows.length
         ? 'Динамика по дням (дата · выручка · валовая прибыль, сум):\n' + rows.map(r => `${r.date}: ${fmtN(r.revenue)} · ${fmtN(r.profit)}`).join('\n')
@@ -6459,7 +6530,7 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager'
         factSheet += `\n\nБаланс (состояние) сейчас, сум:\nАктивы ${fmtN(biz_state.assets)} (касса ${fmtN(b.cash)}, склад ${fmtN(b.inventory)}, дебиторка ${fmtN(b.receivables)}, осн.средства ${fmtN(b.fixed_assets)})\nОбязательства ${fmtN(biz_state.liabilities)} (поставщики ${fmtN(b.payables)}, кредиты ${fmtN(b.loans)}, налоги ${fmtN(b.tax_payable)}, зарплаты ${fmtN(b.wages_payable)})\nСобственный капитал ${fmtN(biz_state.equity)}`;
       }
       sys = (await buildSystemPrompt(req.user, lang)) + noChart;
-      userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.`;
+      userMsg = `График «Состояние бизнеса» за период — выручка и валовая прибыль по дням компании пользователя:\n${factSheet}${bhiFacts}\n\nВопрос пользователя: ${q}\n\nОтветь коротко (2-5 предложений), по делу и по цифрам: где спад/рост выручки и прибыли, вероятные причины ИЗ ЭТИХ данных (а не общие фразы), и 1-2 конкретных действия. Если в вопросе про «почему упала» — найди дни/участки падения и объясни.${bhiAsk}`;
     }
     const r = await fetch(DEEPSEEK_URL, {
       method: 'POST',

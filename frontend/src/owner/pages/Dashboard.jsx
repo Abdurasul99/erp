@@ -154,10 +154,75 @@ function PillarCard({ p }) {
   );
 }
 
-function BHIBlock({ bhi, lang }) {
+// Модалка цели BHI (только founder/gen_dir): режим авто/ручной + тип бизнеса.
+function BhiTargetModal({ open, onClose, onSaved }) {
+  const { tt } = useTt();
+  const [mode, setMode] = useState('auto');
+  const [manual, setManual] = useState(80);
+  const [bt, setBt] = useState('retail');
+  const [resolved, setResolved] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    api.get('/company/bhi-target').then(r => {
+      const d = r.data || {};
+      setMode(d.target_mode || 'auto');
+      setManual(d.manual_target || d.resolved_target || 80);
+      setBt(d.business_type || 'retail');
+      setResolved(d.resolved_target);
+    }).catch(() => {});
+  }, [open]);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.put('/company/bhi-target', { target_mode: mode, manual_target: manual, business_type: bt });
+      toast(tt('Цель сохранена'));
+      onSaved && onSaved();
+      onClose();
+    } catch (e) { toast(e.response?.data?.error || e.message, 'error'); }
+    setBusy(false);
+  };
+  const tgl = (opts, val, set) => (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {opts.map(o => (
+        <button key={o.v} type="button" className="btn btn-sm" onClick={() => set(o.v)}
+          style={{ background: val === o.v ? '#5B4FE8' : '#eef0f4', color: val === o.v ? '#fff' : 'var(--text2)', fontWeight: 700 }}>{o.label}</button>
+      ))}
+    </div>
+  );
+  return (
+    <Modal open={open} onClose={onClose} icon="🎯" title={tt('Цель BHI')} width={440}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{tt('Режим цели')}</div>
+          {tgl([{ v: 'auto', label: tt('Авто') }, { v: 'manual', label: tt('Ручной') }], mode, setMode)}
+        </div>
+        {mode === 'manual' ? (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('Целевой балл')} (40–95)</div>
+            <input className="input" type="number" min={40} max={95} value={manual} onChange={e => setManual(e.target.value)} style={{ width: 120 }} />
+          </div>
+        ) : (
+          <div style={{ fontSize: 12.5, color: 'var(--text2)', background: '#f7f8fb', borderRadius: 8, padding: '8px 10px' }}>
+            {tt('Авто: пока компании меньше 90 дней — отраслевой бенчмарк; дальше — среднее прошлого месяца ×1.05.')}
+            {resolved != null && <div style={{ marginTop: 6, fontWeight: 800 }}>{tt('Сейчас цель')}: {resolved}</div>}
+          </div>
+        )}
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{tt('Тип бизнеса')}</div>
+          {tgl([{ v: 'retail', label: tt('Розница') }, { v: 'wholesale', label: tt('Опт') }], bt, setBt)}
+        </div>
+        <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? tt('Сохранение…') : tt('Сохранить')}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function BHIBlock({ bhi, lang, canEditTarget, onChanged }) {
   const { tt } = useTt();
   const [picked, setPicked] = useState(null);
   const [showBlocks, setShowBlocks] = useState(false);
+  const [targetOpen, setTargetOpen] = useState(false);
   if (!bhi || bhi.score == null) {
     return <div style={{ padding: '18px 4px', color: 'var(--text3)', fontSize: 13 }}>📈 {tt('История BHI накапливается — данные появятся в ближайшие дни')}</div>;
   }
@@ -177,6 +242,7 @@ function BHIBlock({ bhi, lang }) {
         <span style={{ background: zc, color: '#fff', borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 800 }}>● {tt(bhi.zone_label)}</span>
         {bhi.delta_today != null && <span style={{ fontSize: 12, fontWeight: 800, color: bhi.delta_today >= 0 ? '#16a34a' : '#EF4444' }}>{dlt(bhi.delta_today)} {tt('vs вчера')}</span>}
         {bhi.delta_month != null && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)' }}>{dlt(bhi.delta_month)} {tt('за месяц')}</span>}
+        {canEditTarget && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setTargetOpen(true)}>⚙ {tt('Цель')} {bhi.target}</button>}
       </div>
       {bhi.trigger && <div style={{ background: trigTone + '18', border: '1px solid ' + trigTone + '55', color: trigTone, borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>⚠ {bhi.trigger.text}</div>}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginBottom: 12, background: '#f7f8fb', borderRadius: 8, padding: '6px 10px' }}>
@@ -216,6 +282,7 @@ function BHIBlock({ bhi, lang }) {
           </div>
         )}
       </div>
+      {canEditTarget && <BhiTargetModal open={targetOpen} onClose={() => setTargetOpen(false)} onSaved={onChanged} />}
     </div>
   );
 }
@@ -314,7 +381,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
 
 // «Спросить у AI» про состояние бизнеса — ТОЛЬКО владелец (у менеджера AI нет).
 // Шлёт реальный тренд выручки/прибыли + вопрос, показывает ответ.
-function StateAsk({ trend, bizState, lang }) {
+function StateAsk({ trend, bizState, lang, bhi }) {
   const { tt } = useTt();
   const [q, setQ] = useState('');
   const [ans, setAns] = useState('');
@@ -326,7 +393,7 @@ function StateAsk({ trend, bizState, lang }) {
     if (!text) return;
     setBusy(true); setErr(''); setAns('');
     try {
-      const r = await api.post('/ai/explain-state', { question: text, trend, biz_state: bizState, lang });
+      const r = await api.post('/ai/explain-state', { question: text, trend, biz_state: bizState, bhi, lang });
       setAns(r.data?.answer || tt('Пустой ответ от AI.'));
     } catch (e) { setErr(e.response?.data?.error || e.message); }
     setBusy(false);
@@ -723,13 +790,13 @@ export default function Dashboard() {
           {(data?.bhi || (isOwner && data?.biz_state) || (trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0))) && (
             <Card icon="📊" title={tt('Состояние бизнеса') + ' · ' + periodLabel} style={{ marginBottom: 16 }}>
               {data?.bhi ? (
-                <BHIBlock bhi={data.bhi} lang={lang} />
+                <BHIBlock bhi={data.bhi} lang={lang} canEditTarget={isOwner} onChanged={() => setReloadTick(t => t + 1)} />
               ) : (
                 trend.length > 1 && trend.some(x => (x.revenue || 0) > 0 || (x.idx || 0) > 0) && (
                   <BusinessStateChart data={trend} lang={lang} isOwner={isOwner} gran={data?.sales_trend_gran} />
                 )
               )}
-              <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} />
+              <StateAsk trend={trend} bizState={isOwner ? data?.biz_state : null} lang={lang} bhi={data?.bhi} />
             </Card>
           )}
 
