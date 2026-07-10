@@ -67,9 +67,9 @@ export default function ChannelsTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🏆" label={tt('Лучший канал')} value={best ? (tt(best.label)) : '—'} sub={best ? `ROI ${best.roi}x` : tt('добавьте расходы')} color="#22C55E" />
-            <Tile icon="💰" label={tt('Выручка с каналов')} value={fmtMoneyFull(totalRevenue)} sub={tt('сум · всё время')} color="#5B4FE8" />
-            <Tile icon="📣" label={tt('Всего на рекламу')} value={fmtMoneyFull(totalSpend)} sub={tt('сум · введено')} color="#FF6B2B" />
+            <Tile icon="🏆" label={tt('Лучший канал')} value={best ? (tt(best.label)) : '—'} sub={best ? `ROI ${best.roi}x` : tt('добавьте расходы')} color="#16A34A" />
+            <Tile icon="💰" label={tt('Выручка с каналов')} value={fmtMoneyFull(totalRevenue)} sub={tt('сум · всё время')} color="#1D4ED8" />
+            <Tile icon="📣" label={tt('Всего на рекламу')} value={fmtMoneyFull(totalSpend)} sub={tt('сум · введено')} color="#D97706" />
             <Tile icon="🎯" label={tt('Общий ROI')} value={totalSpend > 0 ? (Math.round((totalRevenue / totalSpend) * 100) / 100) + 'x' : '—'} sub={`${fmtNum(totalBuyers)} ${tt('покупателей')}`} color="#0EA5E9" />
           </div>
 

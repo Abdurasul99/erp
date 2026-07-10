@@ -44,21 +44,21 @@ export default function CashflowTool() {
       ) : (
         <>
           <div className="grid-3" style={{ marginBottom: 18 }}>
-            <Tile icon="📥" label={tt('Приход (период)')} value={'+' + fmtMoneyFull(data.income)} sub={tt('сум · в кассу')} color="#22C55E" />
-            <Tile icon="📤" label={tt('Расход (период)')} value={'−' + fmtMoneyFull(data.expense)} sub={tt('сум · из кассы')} color="#EF4444" />
+            <Tile icon="📥" label={tt('Приход (период)')} value={'+' + fmtMoneyFull(data.income)} sub={tt('сум · в кассу')} color="#16A34A" />
+            <Tile icon="📤" label={tt('Расход (период)')} value={'−' + fmtMoneyFull(data.expense)} sub={tt('сум · из кассы')} color="#DC2626" />
             <Tile icon="💎" label={tt('Сальдо')} value={(data.balance >= 0 ? '+' : '') + fmtMoneyFull(data.balance)}
               sub={data.balance_delta_pct != null ? `${data.balance_delta_pct >= 0 ? '▲' : '▼'} ${Math.abs(data.balance_delta_pct)}% ${tt('к прошлому периоду')}` : tt('сум')}
-              color="#5B4FE8" />
+              color="#1D4ED8" />
           </div>
 
           <Card icon="📊" title={tt('Движение по дням')} style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 180, borderBottom: '1.5px solid var(--border, #e6e8f2)', paddingTop: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 180, borderBottom: '1.5px solid var(--border, #E3EAF3)', paddingTop: 10 }}>
               {byDay.map((d, i) => (
                 <div key={i} className="chart-col"
                   data-tip={`${fmtDay(d.day)}\n+${fmtMoneyFull(d.income)} · −${fmtMoneyFull(d.expense)}\nитого ${fmtMoneyFull(d.net)}`}
                   style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 1 }}>
-                  <div style={{ width: '40%', height: `${(d.income / maxFlow) * 100}%`, background: '#22C55E', borderRadius: '3px 3px 0 0', minHeight: d.income > 0 ? 2 : 0 }} />
-                  <div style={{ width: '40%', height: `${(d.expense / maxFlow) * 100}%`, background: '#EF4444', borderRadius: '3px 3px 0 0', minHeight: d.expense > 0 ? 2 : 0 }} />
+                  <div style={{ width: '40%', height: `${(d.income / maxFlow) * 100}%`, background: '#16A34A', borderRadius: '3px 3px 0 0', minHeight: d.income > 0 ? 2 : 0 }} />
+                  <div style={{ width: '40%', height: `${(d.expense / maxFlow) * 100}%`, background: '#DC2626', borderRadius: '3px 3px 0 0', minHeight: d.expense > 0 ? 2 : 0 }} />
                 </div>
               ))}
             </div>
@@ -67,8 +67,8 @@ export default function CashflowTool() {
               <span>{byDay.length ? fmtDay(byDay[byDay.length - 1].day) : ''}</span>
             </div>
             <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 12 }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#22C55E', borderRadius: 2 }} /> {tt('Приход')}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#EF4444', borderRadius: 2 }} /> {tt('Расход')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#16A34A', borderRadius: 2 }} /> {tt('Приход')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, background: '#DC2626', borderRadius: 2 }} /> {tt('Расход')}</span>
             </div>
           </Card>
 

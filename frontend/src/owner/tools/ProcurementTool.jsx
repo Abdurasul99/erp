@@ -4,11 +4,11 @@ import { toast } from '../Modal.jsx';
 import { useTt } from '../tt.js';
 
 const ORDERS = [
-  { id: 'PO-031', sup: 'Tashkent Wood', items: '4 поз · 280 м³', sum: '14.2M', s: 'wait',  due: '4ч ⚠️' },
-  { id: 'PO-030', sup: 'Karpov Games',   items: '2 поз · 50 шт',  sum: '8.4M',  s: 'confirmed', due: '—' },
-  { id: 'PO-029', sup: 'Buxoro Latun',   items: '1 поз · 20 шт',  sum: '6.8M',  s: 'shipping', due: '—' },
-  { id: 'PO-028', sup: 'Tex Mart',       items: '6 поз · 124 шт', sum: '12.1M', s: 'wait',   due: '18ч' },
-  { id: 'PO-027', sup: 'Local Craft',    items: '3 поз · 80 шт',  sum: '5.6M',  s: 'delivered', due: '—' },
+  { id: 'PO-031', sup: 'Tashkent Wood', items: '4 поз · 280 м³', sum: '14 200 000', s: 'wait',  due: '4ч ⚠️' },
+  { id: 'PO-030', sup: 'Karpov Games',   items: '2 поз · 50 шт',  sum: '8 400 000',  s: 'confirmed', due: '—' },
+  { id: 'PO-029', sup: 'Buxoro Latun',   items: '1 поз · 20 шт',  sum: '6 800 000',  s: 'shipping', due: '—' },
+  { id: 'PO-028', sup: 'Tex Mart',       items: '6 поз · 124 шт', sum: '12 100 000', s: 'wait',   due: '18ч' },
+  { id: 'PO-027', sup: 'Local Craft',    items: '3 поз · 80 шт',  sum: '5 600 000',  s: 'delivered', due: '—' },
 ];
 
 export default function ProcurementTool() {
@@ -18,10 +18,10 @@ export default function ProcurementTool() {
       <PageHeader title={tt('📋 Закупки')} sub={tt('Заказы поставщикам · 24ч подтверждение · авто-замена')}
         actions={<><button className="btn btn-ghost btn-sm">{tt('🌐 Портал')}</button><button className="btn btn-primary btn-sm" onClick={() => toast(tt('Новый заказ'))}>{tt('+ Заказ')}</button></>} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label={tt('Открытых')} value="14" color="#5B4FE8" />
-        <Tile icon="⏳" label={tt('Ждут 24ч')} value="3" color="#F59E0B" />
+        <Tile icon="📦" label={tt('Открытых')} value="14" color="#1D4ED8" />
+        <Tile icon="⏳" label={tt('Ждут 24ч')} value="3" color="#D97706" />
         <Tile icon="🏢" label={tt('Поставщиков')} value="48" color="#0EA5E9" />
-        <Tile icon="💰" label={tt('Долг')} value="18.5M" color="#EF4444" />
+        <Tile icon="💰" label={tt('Долг')} value="18 500 000" color="#DC2626" />
       </div>
       <Card>
         <table>

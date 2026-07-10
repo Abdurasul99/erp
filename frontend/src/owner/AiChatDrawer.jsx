@@ -82,22 +82,15 @@ export default function AiChatDrawer({ open, onClose }) {
   if (!open) return null;
 
   return (
-    <>
-      <div onClick={onClose} style={{
-        position: 'fixed', inset: 0, background: 'rgba(26,27,46,.3)', zIndex: 999, backdropFilter: 'blur(2px)',
-      }} />
-
       <div style={{
-        position: 'fixed', top: 0, right: 0, bottom: 0,
-        width: 440, maxWidth: '94vw',
-        background: '#fff', zIndex: 1000,
-        boxShadow: '-8px 0 32px rgba(26,27,46,.18)',
+        height: '100vh', minWidth: 0, overflow: 'hidden',
+        background: '#fff', borderLeft: '1px solid var(--border)',
+        boxShadow: '-8px 0 32px rgba(15,23,42,.08)',
         display: 'flex', flexDirection: 'column',
-        animation: 'aiSlideIn .25s cubic-bezier(.4,0,.2,1)',
       }}>
         <div style={{
           padding: '16px 20px',
-          background: 'linear-gradient(135deg, #1e1b4b, #5B4FE8)',
+          background: 'linear-gradient(135deg, #1E293B, #1D4ED8)',
           color: '#fff',
           display: 'flex', alignItems: 'center', gap: 12,
           borderBottom: '1px solid rgba(255,255,255,.1)',
@@ -110,7 +103,7 @@ export default function AiChatDrawer({ open, onClose }) {
           }}>🤖</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, fontSize: 15 }}>{tt('AI-консультант')}</div>
-            <div style={{ fontSize: 11, opacity: .8 }}>DeepSeek · {tt('готов помочь')}</div>
+            <div style={{ fontSize: 11, opacity: .8 }}>Wave AI · {tt('готов помочь')}</div>
           </div>
           <button onClick={reset} title={tt('Начать заново')} style={{
             background: 'rgba(255,255,255,.15)', border: 'none', color: '#fff',
@@ -136,7 +129,7 @@ export default function AiChatDrawer({ open, onClose }) {
                     maxWidth: '92%',
                     padding: isUser ? '10px 14px' : '12px 15px',
                     borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                    background: isUser ? 'linear-gradient(135deg, #5B4FE8, #3D33C4)' : 'var(--bg-2)',
+                    background: isUser ? 'linear-gradient(135deg, #1D4ED8, #1E3A8A)' : 'var(--bg-2)',
                     color: isUser ? '#fff' : 'var(--text)',
                     fontFamily: isUser ? 'inherit' : "'Inter', 'Nunito', system-ui, sans-serif",
                     fontSize: isUser ? 13 : 14,
@@ -183,7 +176,7 @@ export default function AiChatDrawer({ open, onClose }) {
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {followUps.slice(0, 5).map((q, i) => (
-                <button key={i} onClick={() => sendMessage(q)} disabled={typing} style={{
+                <button key={i} onClick={() => sendMessage(tt(q))} disabled={typing} style={{
                   padding: '7px 11px',
                   background: '#fff',
                   border: '1.5px solid var(--border-strong)',
@@ -226,12 +219,8 @@ export default function AiChatDrawer({ open, onClose }) {
             {typing ? '...' : tt('Отправить')}
           </button>
         </form>
-      </div>
 
-      <style>{`
-        @keyframes aiSlideIn { from { transform: translateX(100%); } to { transform: none; } }
-        @keyframes aiDot { 0%,80%,100% { opacity: .3; } 40% { opacity: 1; } }
-      `}</style>
-    </>
+        <style>{`@keyframes aiDot { 0%,80%,100% { opacity: .3; } 40% { opacity: 1; } }`}</style>
+      </div>
   );
 }

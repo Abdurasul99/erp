@@ -25,7 +25,7 @@ export default function AdminDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [sort, setSort] = useState('revenue_desc');
+  const [sort, setSort] = useState('health_risk');
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -41,8 +41,8 @@ export default function AdminDashboard() {
   const companies = data?.companies || [];
 
   const sorted = [...companies].sort((a, b) => {
-    if (sort === 'revenue_desc') return b.sales_revenue - a.sales_revenue;
     if (sort === 'health_risk')  return rankHealth(a.health) - rankHealth(b.health);
+    if (sort === 'users_desc')   return (b.users_count || 0) - (a.users_count || 0);
     if (sort === 'created_desc') return new Date(b.created_at) - new Date(a.created_at);
     return 0;
   });
@@ -79,24 +79,15 @@ export default function AdminDashboard() {
           <div className="grid-4" style={{ marginBottom: 16 }}>
             <Tile icon="🏢" label="Всего компаний"  value={fmtNum(summary.total_companies)} sub="клиентов SaaS"           color="#5B4FE8" />
             <Tile icon="✅" label="Активны (30д)"    value={fmtNum(summary.active_30d)}     sub="заходили недавно"        color="#22C55E" />
-            <Tile icon="⚠️" label="В риске churn"  value={fmtNum(summary.at_risk)}        sub="не заходят / нет продаж" color="#EF4444" />
+            <Tile icon="⚠️" label="В риске churn"  value={fmtNum(summary.at_risk)}        sub="давно не заходят"        color="#EF4444" />
             <Tile icon="✨" label="Новые (30д)"      value={fmtNum(summary.new_this_month)} sub="последний месяц"         color="#FF6B2B" />
           </div>
-
-          <Card icon="📊" title="Системные итоги (по всем клиентам сразу)" style={{ marginBottom: 16 }}>
-            <div className="grid-4">
-              <SysMetric label="Суммарная выручка"  value={fmtMoney(totals.sales_revenue)} unit="UZS" color="#22C55E" />
-              <SysMetric label="Суммарная прибыль" value={fmtMoney(totals.gross_profit)}  unit="UZS" color="#5B4FE8" />
-              <SysMetric label="Сделок"             value={fmtNum(totals.deals_count)}     unit="за период" color="#FF6B2B" />
-              <SysMetric label="Юзеров активных"    value={fmtNum(totals.users_count)}     unit={`в ${totals.branches_count} филиалах`} color="#0EA5E9" />
-            </div>
-          </Card>
 
           <Card icon="🏢" title={`Компании · ${sorted.length}`}
             actions={
               <Pills value={sort} onChange={setSort} options={[
-                { value: 'revenue_desc', label: 'По выручке' },
                 { value: 'health_risk',  label: 'По риску' },
+                { value: 'users_desc',   label: 'По юзерам' },
                 { value: 'created_desc', label: 'По дате' },
               ]} />
             }>
@@ -106,11 +97,6 @@ export default function AdminDashboard() {
                   <tr>
                     <th>Компания</th>
                     <th style={{ textAlign: 'center' }}>Здоровье</th>
-                    <th style={{ textAlign: 'right' }}>Выручка</th>
-                    <th style={{ textAlign: 'right' }}>Прибыль</th>
-                    <th style={{ textAlign: 'right' }}>Маржа</th>
-                    <th style={{ textAlign: 'right' }}>Сделок</th>
-                    <th style={{ textAlign: 'right' }}>Касса</th>
                     <th style={{ textAlign: 'right' }}>Филиалов · юзеров</th>
                     <th style={{ textAlign: 'right' }}>Последний логин</th>
                     <th></th>
@@ -118,7 +104,7 @@ export default function AdminDashboard() {
                 </thead>
                 <tbody>
                   {sorted.length === 0 ? (
-                    <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет компаний в системе</td></tr>
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет компаний в системе</td></tr>
                   ) : sorted.map(c => (
                     <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/admin/companies/${c.id}`)}>
                       <td style={{ fontWeight: 700 }}>
@@ -128,11 +114,6 @@ export default function AdminDashboard() {
                       <td style={{ textAlign: 'center' }}>
                         <Badge tone={c.health.tone}>{c.health.label}</Badge>
                       </td>
-                      <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(c.sales_revenue)}</td>
-                      <td className="mono" style={{ textAlign: 'right', color: c.gross_profit >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtMoney(c.gross_profit)}</td>
-                      <td className="mono" style={{ textAlign: 'right' }}>{c.margin_pct}%</td>
-                      <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(c.deals_count)}</td>
-                      <td className="mono" style={{ textAlign: 'right', color: c.cash_balance >= 0 ? 'var(--text)' : 'var(--red)' }}>{fmtMoney(c.cash_balance)}</td>
                       <td className="mono" style={{ textAlign: 'right', fontSize: 12 }}>{c.branches_count} · {c.users_count}</td>
                       <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--text2)' }}>
                         {c.health.days_since == null ? '—' : c.health.days_since === 0 ? 'сегодня' : `${c.health.days_since} дн назад`}

@@ -12,7 +12,7 @@ export default function InterfaceSelect() {
   const roleLabel = {
     admin: uz ? 'Administrator' : 'Администратор',
     founder: uz ? 'Ta\'sischi' : 'Учредитель',
-    gen_dir: uz ? 'Bosh direktor' : 'Ген. Директор',
+    gen_dir: uz ? 'Tarmoq direktori' : 'Директор сети',
     manager: uz ? 'Menejer' : 'Менеджер',
     cashier: uz ? 'Kassir' : 'Кассир',
     warehouse: uz ? 'Omborchi' : 'Складовщик',
@@ -26,14 +26,14 @@ export default function InterfaceSelect() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{
             width: '36px', height: '36px', borderRadius: '10px',
-            background: 'linear-gradient(135deg, #4338ca, #6366f1)',
+            background: 'linear-gradient(135deg, #1E40AF, #2563EB)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <Icon name="store" size={20} color="#fff" />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-            <span style={{ fontWeight: 900, fontSize: user?.company_name ? '14px' : '16px', color: '#1e1b4b' }}>
-              {user?.company_name || 'ERP System'}
+            <span style={{ fontWeight: 900, fontSize: user?.company_name ? '14px' : '16px', color: '#0B1640' }}>
+              {user?.company_name || 'Wave ERP'}
             </span>
             {user?.branch_name && (
               <span style={{ fontSize: '11px', color: '#9EA3BF', fontWeight: 600 }}>{user.branch_name}</span>
@@ -47,7 +47,7 @@ export default function InterfaceSelect() {
                 padding: '5px 12px', border: 'none', cursor: 'pointer', borderRadius: '6px',
                 fontWeight: 800, fontSize: '12px',
                 background: lang === l.key ? '#fff' : 'transparent',
-                color: lang === l.key ? '#4338ca' : '#9EA3BF',
+                color: lang === l.key ? '#1E40AF' : '#9EA3BF',
                 boxShadow: lang === l.key ? '0 1px 4px rgba(0,0,0,.08)' : 'none',
                 fontFamily: "'Nunito', sans-serif",
               }}>{l.label}</button>
@@ -56,7 +56,7 @@ export default function InterfaceSelect() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: '#F4F5FA', borderRadius: '20px' }}>
             <Icon name="user" size={14} color="#6B6F8A" />
             <span style={{ fontSize: '13px', fontWeight: 700, color: '#1A1B2E' }}>{user?.username}</span>
-            <span style={{ fontSize: '11px', background: 'rgba(67,56,202,.1)', color: '#4338ca', padding: '2px 8px', borderRadius: '10px', fontWeight: 700 }}>{roleLabel[user?.role]}</span>
+            <span style={{ fontSize: '11px', background: 'rgba(30,64,175,.1)', color: '#1E40AF', padding: '2px 8px', borderRadius: '10px', fontWeight: 700 }}>{roleLabel[user?.role]}</span>
           </div>
           <button onClick={() => { logout(); navigate('/login'); }} style={{
             display: 'flex', alignItems: 'center', gap: '6px',
@@ -72,7 +72,7 @@ export default function InterfaceSelect() {
 
       {/* Content */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px' }}>
-        <h1 style={{ fontSize: '28px', fontWeight: 900, color: '#1e1b4b', margin: '0 0 8px', textAlign: 'center' }}>
+        <h1 style={{ fontSize: '28px', fontWeight: 900, color: '#0B1640', margin: '0 0 8px', textAlign: 'center' }}>
           {uz ? 'Interfeys tanlang' : 'Выберите интерфейс'}
         </h1>
         <p style={{ fontSize: '14px', color: '#9EA3BF', margin: '0 0 40px', textAlign: 'center' }}>
@@ -88,21 +88,21 @@ export default function InterfaceSelect() {
             boxShadow: '0 2px 16px rgba(0,0,0,.06)',
             transition: 'all .2s', fontFamily: "'Nunito', sans-serif",
           }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#4338ca'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(67,56,202,.15)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#1E40AF'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(30,64,175,.15)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = '#E2E4F0'; e.currentTarget.style.boxShadow = '0 2px 16px rgba(0,0,0,.06)'; e.currentTarget.style.transform = 'none'; }}
           >
-            <div style={{ width: '80px', height: '80px', borderRadius: '20px', background: 'rgba(67,56,202,.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px' }}>
-              <Icon name="desktop" size={38} color="#4338ca" />
+            <div style={{ width: '80px', height: '80px', borderRadius: '20px', background: 'rgba(30,64,175,.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px' }}>
+              <Icon name="desktop" size={38} color="#1E40AF" />
             </div>
-            <div style={{ fontWeight: 900, fontSize: '20px', color: '#1e1b4b', marginBottom: '8px' }}>
+            <div style={{ fontWeight: 900, fontSize: '20px', color: '#0B1640', marginBottom: '8px' }}>
               {uz ? 'Kompyuter' : 'Компьютер'}
             </div>
             <div style={{ fontSize: '13px', color: '#9EA3BF', marginBottom: '18px', lineHeight: 1.5 }}>
               {uz ? 'Ombor va kassa boshqaruvi' : 'Управление складом и кассой'}
             </div>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 16px', background: 'rgba(67,56,202,.08)', borderRadius: '20px' }}>
-              <Icon name="desktop" size={13} color="#4338ca" />
-              <span style={{ fontSize: '11px', fontWeight: 800, color: '#4338ca', letterSpacing: '0.5px' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 16px', background: 'rgba(30,64,175,.08)', borderRadius: '20px' }}>
+              <Icon name="desktop" size={13} color="#1E40AF" />
+              <span style={{ fontSize: '11px', fontWeight: 800, color: '#1E40AF', letterSpacing: '0.5px' }}>
                 {uz ? 'KOMPYUTER' : 'КОМПЬЮТЕР'}
               </span>
             </div>
@@ -111,18 +111,18 @@ export default function InterfaceSelect() {
           {/* Phone */}
           <button onClick={() => navigate('/mobile')} style={{
             flex: '1 1 280px', maxWidth: '300px',
-            background: '#fff', border: '2px solid #4338ca', borderRadius: '20px',
+            background: '#fff', border: '2px solid #1E40AF', borderRadius: '20px',
             padding: '36px 28px', cursor: 'pointer', textAlign: 'center',
-            boxShadow: '0 8px 32px rgba(67,56,202,.15)',
+            boxShadow: '0 8px 32px rgba(30,64,175,.15)',
             transition: 'all .2s', fontFamily: "'Nunito', sans-serif",
           }}
-            onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 12px 40px rgba(67,56,202,.2)'; }}
-            onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(67,56,202,.15)'; }}
+            onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 12px 40px rgba(30,64,175,.2)'; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(30,64,175,.15)'; }}
           >
             <div style={{ width: '80px', height: '80px', borderRadius: '20px', background: 'rgba(34,197,94,.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px' }}>
               <Icon name="mobile" size={38} color="#16a34a" />
             </div>
-            <div style={{ fontWeight: 900, fontSize: '20px', color: '#1e1b4b', marginBottom: '8px' }}>
+            <div style={{ fontWeight: 900, fontSize: '20px', color: '#0B1640', marginBottom: '8px' }}>
               {uz ? 'Telefon' : 'Телефон'}
             </div>
             <div style={{ fontSize: '13px', color: '#9EA3BF', marginBottom: '18px', lineHeight: 1.5 }}>

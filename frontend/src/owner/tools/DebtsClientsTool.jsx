@@ -87,10 +87,10 @@ export default function DebtsClientsTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="📒" label={tt('Всего долгов')}   value={fmtNum(summary.total)}        sub={`${fmtMoney(summary.totalAmount)} UZS`} color="#5B4FE8" />
-            <Tile icon="🔴" label={tt('Просрочено')}    value={fmtNum(summary.overdue)}      sub={`${fmtMoney(summary.overdueAmount)} UZS`} color="#EF4444" />
-            <Tile icon="🟡" label={tt('Скоро срок')}    value={fmtNum(summary.soon)}         sub={tt('≤ 7 дней')} color="#F59E0B" />
-            <Tile icon="🟢" label={tt('В сроке')}        value={fmtNum(summary.ok)}           sub={tt('> 7 дней или без срока')} color="#22C55E" />
+            <Tile icon="📒" label={tt('Всего долгов')}   value={fmtNum(summary.total)}        sub={`${fmtMoney(summary.totalAmount)} UZS`} color="#1D4ED8" />
+            <Tile icon="🔴" label={tt('Просрочено')}    value={fmtNum(summary.overdue)}      sub={`${fmtMoney(summary.overdueAmount)} UZS`} color="#DC2626" />
+            <Tile icon="🟡" label={tt('Скоро срок')}    value={fmtNum(summary.soon)}         sub={tt('≤ 7 дней')} color="#D97706" />
+            <Tile icon="🟢" label={tt('В сроке')}        value={fmtNum(summary.ok)}           sub={tt('> 7 дней или без срока')} color="#16A34A" />
           </div>
 
           <div className="grid-2" style={{ marginBottom: 16 }}>
@@ -100,7 +100,7 @@ export default function DebtsClientsTool() {
                   <div style={{ padding: 14, color: 'var(--text3)', fontSize: 13 }}>{tt('Нет должников')}</div>
                 ) : byCustomer.map((c, i) => (
                   <div key={c.customer_id} className="list-item">
-                    <div style={{ width: 26, height: 26, borderRadius: 7, background: i < 3 ? 'rgba(239,68,68,.14)' : 'var(--bg-2)', color: i < 3 ? '#EF4444' : 'var(--text2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>{i + 1}</div>
+                    <div style={{ width: 26, height: 26, borderRadius: 7, background: i < 3 ? 'rgba(239,68,68,.14)' : 'var(--bg-2)', color: i < 3 ? '#DC2626' : 'var(--text2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>{i + 1}</div>
                     <div style={{ flex: 1 }}>
                       <div className="list-item-title">{c.name}</div>
                       <div className="list-item-sub">{c.deals} {tt('сделок')}{c.overdue > 0 && ` · ${c.overdue} ${tt('просрочено')}`}</div>

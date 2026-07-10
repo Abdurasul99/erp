@@ -6,7 +6,7 @@ import { useTt } from '../tt.js';
 // Честные статусы: «Активна» — реально подключено (DeepSeek по env, Telegram по БД).
 // Telegram — self-serve (подключает сам владелец). Остальное требует договора/кабинета.
 const CATALOG = [
-  { key: 'deepseek',      ic: '🤖', n: 'AI-консультант (DeepSeek)', d: 'Чат · анализ финансов · рекомендации', need: 'server' },
+  { key: 'deepseek',      ic: '🤖', n: 'AI-консультант (Wave AI)', d: 'Чат · анализ финансов · рекомендации', need: 'server' },
   { key: 'telegram',      ic: '📱', n: 'Telegram Bot',              d: 'Уведомления и отчёты в Telegram',       need: 'self' },
   { key: 'eskiz_sms',     ic: '🔔', n: 'SMS UZ (Eskiz.uz)',         d: 'SMS-уведомления клиентам',              need: 'account' },
   { key: 'click',         ic: '💳', n: 'Click',                     d: 'Онлайн-оплата',                         need: 'merchant' },
@@ -57,8 +57,8 @@ export default function IntegrationsTool() {
       ) : (
         <>
           <div className="grid-3" style={{ marginBottom: 18 }}>
-            <Tile icon="🔌" label={tt('Активных')} value={fmtNum(activeCount)} sub={`${tt('из')} ${CATALOG.length} ${tt('в каталоге')}`} color="#22C55E" />
-            <Tile icon="🤖" label={tt('AI-запросов')} value={fmtNum(data.ai_requests_30d)} sub={tt('за 30 дней')} color="#5B4FE8" />
+            <Tile icon="🔌" label={tt('Активных')} value={fmtNum(activeCount)} sub={`${tt('из')} ${CATALOG.length} ${tt('в каталоге')}`} color="#16A34A" />
+            <Tile icon="🤖" label={tt('AI-запросов')} value={fmtNum(data.ai_requests_30d)} sub={tt('за 30 дней')} color="#1D4ED8" />
             <Tile icon="🧮" label={tt('AI-токенов')} value={fmtNum(data.ai_tokens_30d)} sub={tt('за 30 дней')} color="#0EA5E9" />
           </div>
 
@@ -189,7 +189,7 @@ function TelegramCard({ status, onReload }) {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {chats.map(c => (
                   <button key={c.id} className="btn btn-sm" onClick={() => setChatId(c.id)}
-                    style={{ border: chatId === c.id ? '2px solid var(--primary)' : '1px solid var(--border)', background: chatId === c.id ? 'rgba(91,79,232,.08)' : 'transparent' }}>
+                    style={{ border: chatId === c.id ? '2px solid var(--primary)' : '1px solid var(--border)', background: chatId === c.id ? 'rgba(29,78,216,.08)' : 'transparent' }}>
                     {c.title} <span style={{ color: 'var(--text3)' }}>· {c.id}</span>
                   </button>
                 ))}

@@ -29,7 +29,7 @@ export default function Navbar() {
     }
   };
 
-  const roleLabel = { admin: uz ? 'Admin' : 'Администратор', founder: uz ? 'Ta\'sischi' : 'Учредитель', gen_dir: uz ? 'Bosh direktor' : 'Ген. Директор', manager: uz ? 'Menejer' : 'Менеджер', cashier: uz ? 'Kassir' : 'Кассир', warehouse: uz ? 'Omborchi' : 'Складовщик', seller: uz ? 'Sotuvchi' : 'Продавец' };
+  const roleLabel = { admin: uz ? 'Admin' : 'Администратор', founder: uz ? 'Ta\'sischi' : 'Учредитель', gen_dir: uz ? 'Tarmoq direktori' : 'Директор сети', manager: uz ? 'Menejer' : 'Менеджер', cashier: uz ? 'Kassir' : 'Кассир', warehouse: uz ? 'Omborchi' : 'Складовщик', seller: uz ? 'Sotuvchi' : 'Продавец' };
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username;
 
   return (
@@ -41,7 +41,7 @@ export default function Navbar() {
         </div>
         <div className="hide-mobile" style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
           <span style={{ color: '#fff', fontWeight: 900, fontSize: user?.company_name ? '14px' : '16px', letterSpacing: '0.2px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {user?.company_name || 'ERP System'}
+            {user?.company_name || 'Wave ERP'}
           </span>
           {user?.branch_name && (
             <span style={{ color: 'rgba(255,255,255,.6)', fontSize: '11px', fontWeight: 600, maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { useParams, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
 import { BranchScope } from './OwnerShell.jsx';
-import { getSectionsForRole } from './modules.js';
+import { getUserSections } from './modules.js';
 import { Badge, Tooltip, Skeleton, fmtMoney, fmtNum } from './ui.jsx';
 import { shade } from './ui.jsx';
 import { useTt } from './tt.js';
@@ -44,11 +44,11 @@ function formatValue(val, type, placeholder) {
 
 export default function SectionHome() {
   const { user } = useContext(AuthContext);
-  const { branchId } = useContext(BranchScope);
+  const { branchId, periodFrom, periodTo } = useContext(BranchScope);
   const { tt } = useTt();
   const { sectionId } = useParams();
   const navigate = useNavigate();
-  const sections = getSectionsForRole(user?.role);
+  const sections = getUserSections(user);
   const section = sections.find(s => s.id === sectionId);
 
   const [dash, setDash] = useState(null);
@@ -60,12 +60,16 @@ export default function SectionHome() {
       return;
     }
     setDashLoading(true);
-    const params = branchId ? { branch_id: branchId } : {};
+    // Учитываем глобальный период (иначе плитки «за период» игнорируют видимый селектор).
+    const params = {};
+    if (branchId) params.branch_id = branchId;
+    if (periodFrom) params.from = periodFrom;
+    if (periodTo) params.to = periodTo;
     api.get('/company/dashboard', { params })
       .then(r => setDash(r.data))
       .catch(() => setDash(null))
       .finally(() => setDashLoading(false));
-  }, [sectionId, branchId]);
+  }, [sectionId, branchId, periodFrom, periodTo]);
 
   if (!section) return <Navigate to="/owner" replace />;
   if (section.id === 'dashboard') return <Navigate to="/owner" replace />;

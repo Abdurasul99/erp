@@ -8,14 +8,14 @@ const ANSWERS = {
   'почему': 'Падение продаж мужской одежды в мае на 18% связано с: 1) уход из ассортимента бренда X · 2) высокий сезон конкурентов · 3) ваш Instagram перешёл на другие категории.',
   'плохо': 'Топ-5 худших по продажам за месяц: Косметика партия 2, Шахматы 50×50, Латун ваза 30см, Чапан XXL, Тарелка 28см. Рекомендую скидку 25% на ликвидацию.',
   'маржа': 'Низкая маржа в категории «Одежда» (18%) — конкуренты делают аналог за меньшую цену. Поднять цену нельзя. Решение: перейти к локальным брендам с маржой 35%.',
-  'закупить': 'Срочно закупить: Брус 50×100 (250 м³), Шахматы 40×40 (50 шт), Бейсболка синяя (80 шт). Прогноз бюджета: 124M UZS.',
+  'закупить': 'Срочно закупить: Брус 50×100 (250 м³), Шахматы 40×40 (50 шт), Бейсболка синяя (80 шт). Прогноз бюджета: 124 000 000 UZS.',
 };
 
 const INSIGHTS = [
-  { ic: '📈', tone: 'green', t: 'Поднять цену на «Шахматы 40×40» на 12%', b: 'Спрос +28%, конкуренты дороже на 18%. Прогноз: +4.2M маржи/мес.', impact: '+4.2M / мес' },
-  { ic: '📦', tone: 'yellow', t: 'Закупить «Брус 50×100» сейчас', b: 'Запас на 4 дня. Не закажете до завтра — потеряете 8.5M.', impact: '−8.5M риск' },
-  { ic: '🔥', tone: 'orange', t: 'Промо: «Косметика» −25%', b: 'Не продаётся 47 дней. Освободит 8.5M оборотки.', impact: '+8.5M cash' },
-  { ic: '👤', tone: 'purple', t: 'Реактивировать «Алишер К.»', b: 'LTV 3.4M, не покупал 60 дн.', impact: '+340K вернуть' },
+  { ic: '📈', tone: 'green', t: 'Поднять цену на «Шахматы 40×40» на 12%', b: 'Спрос +28%, конкуренты дороже на 18%. Прогноз: +4 200 000 маржи/мес.', impact: '+4 200 000 / мес' },
+  { ic: '📦', tone: 'yellow', t: 'Закупить «Брус 50×100» сейчас', b: 'Запас на 4 дня. Не закажете до завтра — потеряете 8 500 000.', impact: '−8 500 000 риск' },
+  { ic: '🔥', tone: 'orange', t: 'Промо: «Косметика» −25%', b: 'Не продаётся 47 дней. Освободит 8 500 000 оборотки.', impact: '+8 500 000 cash' },
+  { ic: '👤', tone: 'blue', t: 'Реактивировать «Алишер К.»', b: 'LTV 3 400 000, не покупал 60 дн.', impact: '+340 000 вернуть' },
 ];
 
 export default function AiAdvisorTool() {
@@ -34,9 +34,9 @@ export default function AiAdvisorTool() {
       <PageHeader title={tt('🤖 AI-консультант')} sub={tt('Что-Где-Почему · симуляторы · рекомендации')}
         actions={<Badge tone="purple">Claude 4.7 + GPT-5</Badge>} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="💡" label={tt('Инсайтов')} value="12" sub={tt('требуют действий')} color="#7C3AED" />
-        <Tile icon="🎯" label={tt('Применено')} value="48" sub={tt('за месяц')} delta={24} color="#22C55E" />
-        <Tile icon="💰" label={tt('Экономия от AI')} value="84M" sub="UZS" color="#FF6B2B" />
+        <Tile icon="💡" label={tt('Инсайтов')} value="12" sub={tt('требуют действий')} color="#1D4ED8" />
+        <Tile icon="🎯" label={tt('Применено')} value="48" sub={tt('за месяц')} delta={24} color="#16A34A" />
+        <Tile icon="💰" label={tt('Экономия от AI')} value="84 000 000" sub="UZS" color="#D97706" />
       </div>
 
       <Card icon="🤖" title={tt('Спроси у бизнеса')}>
@@ -59,7 +59,7 @@ export default function AiAdvisorTool() {
                   <div style={{ background: 'var(--primary)', color: '#fff', padding: '8px 14px', borderRadius: 14, maxWidth: '75%', fontSize: 13.5 }}>{m.u}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <div style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg, #7c3aed, #5B4FE8)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>🤖</div>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg, #1D4ED8, #1D4ED8)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>🤖</div>
                   <div style={{ background: 'var(--bg-2)', padding: '10px 14px', borderRadius: 14, fontSize: 13.5, color: 'var(--text)', lineHeight: 1.6 }}>{m.a}</div>
                 </div>
               </div>
@@ -71,7 +71,7 @@ export default function AiAdvisorTool() {
       <h3 style={{ marginTop: 24, marginBottom: 14, fontSize: 14, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5, fontWeight: 800 }}>📥 {tt('Рекомендации сегодня')}</h3>
       <div className="grid-2">
         {INSIGHTS.map((x, i) => {
-          const colors = { green: '#22C55E', yellow: '#F59E0B', orange: '#FF6B2B', purple: '#7c3aed' };
+          const colors = { green: '#16A34A', yellow: '#D97706', orange: '#D97706', purple: '#1D4ED8' };
           const c = colors[x.tone];
           return (
             <Card key={i} style={{ borderLeft: '4px solid ' + c }}>

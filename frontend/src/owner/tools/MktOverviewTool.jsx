@@ -10,9 +10,9 @@ export default function MktOverviewTool() {
       <PageHeader title={tt('📣 Кампании')} sub={tt('Активные акции · промо · обзвон')}
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast('Конструктор кампаний')}>{tt('+ Кампания')}</button>} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📣" label={tt('Активных')} value="8" color="#5B4FE8" />
-        <Tile icon="📥" label={tt('Лидов (мес)')} value="284" delta={32} color="#22C55E" />
-        <Tile icon="💰" label="ROI" value="3.8×" color="#FF6B2B" />
+        <Tile icon="📣" label={tt('Активных')} value="8" color="#1D4ED8" />
+        <Tile icon="📥" label={tt('Лидов (мес)')} value="284" delta={32} color="#16A34A" />
+        <Tile icon="💰" label="ROI" value="3.8×" color="#D97706" />
         <Tile icon="🎁" label={tt('Реф. программа')} value="148" color="#EC4899" />
       </div>
       <Card>

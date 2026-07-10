@@ -9,7 +9,7 @@ const { Pool } = require('pg');
 const pool = new Pool({
   database: process.env.DB_NAME || 'warehouse',
   user: process.env.DB_USER || 'wareapp_user',
-  password: process.env.DB_PASS || 'Wareapp2024!',
+  password: process.env.DB_PASS,
   host: process.env.DB_HOST || 'localhost', port: 5432,
 });
 

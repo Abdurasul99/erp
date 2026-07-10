@@ -70,10 +70,10 @@ export default function PricingTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="📦" label={tt('Всего товаров')} value={fmtNum(summary.total)} sub={`${tt('средняя маржа')} ${summary.avg_margin || 0}%`} color="#5B4FE8" />
-            <Tile icon="🔴" label={tt('Низкая маржа')} value={fmtNum(summary.red)} sub={tt('< 10% — поднять цену')} color="#EF4444" />
-            <Tile icon="🟡" label={tt('Средняя')}      value={fmtNum(summary.yellow)} sub="10-25%" color="#F59E0B" />
-            <Tile icon="🟢" label={tt('Здоровая')}     value={fmtNum(summary.green)} sub="≥ 25%" color="#22C55E" />
+            <Tile icon="📦" label={tt('Всего товаров')} value={fmtNum(summary.total)} sub={`${tt('средняя маржа')} ${summary.avg_margin || 0}%`} color="#1D4ED8" />
+            <Tile icon="🔴" label={tt('Низкая маржа')} value={fmtNum(summary.red)} sub={tt('< 10% — поднять цену')} color="#DC2626" />
+            <Tile icon="🟡" label={tt('Средняя')}      value={fmtNum(summary.yellow)} sub="10-25%" color="#D97706" />
+            <Tile icon="🟢" label={tt('Здоровая')}     value={fmtNum(summary.green)} sub="≥ 25%" color="#16A34A" />
           </div>
 
           <Card icon="📋" title={`${tt('Товары')} (${filtered.length})`}
@@ -109,7 +109,7 @@ export default function PricingTool() {
                         <td className="mono" style={{
                           textAlign: 'right',
                           fontWeight: 800,
-                          color: it.tone === 'red' ? '#EF4444' : it.tone === 'yellow' ? '#F59E0B' : '#22C55E',
+                          color: it.tone === 'red' ? '#DC2626' : it.tone === 'yellow' ? '#D97706' : '#16A34A',
                         }}>{it.margin_pct}%</td>
                         <td style={{ textAlign: 'center' }}>
                           <Badge tone={meta.badge}>{tt(meta.label)}</Badge>

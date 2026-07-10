@@ -10,8 +10,8 @@ export default function LoyaltyTool() {
       <div className="grid-4" style={{ marginBottom: 18 }}>
         <Tile icon="🥉" label="Bronze" value="1 487" sub={tt('0-2 покупки')} color="#A07655" />
         <Tile icon="🥈" label="Silver" value="486" sub={tt('3-9 покупок')} color="#9CA3AF" />
-        <Tile icon="🥇" label="Gold" value="184" sub="10-29" color="#F59E0B" />
-        <Tile icon="💎" label="Platinum" value="47" sub="30+" color="#7C3AED" />
+        <Tile icon="🥇" label="Gold" value="184" sub="10-29" color="#D97706" />
+        <Tile icon="💎" label="Platinum" value="47" sub="30+" color="#1D4ED8" />
       </div>
       <Card icon="🎯" title={tt('Условия уровней')}>
         <div className="grid-4">
@@ -32,9 +32,9 @@ export default function LoyaltyTool() {
       </Card>
       <Card icon="🤝" title={tt('Реферальная программа')} style={{ marginTop: 18 }}>
         <div className="grid-3">
-          <Tile icon="👥" label={tt('Приглашённых')} value="148" color="#5B4FE8" />
-          <Tile icon="💰" label={tt('Конверсия')} value="34%" sub={tt('реферал → клиент')} color="#22C55E" />
-          <Tile icon="🎁" label={tt('Выплачено бонусов')} value="12.4M" sub="UZS" color="#FF6B2B" />
+          <Tile icon="👥" label={tt('Приглашённых')} value="148" color="#1D4ED8" />
+          <Tile icon="💰" label={tt('Конверсия')} value="34%" sub={tt('реферал → клиент')} color="#16A34A" />
+          <Tile icon="🎁" label={tt('Выплачено бонусов')} value="12 400 000" sub="UZS" color="#D97706" />
         </div>
       </Card>
     </>

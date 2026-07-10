@@ -17,9 +17,9 @@ export default function AutomationTool() {
       <PageHeader title={tt('⚡ Автоматизация')} sub={tt('Сценарии «Если → То» · согласования')}
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Конструктор сценария'))}>{tt('+ Сценарий')}</button>} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="⚡" label={tt('Активных')} value={flows.filter(f => f.status === 'on').length} color="#5B4FE8" />
-        <Tile icon="🚀" label={tt('Запусков (мес)')} value="489" delta={28} color="#22C55E" />
-        <Tile icon="⏱️" label={tt('Сэкономлено')} value="84ч" sub={tt('ручной работы')} color="#FF6B2B" />
+        <Tile icon="⚡" label={tt('Активных')} value={flows.filter(f => f.status === 'on').length} color="#1D4ED8" />
+        <Tile icon="🚀" label={tt('Запусков (мес)')} value="489" delta={28} color="#16A34A" />
+        <Tile icon="⏱️" label={tt('Сэкономлено')} value="84ч" sub={tt('ручной работы')} color="#D97706" />
       </div>
       <Card icon="🤖" title={tt('Сценарии')}>
         <table>
@@ -29,7 +29,7 @@ export default function AutomationTool() {
               <tr key={i}>
                 <td>
                   <button onClick={() => setFlows(fs => fs.map((x, j) => j === i ? { ...x, status: x.status === 'on' ? 'off' : 'on' } : x))}
-                    style={{ width: 44, height: 24, borderRadius: 12, border: 'none', background: f.status === 'on' ? '#22C55E' : '#9CA3AF', cursor: 'pointer', position: 'relative', padding: 0 }}>
+                    style={{ width: 44, height: 24, borderRadius: 12, border: 'none', background: f.status === 'on' ? '#16A34A' : '#9CA3AF', cursor: 'pointer', position: 'relative', padding: 0 }}>
                     <div style={{ position: 'absolute', top: 2, left: f.status === 'on' ? 22 : 2, width: 20, height: 20, borderRadius: '50%', background: '#fff', transition: 'left .2s' }} />
                   </button>
                 </td>

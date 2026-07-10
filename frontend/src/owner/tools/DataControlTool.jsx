@@ -9,10 +9,10 @@ export default function DataControlTool() {
     <>
       <PageHeader title={tt('🛡️ Контроль данных')} sub={tt('Защита от ошибок ввода · дубликаты · валидация')} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="✅" label={tt('Качество')} value="96%" color="#22C55E" />
-        <Tile icon="🔁" label={tt('Дубликаты')} value="14" color="#F59E0B" />
-        <Tile icon="❌" label={tt('Битые')} value="3" color="#EF4444" />
-        <Tile icon="🛡️" label={tt('Правил')} value="47" color="#5B4FE8" />
+        <Tile icon="✅" label={tt('Качество')} value="96%" color="#16A34A" />
+        <Tile icon="🔁" label={tt('Дубликаты')} value="14" color="#D97706" />
+        <Tile icon="❌" label={tt('Битые')} value="3" color="#DC2626" />
+        <Tile icon="🛡️" label={tt('Правил')} value="47" color="#1D4ED8" />
       </div>
       <Card icon="🔁" title={tt('Найденные дубликаты (требуют слияния)')} actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Запуск авто-слияния'))}>{tt('🤖 Авто-слияние')}</button>}>
         <table>

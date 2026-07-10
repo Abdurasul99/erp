@@ -28,8 +28,8 @@ export default function AnalyticsTool() {
       </div>
       <Card icon="📈" title={tt('Главный дашборд')}>
         <div className="grid-2">
-          <div><div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>{tt('Выручка по дням')}</div><Bars data={[42, 51, 38, 64, 73, 58, 81, 92, 76, 85, 94, 110, 88, 105]} color="#5B4FE8" /></div>
-          <div><div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>{tt('Маржа по дням')}</div><Bars data={[28, 31, 24, 38, 41, 35, 47, 53, 44, 49, 54, 62, 50, 58]} color="#FF6B2B" /></div>
+          <div><div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>{tt('Выручка по дням')}</div><Bars data={[42, 51, 38, 64, 73, 58, 81, 92, 76, 85, 94, 110, 88, 105]} color="#1D4ED8" /></div>
+          <div><div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>{tt('Маржа по дням')}</div><Bars data={[28, 31, 24, 38, 41, 35, 47, 53, 44, 49, 54, 62, 50, 58]} color="#D97706" /></div>
         </div>
       </Card>
     </>

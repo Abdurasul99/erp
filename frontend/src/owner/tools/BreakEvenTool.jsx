@@ -42,9 +42,9 @@ export default function BreakEvenTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="💰" label={tt('Выручка (месяц)')} value={fmtMoneyFull(d.revenue)} sub={tt('сум')} color="#5B4FE8" />
-            <Tile icon="🏭" label={tt('Постоянные расходы')} value={fmtMoneyFull(d.fixed_costs)} sub={tt('сум · из кассы')} color="#FF6B2B" />
-            <Tile icon="💎" label={tt('Маржинальность')} value={d.margin_ratio + '%'} sub={tt('валовая')} color="#22C55E" />
+            <Tile icon="💰" label={tt('Выручка (месяц)')} value={fmtMoneyFull(d.revenue)} sub={tt('сум')} color="#1D4ED8" />
+            <Tile icon="🏭" label={tt('Постоянные расходы')} value={fmtMoneyFull(d.fixed_costs)} sub={tt('сум · из кассы')} color="#D97706" />
+            <Tile icon="💎" label={tt('Маржинальность')} value={d.margin_ratio + '%'} sub={tt('валовая')} color="#16A34A" />
             <Tile icon="⚖️" label={tt('Точка безубыточности')} value={be != null ? fmtMoneyFull(be) : '—'} sub={tt('сум выручки')} color="#0EA5E9" />
           </div>
 
@@ -58,7 +58,7 @@ export default function BreakEvenTool() {
               <Badge tone={d.above_break_even ? 'green' : 'yellow'}>{coverage}% {tt('покрытия')}</Badge>
             </div>
             <div style={{ height: 14, background: 'var(--bg-2)', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
-              <div style={{ width: coverage + '%', height: '100%', background: d.above_break_even ? 'linear-gradient(90deg,#16a34a,#22C55E)' : 'linear-gradient(90deg,#F59E0B,#FB923C)', borderRadius: 8 }} />
+              <div style={{ width: coverage + '%', height: '100%', background: d.above_break_even ? 'linear-gradient(90deg,#16a34a,#16A34A)' : 'linear-gradient(90deg,#D97706,#FB923C)', borderRadius: 8 }} />
             </div>
             <div style={{ marginTop: 14, fontSize: 13.5, lineHeight: 1.6, color: 'var(--text2)' }}>
               {d.above_break_even ? (

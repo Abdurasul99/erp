@@ -5,17 +5,37 @@
 .owner-shell {
   --sidebar-w: 250px;
   --topbar-h: 60px;
+  --ai-w: 420px;
+  /* === Палитра «синий на белом». Scoped к .owner-shell — перекрывает токены :root
+     только для owner-инструментов, не трогая admin/seller/mobile.
+     Все 27 инструментов используют эти токены (var(--bg)/--surface/--text…) → мгновенный ре-тем. === */
+  --bg: #F7F8FA;
+  --bg-2: #EFF1F4;
+  --surface: #FFFFFF;
+  --border: #EBECF0;
+  --border-strong: #DCDEE4;
+  --text: #16181D;
+  --text2: #5A616E;
+  --text3: #98A0AD;
+  --primary: #2563EB;
+  --primary-dark: #1D4ED8;
+  --primary-50: #F2F5FA;
+  --orange: #2563EB;
+  --orange-light: #60A5FA;
+  --green: #16A34A;
+  --red: #DC2626;
+  --yellow: #D97706;
+  --info: #1D4ED8;
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   height: 100vh;
   background:
-    radial-gradient(1100px 700px at 90% -10%, rgba(91,79,232,.06), transparent 60%),
-    radial-gradient(900px 600px at -10% 110%, rgba(255,107,43,.05), transparent 60%),
+    radial-gradient(1100px 700px at 90% -10%, rgba(37,99,235,.05), transparent 60%),
     var(--bg);
 }
 
 .owner-shell .o-sidebar {
-  background: linear-gradient(180deg, #1e1b4b 0%, #1a1740 100%);
+  background: linear-gradient(180deg, #1E3A8A 0%, #172554 100%);
   color: #fff;
   padding: 16px 10px;
   overflow-y: auto;
@@ -32,10 +52,10 @@
 }
 .owner-shell .o-brand-ico {
   width: 38px; height: 38px; border-radius: 11px;
-  background: linear-gradient(135deg, var(--orange), var(--primary));
+  background: linear-gradient(135deg, #2563EB, #1D4ED8);
   display: flex; align-items: center; justify-content: center;
   font-size: 19px;
-  box-shadow: 0 4px 12px rgba(91,79,232,.35);
+  box-shadow: 0 4px 12px rgba(37,99,235,.35);
 }
 .owner-shell .o-brand-name { font-weight: 900; font-size: 16px; letter-spacing: -0.3px; }
 .owner-shell .o-brand-sub  { font-size: 10px; color: rgba(255,255,255,.5); font-weight: 700; letter-spacing: .6px; text-transform: uppercase; margin-top: 1px; }
@@ -52,9 +72,9 @@
 }
 .owner-shell .o-link:hover { background: rgba(255,255,255,.06); color: #fff; }
 .owner-shell .o-link.active {
-  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  background: rgba(255,255,255,.16);
   color: #fff; font-weight: 700;
-  box-shadow: 0 4px 12px rgba(91,79,232,.35);
+  box-shadow: inset 3px 0 0 #60A5FA;
 }
 .owner-shell .o-link-ico { font-size: 15px; width: 22px; text-align: center; }
 .owner-shell .o-link-badge {
@@ -71,13 +91,45 @@
 
 .owner-shell .o-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .owner-shell .o-topbar {
-  height: var(--topbar-h); flex-shrink: 0;
+  min-height: var(--topbar-h); flex-shrink: 0;
   background: var(--surface); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 14px;
-  padding: 0 22px;
+  display: flex; align-items: center; align-content: center; gap: 8px 14px;
+  flex-wrap: wrap;
+  padding: 8px 22px;
 }
-.owner-shell .o-topbar-title { font-size: 15px; font-weight: 800; color: var(--text); }
-.owner-shell .o-topbar-sub { font-size: 11px; color: var(--text3); font-weight: 600; margin-top: 1px; }
+.owner-shell .o-topbar-head {
+  display: flex; align-items: center; gap: 12px;
+  min-width: min(360px, 100%);
+  flex: 1 1 360px;
+}
+.owner-shell .o-topbar-copy {
+  min-width: 0;
+}
+.owner-shell .o-topbar-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.owner-shell .o-topbar-ico {
+  width: 42px; height: 42px; border-radius: 12px; background: var(--bg-2);
+  display: flex; align-items: center; justify-content: center; font-size: 21px;
+  flex-shrink: 0; border: 1px solid var(--border);
+}
+.owner-shell .o-topbar-title {
+  font-size: 16px; font-weight: 800; color: var(--text); letter-spacing: -0.2px;
+  line-height: 1.18;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.owner-shell .o-topbar-sub {
+  font-size: 11px; color: var(--text3); font-weight: 600; margin-top: 2px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
 .owner-shell .o-branch-pick {
   display: flex; align-items: center; gap: 6px;
   background: var(--bg-2); padding: 6px 12px; border-radius: 10px;
@@ -105,8 +157,8 @@
 .owner-shell .o-tile {
   background: var(--surface);
   border-radius: 16px; padding: 16px 18px;
-  border: 1px solid rgba(230,232,242,.6);
-  border-left-width: 4px;
+  border: 1px solid rgba(226,232,240,.85);
+  border-left-width: 1px;
   box-shadow: var(--shadow);
   transition: transform .2s var(--ease), box-shadow .2s var(--ease);
 }
@@ -150,24 +202,24 @@
 .owner-shell .o-progress { height: 8px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
 .owner-shell .o-progress > div { height: 100%; background: linear-gradient(90deg, var(--primary), var(--orange)); border-radius: 6px; transition: width .3s ease; }
 
-.owner-shell .o-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
-.owner-shell .o-badge.green  { background: rgba(34,197,94,.14);  color: #15803d; }
-.owner-shell .o-badge.red    { background: rgba(239,68,68,.14);  color: #b91c1c; }
-.owner-shell .o-badge.yellow { background: rgba(245,158,11,.14); color: #b45309; }
-.owner-shell .o-badge.blue   { background: rgba(91,79,232,.14);  color: var(--primary); }
-.owner-shell .o-badge.purple { background: rgba(124,58,237,.14); color: #7c3aed; }
-.owner-shell .o-badge.orange { background: rgba(255,107,43,.14); color: var(--orange); }
-.owner-shell .o-badge.gray   { background: rgba(107,114,128,.12); color: #4b5563; }
+.owner-shell .o-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 7px; font-size: 11px; font-weight: 700; }
+.owner-shell .o-badge.green  { background: #DCFCE7; color: #16A34A; }
+.owner-shell .o-badge.red    { background: #FEE2E2; color: #DC2626; }
+.owner-shell .o-badge.yellow { background: #FEF9C3; color: #92400E; }
+.owner-shell .o-badge.blue   { background: #DBEAFE; color: #1D4ED8; }
+.owner-shell .o-badge.purple { background: #EDE9FE; color: #7C3AED; }
+.owner-shell .o-badge.orange { background: #FFEDD5; color: #C2410C; }
+.owner-shell .o-badge.gray   { background: #F3F4F6; color: #6B7280; }
 
 .owner-shell .o-list { display: flex; flex-direction: column; }
-.owner-shell .o-li   { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(230,232,242,.6); }
+.owner-shell .o-li   { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(226,232,240,.85); }
 .owner-shell .o-li:last-child { border-bottom: none; }
 .owner-shell .o-li-title { font-weight: 700; font-size: 13px; color: var(--text); }
 .owner-shell .o-li-sub   { font-size: 12px; color: var(--text3); margin-top: 2px; }
 
 .owner-shell .o-pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
 .owner-shell .o-pill  { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
-.owner-shell .o-pill.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+.owner-shell .o-pill.active { background: var(--primary); color: #FFFFFF; box-shadow: var(--shadow-sm); }
 
 .owner-shell .o-coming {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -199,16 +251,29 @@
 .owner-shell .o-section-hero-title   { font-size: 26px; font-weight: 900; margin-top: 4px; letter-spacing: -0.5px; }
 .owner-shell .o-section-hero-desc    { font-size: 14px; opacity: .85; margin-top: 6px; max-width: 600px; }
 
-/* Plain table inside owner-shell uses existing styles, but ensure padding consistent */
-.owner-shell .o-card table { width: 100%; border-collapse: collapse; }
-.owner-shell .o-card thead th { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; padding: 10px 10px; text-align: left; border-bottom: 1.5px solid var(--border); }
-.owner-shell .o-card tbody td { padding: 11px 10px; font-size: 13px; border-bottom: 1px solid rgba(230,232,242,.6); vertical-align: middle; }
-.owner-shell .o-card tbody tr:last-child td { border-bottom: none; }
-.owner-shell .o-card tbody tr:hover { background: rgba(91,79,232,.04); }
+/* Таблицы как в макетах: бежевый заголовок (#EDE8DC=var(--bg-2)), uppercase, тёплые
+   разделители. Покрываем И .o-card, И голые <table> внутри .card (как в owner-tools). */
+.owner-shell .o-card table, .owner-shell .card table { width: 100%; border-collapse: collapse; }
+.owner-shell .o-card thead th,
+.owner-shell .card thead th {
+  background: var(--bg-2); padding: 9px 13px; text-align: left;
+  font-size: 11px; font-weight: 700; color: var(--text2);
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.owner-shell .o-card thead th:first-child,
+.owner-shell .card thead th:first-child { border-radius: 8px 0 0 8px; }
+.owner-shell .o-card thead th:last-child,
+.owner-shell .card thead th:last-child { border-radius: 0 8px 8px 0; }
+.owner-shell .o-card tbody td,
+.owner-shell .card tbody td { padding: 10px 13px; font-size: 13px; border-bottom: 1px solid var(--bg-2); vertical-align: middle; }
+.owner-shell .o-card tbody tr:last-child td,
+.owner-shell .card tbody tr:last-child td { border-bottom: none; }
+.owner-shell .o-card tbody tr:hover,
+.owner-shell .card tbody tr:hover { background: rgba(37,99,235,.05); }
 
 /* Prototype-compatible class aliases — let us copy 47 prototype tools verbatim.
    These selectors only apply inside .owner-shell, so live wareapp pages outside the shell stay unaffected. */
-.owner-shell .tile { background: var(--surface); border-radius: 16px; padding: 16px 18px; border: 1px solid rgba(230,232,242,.6); border-left-width: 4px; box-shadow: var(--shadow); }
+.owner-shell .tile { background: var(--surface); border-radius: 14px; padding: 16px 18px; border: 1px solid var(--border); box-shadow: var(--shadow); }
 .owner-shell .tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 .owner-shell .tile-label { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
 .owner-shell .tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; line-height: 1.1; }
@@ -230,10 +295,10 @@
 
 .owner-shell .pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
 .owner-shell .pills .pill { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
-.owner-shell .pills .pill.active { background: var(--surface); color: var(--primary); box-shadow: var(--shadow-sm); }
+.owner-shell .pills .pill.active { background: var(--primary); color: #FFFFFF; box-shadow: var(--shadow-sm); }
 
 .owner-shell .list { display: flex; flex-direction: column; }
-.owner-shell .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(230,232,242,.6); }
+.owner-shell .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(226,232,240,.85); }
 .owner-shell .list-item:last-child { border-bottom: none; }
 .owner-shell .list-item-title { font-weight: 700; font-size: 13px; color: var(--text); }
 .owner-shell .list-item-sub { font-size: 12px; color: var(--text3); margin-top: 2px; }
@@ -264,7 +329,7 @@
   bottom: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%) translateY(4px);
-  background: #1e1b4b;
+  background: #1E293B;
   color: #fff;
   font-size: 11px;
   font-weight: 700;
@@ -287,7 +352,7 @@
   left: 50%;
   transform: translateX(-50%);
   border: 5px solid transparent;
-  border-top-color: #1e1b4b;
+  border-top-color: #1E293B;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -305,19 +370,24 @@
 /* Badge (новый компонент ui.jsx использует .badge + .badge-<tone>).
    Базовый .badge + tone-варианты green/red/blue/yellow раньше отсутствовали —
    бейджи этих цветов рендерились без оформления (без фона, без формы-пилюли). */
-.owner-shell .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
-.owner-shell .badge-green  { background: rgba(34,197,94,.14);  color: #15803d; }
-.owner-shell .badge-red    { background: rgba(239,68,68,.14);  color: #b91c1c; }
-.owner-shell .badge-yellow { background: rgba(245,158,11,.14); color: #b45309; }
-.owner-shell .badge-blue   { background: rgba(91,79,232,.14);  color: var(--primary); }
-.owner-shell .badge-cyan   { background: rgba(14,165,233,.14); color: #0369a1; }
-.owner-shell .badge-purple { background: rgba(124,58,237,.14); color: #7c3aed; }
-.owner-shell .badge-orange { background: rgba(255,107,43,.14); color: var(--orange); }
-.owner-shell .badge-gray   { background: rgba(107,114,128,.12); color: #4b5563; }
+.owner-shell .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 7px; font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
+.owner-shell .badge-green  { background: #DCFCE7; color: #16A34A; }
+.owner-shell .badge-red    { background: #FEE2E2; color: #DC2626; }
+.owner-shell .badge-yellow { background: #FEF9C3; color: #92400E; }
+.owner-shell .badge-blue   { background: #DBEAFE; color: #1D4ED8; }
+.owner-shell .badge-cyan   { background: #CFFAFE; color: #0E7490; }
+.owner-shell .badge-purple { background: #EDE9FE; color: #7C3AED; }
+.owner-shell .badge-orange { background: #FFEDD5; color: #C2410C; }
+.owner-shell .badge-gray   { background: #F3F4F6; color: #6B7280; }
 
 /* Collapsed sidebar — narrow rail with icons only.
    Toggled via the button at the bottom; persisted to localStorage. */
 .owner-shell.collapsed { grid-template-columns: 64px 1fr; }
+
+/* AI-чат «Tezkor chat» как СПЛИТ — третья колонка справа (контент сжимается, без оверлея). */
+.owner-shell.ai-open { grid-template-columns: var(--sidebar-w) 1fr var(--ai-w); }
+.owner-shell.collapsed.ai-open { grid-template-columns: 64px 1fr var(--ai-w); }
+@media (max-width: 1100px) { .owner-shell { --ai-w: 360px; } }
 .owner-shell.collapsed .o-link { justify-content: center; padding: 11px 6px; }
 .owner-shell.collapsed .o-brand { padding: 6px 4px 14px; justify-content: center; }
 .owner-shell.collapsed .o-brand-ico { width: 36px; height: 36px; }
@@ -329,6 +399,8 @@
 
 @media (max-width: 1100px) {
   .owner-shell { grid-template-columns: 70px 1fr; }
+  .owner-shell .o-topbar { padding: 8px 14px; gap: 8px; }
+  .owner-shell .o-topbar-head { min-width: min(300px, 100%); flex-basis: 300px; }
   .owner-shell .o-link span:not(.o-link-ico) { display: none; }
   .owner-shell .o-link-badge { display: none; }
   .owner-shell .o-brand-name, .owner-shell .o-brand-sub { display: none; }
@@ -338,5 +410,6 @@
 }
 @media (max-width: 700px) {
   .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4 { grid-template-columns: 1fr; }
+  .owner-shell .o-topbar-head { flex-basis: 100%; }
   .owner-shell .o-content { padding: 14px; }
 }

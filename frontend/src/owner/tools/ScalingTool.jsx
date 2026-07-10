@@ -34,9 +34,9 @@ export default function ScalingTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
-            <Tile icon="🏢" label={tt('Компания')} value={data.company?.name || '—'} sub={tt('ваш аккаунт')} color="#5B4FE8" />
-            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum(branches.length)} sub={tt('работают в системе')} color="#FF6B2B" />
-            <Tile icon="💱" label={tt('Валют в обороте')} value={fmtNum(currencies.length)} sub={tt('по реальным операциям')} color="#22C55E" />
+            <Tile icon="🏢" label={tt('Компания')} value={data.company?.name || '—'} sub={tt('ваш аккаунт')} color="#1D4ED8" />
+            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum(branches.length)} sub={tt('работают в системе')} color="#D97706" />
+            <Tile icon="💱" label={tt('Валют в обороте')} value={fmtNum(currencies.length)} sub={tt('по реальным операциям')} color="#16A34A" />
             <Tile icon="🌐" label={tt('Языков')} value={(data.languages || []).length} sub={(data.languages || []).join(' · ')} color="#0EA5E9" />
           </div>
 

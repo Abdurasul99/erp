@@ -1,7 +1,7 @@
 import React, { useContext, useState, useEffect, useRef, createContext } from 'react';
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
-import { getSectionsForRole } from './modules.js';
+import { getUserSections } from './modules.js';
 import { useTt } from './tt.js';
 import { PageHeaderContext } from './PageHeaderContext.js';
 import api from '../api.js';
@@ -41,10 +41,14 @@ export const PERIOD_PRESETS = [
 function presetRange(p) {
   const now = new Date();
   let from = null;
+  // Все окна начинаются с полуночи (setHours 0) — чтобы совпадать с бэкендом (periodRangeUnified)
+  // и не расходиться по цифрам с «Дашбордом учредителя»/отчётами.
   if (p === 'today') from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  else if (p === 'week') { from = new Date(now); from.setDate(now.getDate() - 7); }
-  else if (p === 'month') { from = new Date(now); from.setMonth(now.getMonth() - 1); }
-  else if (p === 'year') { from = new Date(now); from.setFullYear(now.getFullYear() - 1); }
+  else if (p === 'week') { from = new Date(now); from.setDate(now.getDate() - 7); from.setHours(0, 0, 0, 0); }
+  // 'month' = последние 30 дней (скользящее окно) — чтобы свежая активность была видна,
+  // даже если продажи пришлись на конец прошлого месяца. Единый канон с бэкендом.
+  else if (p === 'month') { from = new Date(now); from.setDate(now.getDate() - 30); from.setHours(0, 0, 0, 0); }
+  else if (p === 'year') { from = new Date(now); from.setFullYear(now.getFullYear() - 1); from.setHours(0, 0, 0, 0); }
   return { from: from ? from.toISOString() : null, to: null };
 }
 
@@ -90,9 +94,16 @@ export default function OwnerShell() {
     api.get('/branches').then(r => setBranches(r.data || [])).catch(() => {});
   }, [isOwner]);
 
-  const sections = getSectionsForRole(role);
+  // Гранулярные доступы: учредитель/админ мог скрыть конкретные инструменты и/или AI этому пользователю.
+  const aiEnabled = user?.ai_enabled !== false;
+  // Роль + персональные blocked_tools + инструменты, отключённые учредителем для компании.
+  const sections = getUserSections(user);
   const parts = pathname.split('/').filter(Boolean);
   const activeSection = parts[1] || 'dashboard';
+  // Кнопка периода нужна только там, где данные зависят от периода: Главная, Аналитика,
+  // Финансы, Закупки, Склад, Продажи/Операции. На остальных (Маркетинг, Персонал,
+  // Клиентский сервис, Настройки) её быть не должно.
+  const showPeriod = ['dashboard', 'analytics', 'finance', 'procurement', 'warehouse', 'operations'].includes(activeSection);
 
   const initials = (user?.first_name || user?.username || 'U').slice(0, 2).toUpperCase();
   const roleLabel = tt(({ founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер' })[role] || role);
@@ -107,10 +118,10 @@ export default function OwnerShell() {
   return (
     <BranchScope.Provider value={{ branchId, setBranchId, branches, role, isOwner, period, periodFrom: range.from, periodTo: range.to, periodLabel, setPeriod, customFrom, customTo, setCustomRange }}>
      <PageHeaderContext.Provider value={setPageHead}>
-      <div className={'owner-shell' + (collapsed ? ' collapsed' : '')}>
+      <div className={'owner-shell' + (collapsed ? ' collapsed' : '') + (aiOpen && isOwner ? ' ai-open' : '')}>
         <aside className="o-sidebar">
           <div className="o-brand" onClick={() => navigate('/owner')}>
-            <div className="o-brand-ico">📊</div>
+            <div className="o-brand-ico">🌊</div>
             {!collapsed && (
               <div>
                 <div className="o-brand-name">{user?.company_name || 'WareApp'}</div>
@@ -133,29 +144,29 @@ export default function OwnerShell() {
               </button>
             ))}
 
-            {isOwner && (
+            {isOwner && aiEnabled && (
               <button
                 onClick={() => navigate('/owner/ai')}
                 className={'o-link' + (activeSection === 'ai' ? ' active' : '')}
                 title={collapsed ? tt('AI-помощник') : undefined}
                 style={activeSection === 'ai' ? undefined : {
-                  background: 'linear-gradient(135deg, rgba(124,58,237,.12), rgba(91,79,232,.18))',
+                  background: 'linear-gradient(135deg, rgba(124,58,237,.12), rgba(29,78,216,.18))',
                   color: '#fff',
                   marginTop: 8,
                 }}
               >
                 <span className="o-link-ico">🤖</span>
                 {!collapsed && <span>{tt('AI-помощник')}</span>}
-                {!collapsed && <span className="o-link-badge" style={{ background: 'linear-gradient(135deg, #FF6B2B, #F59E0B)' }}>NEW</span>}
+                {!collapsed && <span className="o-link-badge" style={{ background: 'linear-gradient(135deg, #D97706, #D97706)' }}>NEW</span>}
               </button>
             )}
           </div>
 
           <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid rgba(255,255,255,.08)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {/* Quick AI popup — only for founder/gen_dir. Manager has no AI access. */}
-            {isOwner && (
+            {/* Quick AI popup — only for founder/gen_dir с включённым AI. Manager has no AI access. */}
+            {isOwner && aiEnabled && (
               <button onClick={() => setAiOpen(true)} className="o-link" style={{
-                background: 'linear-gradient(135deg, #7c3aed, #5B4FE8)',
+                background: 'linear-gradient(135deg, #1D4ED8, #1D4ED8)',
                 color: '#fff', fontWeight: 800,
               }} title={collapsed ? tt('Быстрый чат') : undefined}>
                 <span className="o-link-ico">⚡</span>
@@ -181,17 +192,35 @@ export default function OwnerShell() {
 
         <div className="o-main">
           <header className="o-topbar">
-            {/* Заголовок текущей страницы — вынесен сюда из контента (PageHeader → топбар) */}
-            <div style={{ minWidth: 0, flex: 1 }}>
-              {pageHead.title && <div className="o-topbar-title">{pageHead.title}</div>}
-              {pageHead.sub && <div className="o-topbar-sub">{pageHead.sub}</div>}
-            </div>
+            {/* Заголовок текущей страницы — вынесен сюда из контента (PageHeader → топбар).
+                Ведущий эмодзи названия выносим в иконку-квадрат — как в макетах (.h-icon). */}
+            {(() => {
+              const raw = pageHead.title;
+              const s = typeof raw === 'string' ? raw : '';
+              const sp = s.indexOf(' ');
+              const head = sp > 0 ? s.slice(0, sp) : '';
+              const isEmoji = head && !/[\p{L}\p{N}]/u.test(head);
+              const ico = isEmoji ? head : null;
+              const name = isEmoji ? s.slice(sp + 1) : raw;
+              if (!raw) return <div style={{ minWidth: 0, flex: 1 }} />;
+              return (
+                <div className="o-topbar-head">
+                  {ico && <div className="o-topbar-ico">{ico}</div>}
+                  <div className="o-topbar-copy">
+                    <div className="o-topbar-title">{name}</div>
+                    {pageHead.sub && <div className="o-topbar-sub" title={typeof pageHead.sub === 'string' ? pageHead.sub : undefined}>{pageHead.sub}</div>}
+                  </div>
+                </div>
+              );
+            })()}
 
-            {pageHead.actions && <div style={{ display: 'flex', gap: 8 }}>{pageHead.actions}</div>}
+            {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
 
-            {/* Глобальный фильтр периода — действует на все окна */}
-            <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
-              setCustomRange={setCustomRange} periodLabel={periodLabel} tt={tt} />
+            {/* Фильтр периода — только в разделах, где данные зависят от периода. */}
+            {showPeriod && (
+              <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
+                setCustomRange={setCustomRange} periodLabel={periodLabel} tt={tt} />
+            )}
 
             {/* Переключатель языка RU / UZ */}
             <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
@@ -232,7 +261,7 @@ export default function OwnerShell() {
             <Routes>
               <Route index element={<Dashboard />} />
               <Route path="dashboard" element={<Dashboard />} />
-              <Route path="ai" element={isOwner ? <AiChatPage /> : <Navigate to="/owner" replace />} />
+              <Route path="ai" element={isOwner && aiEnabled ? <AiChatPage /> : <Navigate to="/owner" replace />} />
               <Route path=":sectionId" element={<SectionHome />} />
               <Route path=":sectionId/:toolId" element={<ToolRouter />} />
               <Route path="*" element={<Navigate to="/owner" replace />} />
@@ -242,7 +271,7 @@ export default function OwnerShell() {
           {/* AI drawer guarded — manager can never trigger it because the button is hidden, but extra-safe block here too */}
         </div>
 
-        {isOwner && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
+        {isOwner && aiEnabled && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
       </div>
      </PageHeaderContext.Provider>
     </BranchScope.Provider>

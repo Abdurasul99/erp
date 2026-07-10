@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wave ERP — Симулятор тестов</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'Segoe UI', Nunito, sans-serif; background: #0B1640; color: #0F1B33; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 22px 18px 60px; }
+  .head { display: flex; align-items: center; gap: 12px; color: #fff; margin-bottom: 18px; }
+  .mark { width: 44px; height: 44px; border-radius: 12px; background: #fff; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  .head h1 { font-size: 20px; font-weight: 900; }
+  .head .sub { font-size: 12px; color: rgba(255,255,255,.6); }
+  .card { background: #fff; border-radius: 16px; padding: 18px 20px; margin-bottom: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  label { font-size: 11px; font-weight: 800; color: #51607A; text-transform: uppercase; letter-spacing: .5px; display: block; margin-bottom: 6px; }
+  input, select { width: 100%; padding: 11px 12px; border: 1.5px solid #E3EAF3; border-radius: 10px; font-size: 14px; outline: none; }
+  input:focus, select:focus { border-color: #2563EB; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { flex: 1; min-width: 160px; }
+  .btn { padding: 11px 18px; border: none; border-radius: 10px; font-weight: 800; font-size: 14px; cursor: pointer; font-family: inherit; }
+  .btn-pri { background: linear-gradient(135deg, #1E40AF, #2563EB); color: #fff; }
+  .btn-grn { background: #16A34A; color: #fff; }
+  .btn-ghost { background: #EEF3FB; color: #1E3A8A; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 0; }
+  .rolebadge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 800; background: #DBEAFE; color: #1D4ED8; }
+  .bar { height: 10px; background: #EEF3FB; border-radius: 6px; overflow: hidden; margin: 14px 0 8px; }
+  .bar > div { height: 100%; background: linear-gradient(90deg, #16A34A, #2563EB); width: 0; transition: width .2s; }
+  .summary { display: flex; gap: 18px; font-weight: 800; font-size: 14px; }
+  .summary .ok { color: #16A34A; } .summary .bad { color: #DC2626; } .summary .sk { color: #D97706; }
+  .group { margin-top: 18px; }
+  .group h3 { font-size: 12px; font-weight: 900; color: #51607A; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+  .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid #EEF3FB; font-size: 13px; }
+  .item.ok { background: #F0FDF4; border-color: #BBF7D0; }
+  .item.bad { background: #FEF2F2; border-color: #FECACA; }
+  .item.lock { background: #FEFCE8; border-color: #FDE68A; }
+  .item.run { background: #F8FAFF; }
+  .dot { width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; }
+  .ok .dot { background: #16A34A; } .bad .dot { background: #DC2626; } .lock .dot { background: #D97706; } .run .dot { background: #94A3B8; }
+  .item .nm { font-weight: 700; flex: 1; min-width: 0; }
+  .item .meta { font-size: 11px; color: #94A0B5; font-family: monospace; }
+  .err { color: #DC2626; font-size: 13px; margin-top: 8px; }
+  .hint { font-size: 12px; color: #94A0B5; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div class="mark">🌊</div>
+    <div><h1>Wave ERP — Симулятор тестов</h1><div class="sub">Сценарный прогон всех окон · роли · данные · сквозные флоу</div></div>
+  </div>
+
+  <!-- AUTH -->
+  <div class="card" id="authCard">
+    <div class="row">
+      <div><label>Логин</label><input id="u" placeholder="founder / manager …" /></div>
+      <div><label>Пароль</label><input id="p" type="password" placeholder="пароль" /></div>
+      <div style="flex:0 0 auto"><button class="btn btn-pri" id="loginBtn">Войти</button></div>
+    </div>
+    <div class="err" id="authErr"></div>
+    <div class="hint">Войди под любой ролью (учредитель / менеджер) — симулятор покажет, какие окна доступны этой роли и где данные.</div>
+  </div>
+
+  <!-- PANEL -->
+  <div class="card" id="panel" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="rolebadge" id="roleBadge"></span>
+      <span class="hint" id="who"></span>
+      <span style="margin-left:auto"><button class="btn btn-ghost" id="logoutBtn">Выйти</button></span>
+    </div>
+    <div class="controls">
+      <button class="btn btn-pri" id="runAll">▶ Запустить все сценарии</button>
+      <button class="btn btn-ghost" id="runWin">Только окна (чтение)</button>
+      <button class="btn btn-ghost" id="runData">Только данные</button>
+      <button class="btn btn-grn" id="runFlow">Сквозные флоу (пишет тест-данные)</button>
+    </div>
+    <div class="bar"><div id="barFill"></div></div>
+    <div class="summary">
+      <span class="ok">✓ <span id="cOk">0</span> ок</span>
+      <span class="bad">✗ <span id="cBad">0</span> ошибок</span>
+      <span class="sk">🔒 <span id="cLock">0</span> закрыто ролью</span>
+      <span style="color:#94A0B5">из <span id="cTot">0</span></span>
+    </div>
+    <div id="results"></div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+let TOKEN = null, USER = null;
+const $ = id => document.getElementById(id);
+
+// Каталог окон: { group, name, path, founderOnly }
+const WINDOWS = [
+  ['Дашборд','Главный дашборд','/company/dashboard?from='+isoFrom()],
+  ['Дашборд','График продаж','/company/sales-chart?gran=day'],
+  ['Дашборд','Поток по дням','/company/branch-daily?metric=income'],
+  ['Дашборд','BHI (индекс здоровья)','/bhi/monthly'],
+  ['Аналитика','Дашборд учредителя','/analytics/founder-dashboard', true],
+  ['Аналитика','Центр алертов','/analytics/alerts'],
+  ['Аналитика','Детектор аномалий','/analytics/anomalies?period=week'],
+  ['Аналитика','Сравнение филиалов','/analytics/branches/compare', true],
+  ['Аналитика','Тренды и динамика','/analytics/trends'],
+  ['Аналитика','Воронка бизнеса','/analytics/funnel?period=month'],
+  ['Аналитика','Сводный отчёт','/analytics/report?period=month'],
+  ['Аналитика','Анализ корзины','/analytics/basket/pairs'],
+  ['Аналитика','Когортный анализ','/analytics/cohorts'],
+  ['Аналитика','Юнит-экономика','/analytics/unit-economics?period=month'],
+  ['Аналитика','ССП (Balanced Scorecard)','/bsc/dashboard'],
+  ['Финансы','Финансовая модель','/finance/model'],
+  ['Финансы','Cash Flow','/finance/cashflow'],
+  ['Финансы','Точка безубыточности','/finance/break-even'],
+  ['Финансы','Ценообразование','/pricing/analyze'],
+  ['Клиенты','Сегментация','/customers/segments'],
+  ['Клиенты','Жалобы','/crm/complaints'],
+  ['Клиенты','Дни рождения','/crm/birthdays'],
+  ['Клиенты','Рефералы','/crm/referrals/top?period=90'],
+  ['Клиенты','Прогноз клиентов','/crm/forecast'],
+  ['Клиенты','Долги клиентов','/debts'],
+  ['Операции','Задачи / Поручения','/tasks'],
+  ['Операции','Аналитика задач','/tasks/analytics?period=month'],
+  ['Операции','Шаблоны процессов','/task-templates'],
+  ['Операции','Чеклисты','/checklists/today'],
+  ['Операции','История продаж','/sales/history'],
+  ['Склад/Закупки','Товары и остатки','/products'],
+  ['Склад/Закупки','ABC/XYZ анализ','/inventory/abc-xyz'],
+  ['Склад/Закупки','Долги поставщикам','/suppliers/debts'],
+  ['Маркетинг','Каналы и ROI','/marketing/channels'],
+  ['Маркетинг','LTV клиентов','/marketing/ltv'],
+  ['Маркетинг','Анализ ЦА','/marketing/personas'],
+  ['Маркетинг','Контент-план','/marketing/content'],
+  ['HR','Картотека HR','/hr/overview'],
+  ['HR','Сотрудники','/users'],
+  ['Настройки','Интеграции','/integrations'],
+  ['Настройки','Журнал событий','/audit-log/journal?period=month', true],
+];
+
+function isoFrom(){ const f=new Date(); f.setDate(f.getDate()-30); f.setHours(0,0,0,0); return encodeURIComponent(f.toISOString()); }
+
+async function call(method, path, body){
+  try {
+    const r = await fetch(API+path, { method, headers: { 'Authorization':'Bearer '+TOKEN, 'Content-Type':'application/json' }, body: body?JSON.stringify(body):undefined });
+    let j=null; try { j=await r.json(); } catch(e){}
+    return { status:r.status, body:j };
+  } catch(e){ return { status:0, body:{error:e.message} }; }
+}
+
+$('loginBtn').onclick = async () => {
+  $('authErr').textContent=''; $('loginBtn').disabled=true;
+  try {
+    const r = await fetch(API+'/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username:$('u').value.trim(), password:$('p').value }) });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||'Ошибка входа');
+    TOKEN=d.token; USER=d.user;
+    $('authCard').style.display='none'; $('panel').style.display='block';
+    $('roleBadge').textContent = ({founder:'Учредитель',gen_dir:'Ген. директор',manager:'Менеджер',admin:'Админ'})[USER.role]||USER.role;
+    $('who').textContent = '@'+USER.username+' · '+(USER.company_name||'компания');
+  } catch(e){ $('authErr').textContent = e.message; }
+  $('loginBtn').disabled=false;
+};
+$('logoutBtn').onclick = () => { TOKEN=null; USER=null; $('panel').style.display='none'; $('authCard').style.display='block'; $('results').innerHTML=''; };
+
+// ---- runner ----
+let counters = { ok:0, bad:0, lock:0, tot:0 };
+function resetCounters(tot){ counters={ok:0,bad:0,lock:0,tot}; $('cTot').textContent=tot; upd(); $('barFill').style.width='0%'; }
+function upd(){ $('cOk').textContent=counters.ok; $('cBad').textContent=counters.bad; $('cLock').textContent=counters.lock; const done=counters.ok+counters.bad+counters.lock; $('barFill').style.width = counters.tot? Math.round(done/counters.tot*100)+'%':'0%'; }
+function groupEl(g){ let id='g_'+g.replace(/\W/g,''); let el=document.getElementById(id); if(!el){ const wrap=document.createElement('div'); wrap.className='group'; wrap.innerHTML='<h3>'+g+'</h3><div class="items" id="'+id+'"></div>'; $('results').appendChild(wrap); el=document.getElementById(id);} return el; }
+function addItem(group,name){ const el=groupEl(group); const d=document.createElement('div'); d.className='item run'; d.innerHTML='<div class="dot">…</div><div class="nm">'+name+'</div><div class="meta"></div>'; el.appendChild(d); return d; }
+function setItem(d,cls,icon,meta){ d.className='item '+cls; d.querySelector('.dot').textContent=icon; d.querySelector('.meta').textContent=meta||''; }
+
+async function runWindows(){
+  for(const [g,name,path,fOnly] of WINDOWS){
+    const d=addItem(g,name);
+    const r=await call('GET',path);
+    if(r.status===200){ setItem(d,'ok','✓','200'); counters.ok++; }
+    else if(r.status===403){ setItem(d,'lock','🔒','403 · нет доступа роли'); counters.lock++; }
+    else if(r.status===400 && path.includes('basket/recommend')){ setItem(d,'ok','✓','400 ожид.'); counters.ok++; }
+    else { setItem(d,'bad','✗', r.status+' '+((r.body&&r.body.error)||'')); counters.bad++; }
+    upd();
+  }
+}
+async function runData(){
+  const checks=[
+    ['Данные','Дашборд: выручка > 0', async()=>{ const r=await call('GET','/company/dashboard?from='+isoFrom()); const v=r.body&&r.body.totals&&r.body.totals.sales_revenue; return [v>0, 'выручка='+v]; }],
+    ['Данные','Дашборд: топ товаров не пуст', async()=>{ const r=await call('GET','/company/dashboard?from='+isoFrom()); return [(r.body&&r.body.top_products||[]).length>0, (r.body&&r.body.top_products||[]).length+' шт']; }],
+    ['Данные','Сегментация: клиенты есть', async()=>{ const r=await call('GET','/customers/segments'); const b=r.body||{}; const t=b.total||(b.segments||[]).reduce((s,x)=>s+(x.count||0),0); return [t>0,'клиентов='+t]; }],
+    ['Данные','Когорты: считаются', async()=>{ const r=await call('GET','/analytics/cohorts'); return [JSON.stringify(r.body||{}).length>50,'ok']; }],
+  ];
+  for(const [g,name,fn] of checks){ const d=addItem(g,name); try{ const [pass,meta]=await fn(); if(pass){setItem(d,'ok','✓',meta);counters.ok++;}else{setItem(d,'bad','✗',meta);counters.bad++;} }catch(e){ setItem(d,'bad','✗',e.message); counters.bad++; } upd(); }
+}
+async function runFlows(){
+  // создаёт пометку [TEST] — чистится seed_demo.js --clean / harness.js
+  const steps=[
+    ['Флоу','Создать задачу', async()=>{ const r=await call('POST','/tasks',{title:'[TEST] симулятор',description:'[TEST]',priority:'low'}); window.__taskId = r.body&&(r.body.task?r.body.task.id:r.body.id); return [r.status===200||r.status===201,'HTTP '+r.status]; }],
+    ['Флоу','Задача в списке', async()=>{ const r=await call('GET','/tasks'); return [JSON.stringify(r.body||'').includes('симулятор'),'найдено']; }],
+    ['Флоу','Задача → выполнено', async()=>{ if(!window.__taskId) return [false,'нет id']; const r=await call('PATCH','/tasks/'+window.__taskId+'/status',{status:'done'}); return [r.status===200||r.status===201,'HTTP '+r.status]; }],
+    ['Флоу','Алерт → задача', async()=>{ const a=await call('GET','/analytics/alerts'); const it=(a.body&&a.body.items||[])[0]; if(!it) return [true,'нет алертов — пропуск']; const r=await call('POST','/tasks/from-alert',{alert_id:it.id}); return [[200,201,409].includes(r.status),'HTTP '+r.status]; }],
+  ];
+  for(const [g,name,fn] of steps){ const d=addItem(g,name); try{ const [pass,meta]=await fn(); if(pass){setItem(d,'ok','✓',meta);counters.ok++;}else{setItem(d,'bad','✗',meta);counters.bad++;} }catch(e){ setItem(d,'bad','✗',e.message); counters.bad++; } upd(); }
+}
+
+function busy(b){ ['runAll','runWin','runData','runFlow'].forEach(id=>$(id).disabled=b); }
+$('runWin').onclick = async()=>{ $('results').innerHTML=''; resetCounters(WINDOWS.length); busy(true); await runWindows(); busy(false); };
+$('runData').onclick = async()=>{ $('results').innerHTML=''; resetCounters(4); busy(true); await runData(); busy(false); };
+$('runFlow').onclick = async()=>{ $('results').innerHTML=''; resetCounters(4); busy(true); await runFlows(); busy(false); };
+$('runAll').onclick = async()=>{ $('results').innerHTML=''; resetCounters(WINDOWS.length+8); busy(true); await runWindows(); await runData(); await runFlows(); busy(false); };
+</script>
+</body>
+</html>

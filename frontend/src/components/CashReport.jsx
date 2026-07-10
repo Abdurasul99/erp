@@ -196,28 +196,48 @@ export default function CashReport() {
           {by_day.length === 0 ? (
             <Empty label={uz ? 'Maʼlumot yoʻq' : 'Нет данных'} />
           ) : (
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '4px', height: '120px', padding: '8px 0' }}>
-              {by_day.map((d, i) => {
-                const incH = (d.income / maxByDay) * 100;
-                const expH = (d.expense / maxByDay) * 100;
-                return (
-                  <div key={d.day} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '14px' }}
-                       title={`${d.day}\n+${fmtMoney(d.income)}\n-${fmtMoney(d.expense)}`}>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column-reverse', justifyContent: 'flex-start', alignItems: 'center', width: '100%', gap: '1px' }}>
-                      <div style={{ width: '100%', height: `${incH}%`, background: 'linear-gradient(180deg, #22C55E, #16a34a)', borderRadius: '3px 3px 0 0', minHeight: d.income > 0 ? '2px' : 0 }} />
-                      {d.expense > 0 && (
-                        <div style={{ width: '100%', height: `${expH}%`, background: 'linear-gradient(180deg, #FCA5A5, #ef4444)', borderRadius: '0', minHeight: '2px' }} />
-                      )}
-                    </div>
-                    {i % Math.max(1, Math.floor(by_day.length / 7)) === 0 && (
-                      <div style={{ fontSize: '9px', color: 'var(--text3)', marginTop: '4px', fontWeight: 700 }}>
-                        {d.day.slice(5)}
+            (() => {
+              // Smooth area+line chart. SVG stretches to full width (preserveAspectRatio
+              // none) while strokes stay crisp (non-scaling-stroke) — no fat "brick" bars.
+              const n = by_day.length;
+              const W = 1000, H = 150, PADX = 6, PADY = 12;
+              const xFor = (i) => (n <= 1 ? W / 2 : PADX + (i / (n - 1)) * (W - 2 * PADX));
+              const yFor = (v) => (H - PADY) - (v / maxByDay) * (H - 2 * PADY);
+              const linePath = (key) => by_day.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(d[key]).toFixed(1)}`).join(' ');
+              const areaPath = (key) => `${linePath(key)} L ${xFor(n - 1).toFixed(1)} ${(H - PADY).toFixed(1)} L ${xFor(0).toFixed(1)} ${(H - PADY).toFixed(1)} Z`;
+              const slotW = W / Math.max(1, n);
+              return (
+                <div style={{ width: '100%' }}>
+                  <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: '170px', display: 'block', overflow: 'visible' }}>
+                    {/* horizontal gridlines */}
+                    {[0, 0.5, 1].map(tk => {
+                      const y = (H - PADY) - tk * (H - 2 * PADY);
+                      return <line key={tk} x1="0" y1={y.toFixed(1)} x2={W} y2={y.toFixed(1)} stroke="var(--border)" strokeWidth="1" vectorEffect="non-scaling-stroke" opacity="0.6" />;
+                    })}
+                    {/* expense (red) */}
+                    <path d={areaPath('expense')} fill="rgba(239,68,68,0.10)" />
+                    <path d={linePath('expense')} fill="none" stroke="#ef4444" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+                    {/* income (green) */}
+                    <path d={areaPath('income')} fill="rgba(34,197,94,0.10)" />
+                    <path d={linePath('income')} fill="none" stroke="#16a34a" strokeWidth="2.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+                    {/* invisible per-day hover zones — native tooltip with exact values */}
+                    {by_day.map((d, i) => (
+                      <rect key={d.day} x={Math.max(0, xFor(i) - slotW / 2).toFixed(1)} y="0" width={slotW.toFixed(1)} height={H} fill="transparent">
+                        <title>{`${d.day}\n${uz ? 'Tushum' : 'Доход'}: +${fmtMoney(d.income)}\n${uz ? 'Chiqim' : 'Расход'}: −${fmtMoney(d.expense)}`}</title>
+                      </rect>
+                    ))}
+                  </svg>
+                  {/* x-axis labels (sparse) */}
+                  <div style={{ display: 'flex', marginTop: '4px' }}>
+                    {by_day.map((d, i) => (
+                      <div key={d.day} style={{ flex: 1, textAlign: 'center', fontSize: '9px', color: 'var(--text3)', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                        {i % Math.max(1, Math.ceil(n / 8)) === 0 ? d.day.slice(5) : ''}
                       </div>
-                    )}
+                    ))}
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })()
           )}
           <div style={{ display: 'flex', gap: '14px', marginTop: '6px', fontSize: '11px' }}>
             <span><span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#16a34a', borderRadius: '2px', marginRight: '4px' }} />{uz ? 'Tushum' : 'Доход'}</span>

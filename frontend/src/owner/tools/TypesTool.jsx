@@ -24,7 +24,7 @@ export default function TypesTool() {
                 <div style={{ fontWeight: 800, fontSize: 14 }}>{tt(t)}</div>
                 <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>{counts[t] || Math.floor(Math.random() * 20) + 3} {tt('товаров')}</div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => { if (confirm(tt('Удалить') + ' ' + t + '?')) { setList(l => l.filter(x => x !== t)); toast(t + ' ' + tt('удалён'), 'info'); } }}>🗑️</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { if (confirm(tt('Удалить') + ' ' + t + '?')) { setList(l => l.filter(x => x !== t)); toast(tt(t) + ' ' + tt('удалён'), 'info'); } }}>🗑️</button>
             </div>
           </Card>
         ))}

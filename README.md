@@ -68,7 +68,7 @@ cd ..
 Open `psql` as a superuser (`postgres` user) and run:
 
 ```sql
-CREATE USER wareapp_user WITH PASSWORD 'Wareapp2024!';
+CREATE USER wareapp_user WITH PASSWORD '<DB_PASSWORD>';
 CREATE DATABASE warehouse OWNER wareapp_user;
 GRANT ALL PRIVILEGES ON DATABASE warehouse TO wareapp_user;
 ```

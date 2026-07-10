@@ -46,8 +46,8 @@ export default function LtvTool() {
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
             <Tile icon="💎" label={tt('Средний LTV')} value={fmtMoneyFull(data.avg_ltv)} sub={tt('сум · на клиента')} color="#9333EA" />
-            <Tile icon="🔁" label={tt('Повторные покупки')} value={data.repeat_rate + '%'} sub={tt('клиентов ≥2 заказов')} color="#22C55E" />
-            <Tile icon="🧾" label={tt('Средний чек')} value={fmtMoneyFull(data.avg_order_value)} sub={tt('сум')} color="#FF6B2B" />
+            <Tile icon="🔁" label={tt('Повторные покупки')} value={data.repeat_rate + '%'} sub={tt('клиентов ≥2 заказов')} color="#16A34A" />
+            <Tile icon="🧾" label={tt('Средний чек')} value={fmtMoneyFull(data.avg_order_value)} sub={tt('сум')} color="#D97706" />
             <Tile icon="📦" label={tt('Заказов на клиента')} value={data.avg_orders} sub={tt('в среднем')} color="#0EA5E9" />
           </div>
 

@@ -45,9 +45,9 @@ export default function MotivationTool() {
       ) : (
         <>
           <div className="grid-3" style={{ marginBottom: 18 }}>
-            <Tile icon="🥇" label={tt('Лидер месяца')} value={leader.name} sub={`${fmtMoneyFull(leader.revenue_30d)} ${tt('сум')}`} color="#F59E0B" />
-            <Tile icon="👥" label={tt('Участников')} value={fmtNum(ranked.length)} sub={tt('продавали за 30 дней')} color="#5B4FE8" />
-            <Tile icon="💰" label={tt('Общий результат')} value={fmtMoneyFull(totalRevenue)} sub={tt('сум · вся команда')} color="#22C55E" />
+            <Tile icon="🥇" label={tt('Лидер месяца')} value={leader.name} sub={`${fmtMoneyFull(leader.revenue_30d)} ${tt('сум')}`} color="#D97706" />
+            <Tile icon="👥" label={tt('Участников')} value={fmtNum(ranked.length)} sub={tt('продавали за 30 дней')} color="#1D4ED8" />
+            <Tile icon="💰" label={tt('Общий результат')} value={fmtMoneyFull(totalRevenue)} sub={tt('сум · вся команда')} color="#16A34A" />
           </div>
 
           <Card icon="🏁" title={tt('Гонка продаж · 30 дней')}>
@@ -68,12 +68,12 @@ export default function MotivationTool() {
                           {tt(ROLE_RU[e.role] || e.role)} · {fmtNum(e.deals_30d)} {tt('продаж')}
                         </span>
                       </div>
-                      <div className="mono" style={{ fontWeight: 800, fontSize: 13.5, color: i === 0 ? '#F59E0B' : 'var(--text)' }}>
+                      <div className="mono" style={{ fontWeight: 800, fontSize: 13.5, color: i === 0 ? '#D97706' : 'var(--text)' }}>
                         {fmtMoneyFull(e.revenue_30d)} <span style={{ fontSize: 10, color: 'var(--text3)' }}>{tt('сум')}</span>
                       </div>
                     </div>
                     <div style={{ marginLeft: 38 }}>
-                      <Progress value={pct} max={100} color={i === 0 ? '#F59E0B' : i === 1 ? '#9094B0' : i === 2 ? '#B45309' : '#5B4FE8'} />
+                      <Progress value={pct} max={100} color={i === 0 ? '#D97706' : i === 1 ? '#94A0B5' : i === 2 ? '#B45309' : '#1D4ED8'} />
                     </div>
                   </div>
                 );

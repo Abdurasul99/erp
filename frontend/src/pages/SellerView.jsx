@@ -6,6 +6,7 @@ import api from '../api.js';
 import JsBarcode from 'jsbarcode';
 import { fmtMoney, fmtNum, filterByPeriod, formatDateTimeShort } from '../utils.js';
 import PeriodFilter from '../components/PeriodFilter.jsx';
+import useBarcodePrint from '../utils/useBarcodePrint.jsx';
 
 function BarcodeImg({ value }) {
   const ref = useRef(null);
@@ -90,6 +91,8 @@ export default function SellerView() {
   const { lang, changeLang } = useContext(LangContext);
   const navigate = useNavigate();
   const uz = lang === 'uz';
+  // Unified barcode-print dialog (copies + size, saved per user) — same as warehouse/phone.
+  const { openPrint, printModal } = useBarcodePrint(lang);
 
   const [scanning, setScanning] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -657,10 +660,21 @@ export default function SellerView() {
                 </div>
               </div>
 
-              {/* Barcode */}
+              {/* Barcode + print */}
               {product.barcode && (
-                <div style={{ padding: '10px 16px', borderBottom: '1px solid #F4F5FA', textAlign: 'center', overflowX: 'auto' }}>
-                  <BarcodeImg value={product.barcode} />
+                <div style={{ padding: '10px 16px', borderBottom: '1px solid #F4F5FA', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ flex: 1, textAlign: 'center', overflowX: 'auto' }}>
+                    <BarcodeImg value={product.barcode} />
+                  </div>
+                  <button onClick={() => openPrint([product])} title={uz ? 'Shtrix-kod chop etish' : 'Печать штрих-кода'}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px', cursor: 'pointer', color: '#4338ca', flexShrink: 0 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 20, height: 20 }}>
+                      <polyline points="6 9 6 2 18 2 18 9"/>
+                      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                      <rect x="6" y="14" width="12" height="8"/>
+                    </svg>
+                    <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>{uz ? 'Chop' : 'Печать'}</span>
+                  </button>
                 </div>
               )}
 
@@ -1144,6 +1158,7 @@ export default function SellerView() {
           100% { transform: scale(1); opacity: 1; }
         }
       `}</style>
+      {printModal}
     </div>
   );
 }

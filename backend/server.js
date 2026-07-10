@@ -12,10 +12,14 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-// JWT_SECRET must come from env. Hard fail in production if it's missing or weak.
-const JWT_SECRET = process.env.JWT_SECRET || 'warehouse_jwt_secret_2024_xk9q';
-if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 24)) {
-  console.error('FATAL: JWT_SECRET env var is required in production and must be ≥24 chars');
+// JWT_SECRET и DB_PASS обязаны приходить из env (.env) — никаких хардкод-дефолтов в коде.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 24) {
+  console.error('FATAL: JWT_SECRET env var is required and must be ≥24 chars');
+  process.exit(1);
+}
+if (!process.env.DB_PASS) {
+  console.error('FATAL: DB_PASS env var is required');
   process.exit(1);
 }
 
@@ -24,14 +28,51 @@ process.env.TZ = 'Asia/Tashkent';
 const pool = new Pool({
   database: process.env.DB_NAME || 'warehouse',
   user: process.env.DB_USER || 'wareapp_user',
-  password: process.env.DB_PASS || 'Wareapp2024!',
+  password: process.env.DB_PASS,
   host: process.env.DB_HOST || 'localhost',
   port: 5432,
+  // Пул соединений: дефолт pg = 10 на весь монолит — одна загрузка дашборда (~30 запросов
+  // через 4 эндпоинта) + параллельные пользователи исчерпывают его. Расширено под мульти-филиал.
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 25,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
+
+// In-memory TTL-гейты для compute-on-read пересчётов (single-instance pm2). Тяжёлые
+// пересчёты (anomaly per-row upsert, branch-daily write-through) выполнялись на КАЖДЫЙ
+// запрос → N+1. Теперь — не чаще TTL на ключ. Ключ — произвольная строка (company+scope).
+const _recomputeAt = new Map();
+const recomputeDue = (key, ttlMs) => (Date.now() - (_recomputeAt.get(key) || 0)) > ttlMs;
+const markRecomputed = (key) => { _recomputeAt.set(key, Date.now()); };
+
+// Единый диапазон периода для ВСЕХ аналитических инструментов (устраняет расхождение
+// «выручка за месяц» между экранами). 'month' = КАЛЕНДАРНЫЙ месяц [1-е число → сейчас];
+// day/week/year — скользящие окна. Прошлый период: для month — предыдущий календарный
+// месяц, иначе — окно той же длины перед текущим. days = фактических дней в окне (для
+// нормировок «в день»). Канон совпадает с founder-dashboard/trends.
+function periodRangeUnified(period) {
+  const now = new Date();
+  const to = new Date(now);
+  // Скользящие окна: month = последние 30 дней (НЕ календарный месяц) — чтобы свежая
+  // активность всегда была видна, даже если продажи пришлись на конец прошлого месяца.
+  // Прошлый период — окно той же длины непосредственно перед текущим. Все экраны
+  // (дашборд/отчёт/сравнение филиалов/юнит-экономика/учредитель) используют один канон.
+  const days = period === 'day' ? 1 : period === 'week' ? 7 : period === 'year' ? 365 : 30;
+  const from = new Date(now); from.setDate(from.getDate() - days); from.setHours(0, 0, 0, 0);
+  const spanMs = to - from;
+  const prevFrom = new Date(from.getTime() - spanMs);
+  return { from: from.toISOString(), to: to.toISOString(), prevFrom: prevFrom.toISOString(), prevTo: from.toISOString(), days };
+}
 
 // Timezone set at DB level via ALTER DATABASE — no need for per-connection override
 
-app.use(cors());
+// CORS: только свои домены. Фронт ходит на /api same-origin, так что это не ломает приложение;
+// ограничение блокирует лишь обращения с чужих сайтов из браузера. Список — через env CORS_ORIGINS.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'https://mywarehouse.uz,https://www.mywarehouse.uz').split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) => (!origin || CORS_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS: origin not allowed')),
+  credentials: true,
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Trust the first proxy (nginx) so rate-limit sees the real client IP
@@ -47,13 +88,58 @@ const authLimiter = rateLimit({
 });
 
 // Audit helper — records a row in audit_log. Fire-and-forget (won't fail the request).
-const audit = (req, action, entityType, entityId, oldValue, newValue) => {
+// Обратносовместимо: старые вызовы audit(req, action, entityType, entityId, old, new) работают как раньше.
+// 7-й аргумент opts (опционально) добавляет журнальные поля и авто-детект подозрительных действий:
+//   { module, description, branch_id, suspicious:bool, suspicious_reason, discount_pct, write_off_qty, is_return, is_price_change }
+const EJ_MAX_DISCOUNT_PCT = 15;   // скидка выше — подозрительно
+const EJ_MAX_WRITE_OFF_QTY = 3;   // списание больше — подозрительно (обычно 1-2 шт)
+
+// Маппинг entity_type → бизнес-модуль журнала.
+const EJ_MODULE_BY_ENTITY = {
+  sale: 'pos', stock_outcome: 'pos', pos: 'pos', return: 'pos',
+  product: 'inventory', product_stock: 'inventory', stock: 'inventory', write_off: 'inventory', inventory: 'inventory',
+  cash_income: 'finance', cash_expense: 'finance', expense: 'finance', payment: 'finance',
+  user: 'hr', employee: 'hr', attendance: 'hr', task: 'hr',
+  customer: 'crm', complaint: 'crm', referral: 'crm', greeting: 'crm',
+  supplier: 'purchase', income: 'purchase', purchase: 'purchase',
+  company: 'settings', branch: 'settings', settings: 'settings', integration: 'settings', reference: 'settings',
+};
+
+// Авто-детект подозрительности по бизнес-правилам спеки.
+function ejDetectSuspicious(action, entityType, opts = {}) {
+  const a = String(action || '').toLowerCase();
+  const reasons = [];
+  const disc = Number(opts.discount_pct);
+  if (Number.isFinite(disc) && disc > EJ_MAX_DISCOUNT_PCT) reasons.push(`Скидка ${disc.toFixed(0)}% > макс. ${EJ_MAX_DISCOUNT_PCT}%`);
+  const wq = Number(opts.write_off_qty);
+  if (Number.isFinite(wq) && wq > EJ_MAX_WRITE_OFF_QTY) reasons.push(`Списание ${wq} ед. > ${EJ_MAX_WRITE_OFF_QTY} ед.`);
+  if (opts.is_return || a.includes('return') || a === 'refund') reasons.push('Возврат');
+  if (opts.is_price_change || a === 'price_change' || a.includes('price')) reasons.push('Изменение цены');
+  if (a === 'delete' || a.includes('write_off') || a === 'employee_fire') reasons.push('Удаление / списание');
+  return reasons.length
+    ? { is_suspicious: true, suspicious_reason: reasons.join('; ').slice(0, 255) }
+    : { is_suspicious: false, suspicious_reason: null };
+}
+
+const audit = (req, action, entityType, entityId, oldValue, newValue, opts = {}) => {
   const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+  const role = req.user?.role || null;
+  const companyId = req.user?.company_id || null;
+  const branchId = (opts.branch_id != null ? opts.branch_id : req.user?.branch_id) || null;
+  const module = opts.module || EJ_MODULE_BY_ENTITY[entityType] || null;
+  const description = opts.description || null;
+  // Подозрительность: явное значение из opts ИЛИ авто-детект.
+  let sus;
+  if (typeof opts.suspicious === 'boolean') sus = { is_suspicious: opts.suspicious, suspicious_reason: opts.suspicious_reason || null };
+  else sus = ejDetectSuspicious(action, entityType, opts);
   pool.query(
-    `INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, old_value, new_value, ip_address)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    `INSERT INTO audit_log
+       (user_id, username, action, entity_type, entity_id, old_value, new_value, ip_address,
+        company_id, branch_id, user_role, module, description, is_suspicious, suspicious_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [req.user?.id || null, req.user?.username || null, action, entityType, entityId,
-     oldValue ? JSON.stringify(oldValue) : null, newValue ? JSON.stringify(newValue) : null, ip]
+     oldValue ? JSON.stringify(oldValue) : null, newValue ? JSON.stringify(newValue) : null, ip,
+     companyId, branchId, role, module, description, sus.is_suspicious, sus.suspicious_reason]
   ).catch(e => console.error('audit insert error', e.message));
 };
 
@@ -117,7 +203,9 @@ function getBranchFilter(user, query = {}) {
   if (user.role === 'admin') return query.branch_id ? parseInt(query.branch_id) : null;
   if (isCompanyLevel(user.role)) return query.branch_id ? parseInt(query.branch_id) : null;
   if (user.role === 'seller' && query.branch_id) return parseInt(query.branch_id);
-  return user.branch_id || null;
+  // manager/cashier/warehouse — пин к своему филиалу. Если branch_id не задан (мисконфиг) —
+  // fail-closed: сентинел -1 (→ 0 строк), чтобы НЕ отдать данные всех филиалов компании.
+  return user.branch_id || -1;
 }
 
 // Resolve the set of branch IDs the user is allowed to query.
@@ -160,6 +248,34 @@ async function assertBranchInCompany(user, branchId) {
   }
 }
 
+// ── SaaS-оператор (admin): жёсткая граница данных ────────────────────────────
+// Админ управляет ПЛАТФОРМОЙ (компании/филиалы/сотрудники/фичи/аудит), но НЕ
+// должен видеть бизнес-данные клиентов (выручка/прибыль/касса/аналитика/склад).
+// Один чокпоинт: для роли admin доступны только платформенные пути, любой другой
+// /api/* → 403. Это закрывает кросс-тенантную дыру: getUserBranchIds для admin
+// возвращал {ids:null, restrictive:false} (= данные ВСЕХ компаний), а getBranchFilter
+// пускал admin на любой ?branch_id. Теперь такие эндпоинты для admin недостижимы.
+const ADMIN_ALLOWED_PREFIXES = [
+  '/api/auth',            // логин / me
+  '/api/admin',           // дашборд оператора, drill-down (уже без финансов), фичи
+  '/api/companies',       // CRUD компаний
+  '/api/branches',        // CRUD филиалов
+  '/api/users',           // CRUD сотрудников + права/блок/сброс пароля
+  '/api/role-change-log', // лог смены ролей
+  '/api/audit-log',       // аудит действий
+];
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return next();              // нет токена — решит auth() конкретного маршрута
+  let role;
+  try { role = jwt.verify(token, JWT_SECRET).role; } catch { return next(); }
+  if (role !== 'admin') return next();    // ограничение только для SaaS-оператора
+  const ok = ADMIN_ALLOWED_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'));
+  if (!ok) return res.status(403).json({ error: 'SaaS-оператор не имеет доступа к данным клиента' });
+  next();
+});
+
 // === COMPANIES ===
 app.get('/api/companies', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   let query = `
@@ -179,6 +295,20 @@ app.get('/api/companies', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
   res.json(rows);
 });
 
+// Простой дефолт панели: скрываем продвинутые/редкие инструменты (аналитика, симуляторы
+// «что если», прогнозы, нишевые). Учредитель включит нужное в «Управление панелью».
+// 42 ядровых инструмента остаются, эти 81 скрыты по умолчанию.
+const DEFAULT_DISABLED_TOOLS = [
+  'ab-point','anomaly','business-funnel','basket-analysis','cohorts','unit-economics','ssp',
+  'cash-gap','pricing','cashflow','modeling','fin-model','break-even','profitability','payment-calendar','currency-ops','taxes','financial-ratios','fin-whatif',
+  'competitor-mirror','loss-funnel','ca-analysis','content-plan','channels','ltv','strategy-3y','customer-campaigns','competitors',
+  'procurement-orders','purchase-history','supplier-returns','supplier-ratings','purchase-forecast','what-if-purchases','supplier-compare',
+  'stock-transfers','turnover-deadstock','eoq','reorder-point','safety-stock','purchase-roi','demand-forecast','inventory-whatif','bundles','logistics',
+  'store-police','global-whatif','b2b','commercial-offer','scripts','discounts','sales-top-products','seller-avg-check','sales-forecast','sales-whatif','risk-control','planning','automation','task-templates','task-analytics',
+  'fire-analysis','workday-map','employee-health','hire-fire-calc','team-kpi','training','absences','hr-productivity','hr-adjustments','hr-forecast','hr-whatif',
+  'abc-clients','churn','segmentation','birthdays','referrals','client-forecast','what-if-clients','nps','cjm-client','contact-points',
+];
+
 app.post('/api/companies', auth(['admin']), async (req, res) => {
   try {
     const {
@@ -196,8 +326,8 @@ app.post('/api/companies', auth(['admin']), async (req, res) => {
     try {
       await client.query('BEGIN');
       const { rows: [company] } = await client.query(
-        'INSERT INTO companies (name, address, phone, created_by) VALUES ($1,$2,$3,$4) RETURNING *',
-        [name.trim(), address || '', phone || '', req.user.id]
+        'INSERT INTO companies (name, address, phone, created_by, disabled_tools) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+        [name.trim(), address || '', phone || '', req.user.id, DEFAULT_DISABLED_TOOLS]
       );
       const hash = await bcrypt.hash(gen_dir_password, 10);
       await client.query(
@@ -221,9 +351,41 @@ app.put('/api/companies/:id', auth(['admin']), async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Каскадное удаление компании СО ВСЕМИ её данными (пользователи, филиалы, продажи,
+// приходы, касса, все таблицы инструментов). Каждый DELETE в своём try/catch (без транзакции),
+// чтобы отсутствие таблицы/колонки не блокировало удаление. Данные каждой компании изолированы
+// по company_id / branch_id — чужие компании не затрагиваются.
 app.delete('/api/companies/:id', auth(['admin']), async (req, res) => {
-  await pool.query('DELETE FROM companies WHERE id = $1', [req.params.id]);
-  res.json({ ok: true });
+  const cid = parseInt(req.params.id);
+  if (!cid) return res.status(400).json({ error: 'некорректный id' });
+  try {
+    const bids = (await pool.query('SELECT id FROM branches WHERE company_id=$1', [cid])).rows.map((r) => r.id);
+    const del = async (sql, params) => { try { await pool.query(sql, params); } catch (e) { /* нет таблицы/колонки — пропускаем */ } };
+
+    // движения и касса — по branch_id. ПОРЯДОК ВАЖЕН: сначала cash_income (она ссылается
+    // на stock_outcome через outcome_id) — иначе FK-проверка при удалении stock_outcome
+    // выполняется на каждую строку = O(n²) и удаление больших компаний висит минутами.
+    if (bids.length) {
+      for (const t of ['cash_income', 'cash_expense', 'cash_flows', 'product_stock', 'stock_income', 'stock_outcome']) {
+        await del(`DELETE FROM ${t} WHERE branch_id = ANY($1::int[])`, [bids]);
+      }
+    }
+    // всё, что скоупится по company_id (дочерние с ON DELETE CASCADE уйдут вместе с родителем)
+    for (const t of [
+      'customer_rfm', 'customer_rfm_history', 'notification_campaigns', 'leads', 'loyalty_accounts', 'discounts',
+      'reviews', 'sales_scripts', 'bhi_daily', 'inventory_audits', 'tax_settings', 'tax_payments', 'balance_entries',
+      'supplier_returns', 'purchase_orders', 'receivings', 'schedules', 'shift_templates', 'attendance', 'absences',
+      'salaries', 'employee_adjustments', 'penalty_rules', 'courses', 'stock_transfers', 'complaints', 'tasks',
+      'suppliers', 'customers', 'products', 'users', 'branches',
+    ]) {
+      await del(`DELETE FROM ${t} WHERE company_id = $1`, [cid]);
+    }
+    await pool.query('DELETE FROM companies WHERE id = $1', [cid]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('delete company err', e.message);
+    res.status(500).json({ error: 'Не удалось удалить компанию: ' + e.message });
+  }
 });
 
 // === BRANCHES ===
@@ -305,63 +467,209 @@ app.put('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, 
 app.delete('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
-  const { rows: [cur] } = await pool.query('SELECT id, company_id FROM branches WHERE id=$1', [id]);
-  if (!cur) return res.status(404).json({ error: 'Not found' });
-  if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
-    return res.status(403).json({ error: 'Out of scope' });
+  try {
+    const { rows: [cur] } = await pool.query('SELECT id, company_id FROM branches WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
+      return res.status(403).json({ error: 'Out of scope' });
+    }
+    // Каскадное удаление филиала со ВСЕМ его содержимым (товары, остатки, движения,
+    // касса, смены, сотрудники). Любая FK-ссылка на branches иначе валит DELETE.
+    // Каждый шаг в своём try/catch (del) — отсутствие таблицы/колонки не блокирует.
+    // Затрагивается строго этот branch_id: другие филиалы и компании не трогаются.
+    const del = async (sql, params) => { try { await pool.query(sql, params); } catch (e) { /* нет таблицы/колонки — пропускаем */ } };
+    const isIdent = (s) => /^[a-z_][a-z0-9_]*$/i.test(s);
+    // 1) Удаляем в порядке зависимостей: касса (ссылается на stock_outcome.outcome_id)
+    //    → движения склада → товары (каскадом унесут остатки) → смены/график → прочее.
+    for (const tbl of [
+      'cash_income', 'cash_expense', 'cash_categories', 'cash_flows',
+      'stock_outcome', 'stock_income', 'product_stock', 'products',
+      'shifts', 'schedules', 'attendance', 'absences', 'inventory_audits', 'tasks',
+    ]) {
+      await del(`DELETE FROM ${tbl} WHERE branch_id = $1`, [id]);
+    }
+    await del('DELETE FROM stock_transfers WHERE branch_id = $1 OR from_branch_id = $1 OR to_branch_id = $1', [id]);
+    // Сотрудники филиала (кассир/продавец/склад/менеджер). Учредитель/директор имеют
+    // branch_id = NULL и к филиалу не привязаны — их это не затрагивает.
+    await del('DELETE FROM users WHERE branch_id = $1', [id]);
+    // 2) Авто-подметание: ЛЮБАЯ другая таблица с FK на branches(id) (в т.ч. будущие) —
+    //    чистим её строки по этому филиалу, чтобы финальный DELETE не упал.
+    try {
+      const fks = await pool.query(
+        `SELECT tc.table_name AS tbl, kcu.column_name AS col
+           FROM information_schema.table_constraints tc
+           JOIN information_schema.key_column_usage kcu
+             ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+           JOIN information_schema.constraint_column_usage ccu
+             ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+          WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name = 'branches'`
+      );
+      for (const { tbl, col } of fks.rows) {
+        if (isIdent(tbl) && isIdent(col)) await del(`DELETE FROM "${tbl}" WHERE "${col}" = $1`, [id]);
+      }
+    } catch (e) { /* интроспекция недоступна — список выше уже покрыл основное */ }
+    // 3) Сам филиал
+    await pool.query('DELETE FROM branches WHERE id = $1', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('delete branch err', e.message);
+    res.status(500).json({ error: 'Не удалось удалить филиал: ' + e.message });
   }
-  await pool.query('DELETE FROM branches WHERE id = $1 AND company_id = $2', [id, cur.company_id]);
-  res.json({ ok: true });
 });
 
-// === Customer SEGMENTATION (RFM-lite) ===
-// Buckets customers into VIP / Regular / Sleeping / Lost / New based on recency + revenue.
-// Thresholds tuned for Uzbek retail; tweak later via config table.
+// === Customer SEGMENTATION (RFM, 11 сегментов) ============================
+// Полноценная RFM-модель по спецификации: R/F/M баллы 1-5, 11 именованных
+// сегментов по матрице R×F, средний LTV и рекомендованное действие на сегмент.
+// Результат кэшируется в таблице customer_rfm (compute-on-read, TTL 6ч).
+const RFM_TTL_MS = 6 * 60 * 60 * 1000;
+const RFM_SEGMENTS = {
+  champions:       'Чемпионы',
+  loyal:           'Лояльные',
+  potential_loyal: 'Потенциально лояльные',
+  new:             'Новички',
+  promising:       'Перспективные',
+  need_attention:  'Требуют внимания',
+  about_to_sleep:  'Засыпают',
+  at_risk:         'В зоне риска',
+  cant_lose:       'Нельзя потерять',
+  hibernating:     'Спящие',
+  lost:            'Потерянные',
+};
+// Порядок для UI + мета (иконка/тон/действие).
+const RFM_SEGMENT_META = [
+  { key: 'champions',       icon: '🏆', tone: 'orange', action: 'Награждайте, просите отзывы и рефералов' },
+  { key: 'loyal',           icon: '💎', tone: 'green',  action: 'Допродажи, программа лояльности' },
+  { key: 'potential_loyal', icon: '🌱', tone: 'green',  action: 'Membership, персональные рекомендации' },
+  { key: 'new',             icon: '✨', tone: 'blue',   action: 'Онбординг, поддержка первого опыта' },
+  { key: 'promising',       icon: '🔭', tone: 'blue',   action: 'Повышайте узнаваемость, лимит-офферы' },
+  { key: 'need_attention',  icon: '⚠️', tone: 'yellow', action: 'Реактивация, ограниченные по времени офферы' },
+  { key: 'about_to_sleep',  icon: '😴', tone: 'yellow', action: 'Напоминания, делитесь полезным контентом' },
+  { key: 'at_risk',         icon: '🚨', tone: 'red',    action: 'Персональные письма, скидки на возврат' },
+  { key: 'cant_lose',       icon: '🆘', tone: 'red',    action: 'Win-back: не дайте уйти к конкурентам' },
+  { key: 'hibernating',     icon: '🧊', tone: 'purple', action: 'Реактивация или чистка базы' },
+  { key: 'lost',            icon: '👋', tone: 'red',    action: 'Агрессивная реанимация или исключение' },
+];
+// Матрица R×F → сегмент (классическая 11-сегментная сетка).
+const RFM_MATRIX = {
+  5: { 1: 'new',            2: 'potential_loyal', 3: 'potential_loyal', 4: 'champions', 5: 'champions' },
+  4: { 1: 'new',            2: 'potential_loyal', 3: 'loyal',           4: 'champions', 5: 'champions' },
+  3: { 1: 'promising',      2: 'promising',       3: 'need_attention',  4: 'loyal',     5: 'loyal' },
+  2: { 1: 'about_to_sleep', 2: 'about_to_sleep',  3: 'need_attention',  4: 'at_risk',   5: 'at_risk' },
+  1: { 1: 'lost',           2: 'hibernating',     3: 'at_risk',         4: 'cant_lose', 5: 'cant_lose' },
+};
+const rfmScoreR = (d) => (d == null ? 1 : d <= 30 ? 5 : d <= 60 ? 4 : d <= 120 ? 3 : d <= 180 ? 2 : 1);
+const rfmScoreF = (o) => (o >= 10 ? 5 : o >= 6 ? 4 : o >= 3 ? 3 : o >= 2 ? 2 : 1);
+const rfmScoreM = (s) => (s >= 500000 ? 5 : s >= 200000 ? 4 : s >= 100000 ? 3 : s >= 50000 ? 2 : 1);
+const rfmSegment = (r, f) => (RFM_MATRIX[r] && RFM_MATRIX[r][f]) || 'lost';
+const RFM_SCORING = {
+  r: ['≤30 дн = 5', '31-60 = 4', '61-120 = 3', '121-180 = 2', '180+ = 1'],
+  f: ['10+ покупок/год = 5', '6-9 = 4', '3-5 = 3', '2 = 2', '1 = 1'],
+  m: ['500K+ UZS = 5', '200-500K = 4', '100-200K = 3', '50-100K = 2', '<50K = 1'],
+};
+
+// Пересчёт RFM по всем покупателям компании (последние 365 дней) → upsert в кэш.
+async function rfmRecompute(companyId) {
+  const { rows } = await pool.query(`
+    SELECT c.id AS customer_id,
+           COUNT(so.id) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders,
+           COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days'), 0) AS spent,
+           MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at
+    FROM customers c
+    LEFT JOIN stock_outcome so ON so.customer_id = c.id
+    WHERE c.company_id = $1 AND c.deleted_at IS NULL
+    GROUP BY c.id`, [companyId]);
+
+  const cols = { ids: [], r: [], f: [], m: [], last: [], days: [], orders: [], spent: [], seg: [], label: [] };
+  const now = Date.now();
+  for (const row of rows) {
+    const orders = parseInt(row.orders) || 0;
+    if (orders === 0) continue; // RFM считаем только для покупателей
+    const spent = parseFloat(row.spent) || 0;
+    const lastAt = row.last_at ? new Date(row.last_at) : null;
+    const days = lastAt ? Math.floor((now - lastAt.getTime()) / 86400000) : null;
+    const R = rfmScoreR(days), F = rfmScoreF(orders), M = rfmScoreM(spent);
+    const seg = rfmSegment(R, F);
+    cols.ids.push(row.customer_id); cols.r.push(R); cols.f.push(F); cols.m.push(M);
+    cols.last.push(lastAt ? lastAt.toISOString().slice(0, 10) : null); cols.days.push(days);
+    cols.orders.push(orders); cols.spent.push(spent); cols.seg.push(seg); cols.label.push(RFM_SEGMENTS[seg]);
+  }
+
+  if (cols.ids.length) {
+    await pool.query(`
+      INSERT INTO customer_rfm (customer_id, company_id, r_score, f_score, m_score, last_purchase_date, days_since_last, total_orders, total_spent_uzs, segment, segment_label, calculated_at)
+      SELECT customer_id, $1, r, f, m, last_date, days, orders, spent, seg, label, NOW()
+      FROM unnest($2::int[], $3::int[], $4::int[], $5::int[], $6::date[], $7::int[], $8::int[], $9::numeric[], $10::text[], $11::text[])
+        AS t(customer_id, r, f, m, last_date, days, orders, spent, seg, label)
+      ON CONFLICT (customer_id) DO UPDATE SET
+        company_id=EXCLUDED.company_id, r_score=EXCLUDED.r_score, f_score=EXCLUDED.f_score, m_score=EXCLUDED.m_score,
+        last_purchase_date=EXCLUDED.last_purchase_date, days_since_last=EXCLUDED.days_since_last,
+        total_orders=EXCLUDED.total_orders, total_spent_uzs=EXCLUDED.total_spent_uzs,
+        segment=EXCLUDED.segment, segment_label=EXCLUDED.segment_label, calculated_at=NOW()`,
+      [companyId, cols.ids, cols.r, cols.f, cols.m, cols.last, cols.days, cols.orders, cols.spent, cols.seg, cols.label]);
+  }
+  // Чистим из кэша тех, кто больше не покупатель (не попал в текущий пересчёт).
+  await pool.query(
+    `DELETE FROM customer_rfm WHERE company_id=$1 AND ($2::int[] IS NULL OR customer_id <> ALL($2::int[]))`,
+    [companyId, cols.ids.length ? cols.ids : null]);
+
+  // --- forecast: месячный снапшот текущего сегмента каждого покупателя ---
+  // period = первое число текущего месяца; повторный пересчёт в этом же месяце
+  // обновляет segment (ON CONFLICT). Это единственный источник истории переходов.
+  if (cols.ids.length) {
+    await pool.query(`
+      INSERT INTO customer_rfm_history (customer_id, company_id, period, segment)
+      SELECT customer_id, $1, date_trunc('month', CURRENT_DATE)::date, seg
+      FROM unnest($2::int[], $3::text[]) AS t(customer_id, seg)
+      ON CONFLICT (customer_id, period) DO UPDATE SET segment = EXCLUDED.segment`,
+      [companyId, cols.ids, cols.seg]);
+  }
+}
+
+// Гарантировать свежесть кэша (TTL 6ч), иначе пересчитать.
+async function rfmEnsureFresh(companyId) {
+  if (!companyId) return; // admin без компании — не считаем (избегаем company_id=NULL запросов)
+  try {
+    const q = await pool.query('SELECT MAX(calculated_at) m, COUNT(*) c FROM customer_rfm WHERE company_id=$1', [companyId]);
+    const last = q.rows[0]?.m ? new Date(q.rows[0].m).getTime() : 0;
+    const count = parseInt(q.rows[0]?.c) || 0;
+    if (count > 0 && (Date.now() - last) < RFM_TTL_MS) return;
+  } catch {}
+  await rfmRecompute(companyId);
+}
+
 app.get('/api/customers/segments', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const branchId = getBranchFilter(req.user, req.query);
-    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
-
-    // Single CTE: per-customer aggregates over the last 365 days
+    await rfmEnsureFresh(companyId);
     const { rows } = await pool.query(`
-      WITH agg AS (
-        SELECT c.id, c.name, c.phone,
-               COUNT(so.id) FILTER (WHERE so.status='approved') AS deals,
-               COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
-               MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at,
-               EXTRACT(DAY FROM NOW() - MAX(so.created_at) FILTER (WHERE so.status='approved')) AS days_since,
-               EXTRACT(DAY FROM NOW() - c.created_at) AS days_old
-        FROM customers c
-        LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
-        WHERE c.company_id = $1 AND c.deleted_at IS NULL
-        GROUP BY c.id, c.name, c.phone, c.created_at
-      )
-      SELECT id, name, phone,
-             deals::int,
-             revenue::numeric,
-             last_at,
-             COALESCE(days_since, days_old)::int AS days_since,
-             CASE
-               WHEN deals = 0 AND days_old < 30 THEN 'new'
-               WHEN deals = 0 THEN 'lost'
-               WHEN days_since >= 120 THEN 'lost'
-               WHEN days_since >= 60 THEN 'sleeping'
-               WHEN revenue >= 5000000 THEN 'vip'
-               ELSE 'regular'
-             END AS segment
-      FROM agg
-      ORDER BY revenue DESC NULLS LAST
-      LIMIT 1000
-    `, [companyId]);
+      SELECT cr.customer_id AS id, c.name, c.phone,
+             cr.r_score, cr.f_score, cr.m_score,
+             cr.total_orders AS deals, cr.total_spent_uzs AS revenue,
+             cr.last_purchase_date AS last_at, cr.days_since_last AS days_since,
+             cr.segment, cr.segment_label
+      FROM customer_rfm cr JOIN customers c ON c.id = cr.customer_id
+      WHERE cr.company_id=$1 AND c.deleted_at IS NULL
+      ORDER BY cr.total_spent_uzs DESC NULLS LAST
+      LIMIT 2000`, [companyId]);
 
-    // Per-segment totals
-    const summary = { vip: 0, regular: 0, sleeping: 0, lost: 0, new: 0, total: rows.length, revenue: 0 };
+    const acc = {};
+    let total = 0, revenue = 0;
     for (const r of rows) {
-      summary[r.segment] = (summary[r.segment] || 0) + 1;
-      summary.revenue += parseFloat(r.revenue) || 0;
+      const s = r.segment;
+      (acc[s] = acc[s] || { count: 0, revenue: 0 });
+      acc[s].count++; acc[s].revenue += parseFloat(r.revenue) || 0;
+      total++; revenue += parseFloat(r.revenue) || 0;
     }
-    res.json({ customers: rows, summary });
+    const segments = RFM_SEGMENT_META.map(m => {
+      const a = acc[m.key] || { count: 0, revenue: 0 };
+      return {
+        key: m.key, label: RFM_SEGMENTS[m.key], icon: m.icon, tone: m.tone, action: m.action,
+        count: a.count,
+        pct: total > 0 ? Math.round((a.count / total) * 1000) / 10 : 0,
+        avg_ltv: a.count > 0 ? Math.round(a.revenue / a.count) : 0,
+      };
+    });
+    res.json({ total, revenue, segments, customers: rows, scoring: RFM_SCORING });
   } catch (e) {
     console.error('segments err', e);
     res.status(500).json({ error: e.message });
@@ -613,7 +921,7 @@ app.get('/api/risks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
         severity: 'info',
         category: 'customer',
         title: `Спящий VIP: ${r.name}`,
-        detail: `Без покупок ${days} дн · LTV ${Math.round(parseFloat(r.revenue) / 1e6 * 10) / 10}M UZS`,
+        detail: `Без покупок ${days} дн · LTV ${Math.round(parseFloat(r.revenue) || 0).toLocaleString('ru-RU')} UZS`,
         action_url: '/owner/clients/crm',
       });
     }
@@ -1170,9 +1478,29 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       const avgRev = totals.sales_revenue / perBranch.length;
       for (const b of perBranch) {
         if (avgRev > 0 && b.sales_revenue < avgRev * 0.5) {
-          alerts.push({ tone: 'purple', title: `Филиал "${b.branch_name}" отстаёт`, sub: `Выручка ${Math.round(b.sales_revenue / 1e6 * 10) / 10}M vs средняя ${Math.round(avgRev / 1e6 * 10) / 10}M` });
+          alerts.push({ tone: 'blue', title: `Филиал "${b.branch_name}" отстаёт`, sub: `Выручка ${Math.round(b.sales_revenue || 0).toLocaleString('ru-RU')} vs средняя ${Math.round(avgRev || 0).toLocaleString('ru-RU')}` });
         }
       }
+    }
+
+    // Топ сотрудников по продажам за период. Если продаж нет (новая компания / пустой период) —
+    // показываем сам штат филиалов (те же, кто считается в «N сотрудников») с нулями, чтобы виджет не пустовал.
+    let topSellers = topSellQ.rows.map(r => ({
+      id: r.id, username: r.username, role: r.role,
+      name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
+      revenue: parseFloat(r.revenue), deals: parseInt(r.deals),
+    }));
+    if (topSellers.length === 0) {
+      const staffQ = await pool.query(`
+        SELECT id, username, first_name, last_name, role
+        FROM users
+        WHERE branch_id IN ${branchIdsList} AND role <> 'admin'
+        ORDER BY id LIMIT 5`);
+      topSellers = staffQ.rows.map(r => ({
+        id: r.id, username: r.username, role: r.role,
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
+        revenue: 0, deals: 0,
+      }));
     }
 
     res.json({
@@ -1185,11 +1513,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
       sales_trend_gran: trendGran,
       prev_trend,
       top_products: topProdQ.rows.map(r => ({ id: r.id, name: r.name_ru, unit: r.unit, qty: parseFloat(r.qty), revenue: parseFloat(r.revenue) })),
-      top_sellers: topSellQ.rows.map(r => ({
-        id: r.id, username: r.username, role: r.role,
-        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
-        revenue: parseFloat(r.revenue), deals: parseInt(r.deals),
-      })),
+      top_sellers: topSellers,
       alerts,
     });
   } catch (e) {
@@ -1251,8 +1575,10 @@ app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manage
       if (!starts.length) starts.push(alignStart(fromQ));
     } else {
       const COUNT = { day: 30, week: 12, month: 12, year: 5 }[gran];
+      // Навигация окна стрелками: offset=0 — текущее окно, -1 — предыдущее, и т.д.
+      const offset = parseInt(req.query.offset, 10) || 0;
       const base = alignStart(now);
-      for (let i = COUNT - 1; i >= 0; i--) starts.push(shift(base, -i));
+      for (let i = COUNT - 1; i >= 0; i--) starts.push(shift(base, -i + offset * COUNT));
     }
     const count = starts.length;
     const prevStarts = starts.map(s => shift(s, -count));
@@ -1295,13 +1621,5408 @@ app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manage
   }
 });
 
+// === BRANCH DAILY (1C) — дневной разрез метрики филиала за месяц ===
+// metric: income | expense | profit | stock.
+// Приход/расход/прибыль считаются из транзакций за месяц (точно).
+// Склад берётся из дневных снапшотов branch_daily_summary — история склада
+// накапливается по мере открытия дашборда (паттерн compute-on-read + write-through).
+// Менеджер жёстко скоупится своим филиалом, поэтому «Валовая прибыль» у него —
+// только его филиал; сводная прибыль по компании менеджеру недоступна.
+app.get('/api/company/branch-daily', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const metric = ['income', 'expense', 'profit', 'stock'].includes(req.query.metric) ? req.query.metric : 'income';
+    const scopedBranch = isManager ? req.user.branch_id : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+
+    const now = new Date();
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : null;
+    let [yy, mm] = m ? m.split('-').map(Number) : [now.getFullYear(), now.getMonth() + 1];
+
+    let bq;
+    if (isManager) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [req.user.branch_id, companyId]);
+    else if (scopedBranch) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [scopedBranch, companyId]);
+    else bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    const ids = bq.rows.map(r => r.id);
+    if (!ids.length) return res.json({ metric, month: `${yy}-${String(mm).padStart(2, '0')}`, points: [], total: 0 });
+
+    // Fallback: если в запрошенном месяце нет продаж — показываем ПОСЛЕДНИЙ месяц с данными,
+    // чтобы дневной разрез не был пустым (старые тестовые данные / начало месяца без активности).
+    try {
+      const rs = `${yy}-${String(mm).padStart(2, '0')}-01`;
+      const re = `${mm === 12 ? yy + 1 : yy}-${String(mm === 12 ? 1 : mm + 1).padStart(2, '0')}-01`;
+      const has = await pool.query(
+        `SELECT 1 FROM stock_outcome WHERE branch_id=ANY($1::int[]) AND status='approved' AND created_at >= $2 AND created_at < $3 LIMIT 1`,
+        [ids, rs, re]);
+      if (!has.rows.length) {
+        const last = await pool.query(
+          `SELECT to_char(max(created_at), 'YYYY-MM') ym FROM stock_outcome WHERE branch_id=ANY($1::int[]) AND status='approved'`, [ids]);
+        if (last.rows[0]?.ym) { const p = last.rows[0].ym.split('-').map(Number); yy = p[0]; mm = p[1]; }
+      }
+    } catch (e) { /* оставляем запрошенный месяц */ }
+
+    const monthLabel = `${yy}-${String(mm).padStart(2, '0')}`;
+    const monthStart = new Date(yy, mm - 1, 1);
+    const monthEnd = new Date(yy, mm, 1);
+    const daysInMonth = new Date(yy, mm, 0).getDate();
+    const isoStart = monthStart.toISOString();
+    const isoEnd = monthEnd.toISOString();
+    // Границы для DATE-колонки строим как локальные строки (toISOString сдвигает дату
+    // на UTC и в UTC+5 мог бы отрезать последний день месяца).
+    const monthStartStr = `${monthLabel}-01`;
+    const monthEndStr = `${mm === 12 ? yy + 1 : yy}-${String(mm === 12 ? 1 : mm + 1).padStart(2, '0')}-01`;
+
+    const byDay = new Map(); // 'YYYY-MM-DD' → value
+    if (metric === 'income') {
+      const q = await pool.query(
+        `SELECT to_char(created_at::date,'YYYY-MM-DD') d, COALESCE(SUM(amount),0) v
+         FROM cash_income WHERE branch_id = ANY($1::int[]) AND is_settled IS NOT FALSE
+           AND created_at >= $2 AND created_at < $3 GROUP BY d`, [ids, isoStart, isoEnd]);
+      for (const r of q.rows) byDay.set(r.d, parseFloat(r.v) || 0);
+    } else if (metric === 'expense') {
+      const q = await pool.query(
+        `SELECT to_char(created_at::date,'YYYY-MM-DD') d, COALESCE(SUM(amount),0) v
+         FROM cash_expense WHERE branch_id = ANY($1::int[])
+           AND created_at >= $2 AND created_at < $3 GROUP BY d`, [ids, isoStart, isoEnd]);
+      for (const r of q.rows) byDay.set(r.d, parseFloat(r.v) || 0);
+    } else if (metric === 'profit') {
+      const q = await pool.query(
+        `SELECT to_char(so.created_at::date,'YYYY-MM-DD') d,
+                COALESCE(SUM(so.quantity*so.price),0) - COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) v
+         FROM stock_outcome so JOIN products p ON p.id = so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+           AND so.created_at >= $2 AND so.created_at < $3 GROUP BY d`, [ids, isoStart, isoEnd]);
+      for (const r of q.rows) byDay.set(r.d, parseFloat(r.v) || 0);
+    } else { // stock — из снапшотов (история)
+      const q = await pool.query(
+        `SELECT to_char(date,'YYYY-MM-DD') d, COALESCE(SUM(stock_value),0) v FROM branch_daily_summary
+         WHERE branch_id = ANY($1::int[]) AND date >= $2 AND date < $3 GROUP BY d`,
+        [ids, monthStartStr, monthEndStr]);
+      for (const r of q.rows) byDay.set(r.d, parseFloat(r.v) || 0);
+    }
+
+    // Write-through снапшот за СЕГОДНЯ по каждому филиалу (накопление истории).
+    // Дату строим локально, чтобы совпасть с ключами дней месяца ниже.
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    // TTL-гейт (1ч): снапшот за сегодня пишется не на каждый запрос, а раз в час на компанию.
+    const bdailyKey = `bdaily:${companyId}:${todayIso}`;
+    if (now >= monthStart && now < monthEnd && recomputeDue(bdailyKey, 60 * 60 * 1000)) {
+      markRecomputed(bdailyKey);
+      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const [incQ, expQ, salesQ, stockQ] = await Promise.all([
+        pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) v FROM cash_income WHERE branch_id=ANY($1::int[]) AND is_settled IS NOT FALSE AND created_at>=$2 GROUP BY branch_id`, [ids, dayStart]),
+        pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) v FROM cash_expense WHERE branch_id=ANY($1::int[]) AND created_at>=$2 GROUP BY branch_id`, [ids, dayStart]),
+        pool.query(`SELECT so.branch_id, COALESCE(SUM(so.quantity*so.price),0) rev, COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cost FROM stock_outcome so JOIN products p ON p.id=so.product_id WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$2 GROUP BY so.branch_id`, [ids, dayStart]),
+        pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity*COALESCE(p.price_sell,0)),0) v FROM product_stock ps JOIN products p ON p.id=ps.product_id WHERE ps.branch_id=ANY($1::int[]) GROUP BY ps.branch_id`, [ids]),
+      ]);
+      const mp = (rows, k = 'v') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[k]) || 0]));
+      const inc = mp(incQ.rows), exp = mp(expQ.rows), stock = mp(stockQ.rows);
+      const rev = mp(salesQ.rows, 'rev'), cost = mp(salesQ.rows, 'cost');
+      for (const bid of ids) {
+        const income = inc[bid] || 0, expense = exp[bid] || 0, sv = stock[bid] || 0;
+        const r = rev[bid] || 0, c = cost[bid] || 0, gp = r - c;
+        const margin = r > 0 ? Math.round((gp / r) * 1000) / 10 : 0;
+        await pool.query(
+          `INSERT INTO branch_daily_summary (branch_id, date, income_uzs, expense_uzs, gross_profit, stock_value, margin_pct, calculated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+           ON CONFLICT (branch_id, date) DO UPDATE SET
+             income_uzs=EXCLUDED.income_uzs, expense_uzs=EXCLUDED.expense_uzs,
+             gross_profit=EXCLUDED.gross_profit, stock_value=EXCLUDED.stock_value,
+             margin_pct=EXCLUDED.margin_pct, calculated_at=NOW()`,
+          [bid, todayIso, income, expense, gp, sv, margin]);
+      }
+      if (metric === 'stock') byDay.set(todayIso, ids.reduce((a, b) => a + (stock[b] || 0), 0));
+    }
+
+    const points = [];
+    let total = 0;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dIso = `${yy}-${String(mm).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const v = byDay.get(dIso) || 0;
+      points.push({ date: dIso, label: String(day), value: v });
+      total += v;
+    }
+    res.json({ metric, month: monthLabel, points, total });
+  } catch (e) {
+    console.error('branch-daily error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === BHI v2 (1D) — Индекс здоровья бизнеса =================================
+// Композитный 0-100 балл из 4 пилляров (по 2 блока):
+//   Финансы 35% (маржа, денежный поток) · Операции 30% (рост, склад) ·
+//   Персонал 20% (выручка/чел, активность) · Рынок 15% (новые, удержание).
+// Блок участвует только при наличии данных (≥7 дней активности / есть сущности),
+// иначе его вес ПЕРЕраспределяется между активными пилляров. Снапшот кэшируется
+// в bhi_daily с TTL 2 ч (паттерн compute-on-read, без отдельного планировщика).
+const BHI_TTL_MS = 2 * 60 * 60 * 1000;
+const BHI_REV_PER_WORKER = 25_000_000; // бенчмарк выручки на сотрудника за 30 дней (UZS)
+const clamp100 = (x) => Math.max(0, Math.min(100, x));
+const bhiZone = (s) => (s >= 75 ? 'normal' : s >= 50 ? 'attention' : 'critical');
+const bhiRevenueWeight = (days) => (days <= 90 ? 65 : days <= 180 ? 45 : 30);
+
+async function bhiGoal(companyId) {
+  try {
+    const q = await pool.query('SELECT goal_bhi FROM companies WHERE id=$1', [companyId]);
+    const g = q.rows[0]?.goal_bhi;
+    return g != null ? parseInt(g, 10) : 75;
+  } catch { return 75; }
+}
+
+// Свежий расчёт снапшота BHI по всем филиалам компании.
+async function bhiCompute(companyId) {
+  const now = new Date();
+  const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+  const d60 = new Date(now); d60.setDate(d60.getDate() - 60);
+  const d365 = new Date(now); d365.setDate(d365.getDate() - 365);
+  const iso30 = d30.toISOString(), iso60 = d60.toISOString(), iso365 = d365.toISOString();
+
+  const bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+  const ids = bq.rows.map(r => r.id);
+
+  let startedAt = null;
+  try {
+    const cq = await pool.query('SELECT started_at FROM companies WHERE id=$1', [companyId]);
+    startedAt = cq.rows[0]?.started_at || null;
+  } catch {}
+  if (!startedAt && ids.length) {
+    try {
+      const eq = await pool.query(`SELECT MIN(created_at) m FROM stock_outcome WHERE branch_id=ANY($1::int[])`, [ids]);
+      startedAt = eq.rows[0]?.m || null;
+    } catch {}
+  }
+  const daysActive = startedAt ? Math.max(0, Math.floor((now - new Date(startedAt)) / 86400000)) : 0;
+
+  const blocks = {
+    fin_margin: { score: 0, active: false, pillar: 'fin' },
+    fin_cashflow: { score: 0, active: false, pillar: 'fin' },
+    ops_growth: { score: 0, active: false, pillar: 'ops' },
+    ops_inventory: { score: 0, active: false, pillar: 'ops' },
+    people_productivity: { score: 0, active: false, pillar: 'people' },
+    people_activity: { score: 0, active: false, pillar: 'people' },
+    market_growth: { score: 0, active: false, pillar: 'market' },
+    market_retention: { score: 0, active: false, pillar: 'market' },
+  };
+  let sales = { revCur: 0, salesDays: 0, sellers: 0 };
+
+  if (ids.length) {
+    try {
+      const sq = await pool.query(`
+        SELECT
+          COALESCE(SUM(CASE WHEN so.created_at>=$2 THEN so.quantity*so.price ELSE 0 END),0) rev_cur,
+          COALESCE(SUM(CASE WHEN so.created_at>=$2 THEN so.quantity*COALESCE(p.price_buy,0) ELSE 0 END),0) cogs_cur,
+          COALESCE(SUM(CASE WHEN so.created_at>=$3 AND so.created_at<$2 THEN so.quantity*so.price ELSE 0 END),0) rev_prev,
+          COUNT(DISTINCT CASE WHEN so.created_at>=$2 THEN so.created_at::date END) sales_days,
+          COUNT(DISTINCT CASE WHEN so.created_at>=$2 THEN so.created_by END) sellers
+        FROM stock_outcome so JOIN products p ON p.id=so.product_id
+        WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$3`,
+        [ids, iso30, iso60]);
+      const r = sq.rows[0] || {};
+      const revCur = parseFloat(r.rev_cur) || 0, cogsCur = parseFloat(r.cogs_cur) || 0, revPrev = parseFloat(r.rev_prev) || 0;
+      sales = { revCur, salesDays: parseInt(r.sales_days) || 0, sellers: parseInt(r.sellers) || 0 };
+      if (sales.salesDays >= 7 && revCur > 0) {
+        blocks.fin_margin = { score: clamp100((revCur - cogsCur) / revCur / 0.40 * 100), active: true, pillar: 'fin' };
+      }
+      if (sales.salesDays >= 7 && revPrev > 0) {
+        blocks.ops_growth = { score: clamp100(50 + ((revCur - revPrev) / revPrev) * 100), active: true, pillar: 'ops' };
+      }
+    } catch (e) { console.error('bhi sales', e.message); }
+
+    try {
+      const cf = await pool.query(`
+        SELECT
+          (SELECT COALESCE(SUM(amount),0) FROM cash_income WHERE branch_id=ANY($1::int[]) AND is_settled IS NOT FALSE AND created_at>=$2) inc,
+          (SELECT COALESCE(SUM(amount),0) FROM cash_expense WHERE branch_id=ANY($1::int[]) AND created_at>=$2) exp,
+          (SELECT COUNT(DISTINCT created_at::date) FROM cash_income WHERE branch_id=ANY($1::int[]) AND created_at>=$2) cdays`,
+        [ids, iso30]);
+      const inc = parseFloat(cf.rows[0]?.inc) || 0, exp = parseFloat(cf.rows[0]?.exp) || 0, cdays = parseInt(cf.rows[0]?.cdays) || 0;
+      if (cdays >= 7 && inc > 0) {
+        blocks.fin_cashflow = { score: clamp100(50 + ((inc - exp) / inc) * 50), active: true, pillar: 'fin' };
+      }
+    } catch (e) { console.error('bhi cashflow', e.message); }
+
+    try {
+      const iv = await pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM product_stock ps WHERE ps.branch_id=ANY($1::int[]) AND ps.quantity>0 AND ps.quantity<5) low,
+          (SELECT COUNT(*) FROM product_stock ps WHERE ps.branch_id=ANY($1::int[]) AND ps.quantity>0) instock`,
+        [ids]);
+      const low = parseInt(iv.rows[0]?.low) || 0, instock = parseInt(iv.rows[0]?.instock) || 0;
+      if (instock > 0) {
+        blocks.ops_inventory = { score: clamp100(100 - (low / instock) * 200), active: true, pillar: 'ops' };
+      }
+    } catch (e) { console.error('bhi inventory', e.message); }
+
+    try {
+      // Знаменатель — торговый персонал (продавцы/кассиры/менеджеры), не весь штат:
+      // склад/бухгалтерия структурно занижали бы «продуктивность/активность». Fallback — все.
+      const wq = await pool.query(`
+        SELECT COUNT(*) FILTER (WHERE role IN ('seller','cashier','manager')) AS sales_staff,
+               COUNT(*) AS all_staff
+        FROM users WHERE branch_id=ANY($1::int[])`, [ids]);
+      const salesStaff = parseInt(wq.rows[0]?.sales_staff) || 0;
+      const allStaff = parseInt(wq.rows[0]?.all_staff) || 0;
+      const workers = salesStaff > 0 ? salesStaff : allStaff;
+      if (workers > 0 && sales.salesDays >= 7) {
+        blocks.people_productivity = { score: clamp100(sales.revCur / workers / BHI_REV_PER_WORKER * 100), active: true, pillar: 'people' };
+        blocks.people_activity = { score: clamp100((sales.sellers / workers) * 120), active: true, pillar: 'people' };
+      }
+    } catch (e) { console.error('bhi people', e.message); }
+
+    try {
+      // Знаменатель — АКТИВНАЯ база (купившие за 365 дней), не все клиенты за всё время:
+      // иначе ретеншн/рост зрелой компании структурно падают по мере накопления базы.
+      const mq = await pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM customers WHERE company_id=$1 AND deleted_at IS NULL AND created_at>=$2) newc,
+          (SELECT COUNT(DISTINCT so.customer_id) FROM stock_outcome so WHERE so.branch_id=ANY($3::int[]) AND so.status='approved' AND so.customer_id IS NOT NULL AND so.created_at>=$4) active60,
+          (SELECT COUNT(DISTINCT so.customer_id) FROM stock_outcome so WHERE so.branch_id=ANY($3::int[]) AND so.status='approved' AND so.customer_id IS NOT NULL AND so.created_at>=$5) active365`,
+        [companyId, iso30, ids, iso60, iso365]);
+      const newc = parseInt(mq.rows[0]?.newc) || 0, active60 = parseInt(mq.rows[0]?.active60) || 0, active365 = parseInt(mq.rows[0]?.active365) || 0;
+      if (active365 > 0) {
+        // Рост: новые за 30д относительно активной годовой базы. Ретеншн: активные за 60д из неё.
+        blocks.market_growth = { score: clamp100((newc / active365) * 500), active: true, pillar: 'market' };
+        blocks.market_retention = { score: clamp100((active60 / active365) * 100), active: true, pillar: 'market' };
+      }
+    } catch (e) { console.error('bhi market', e.message); }
+  }
+
+  const PILLAR_W = { fin: 0.35, ops: 0.30, people: 0.20, market: 0.15 };
+  const pillarBlocks = { fin: ['fin_margin', 'fin_cashflow'], ops: ['ops_growth', 'ops_inventory'], people: ['people_productivity', 'people_activity'], market: ['market_growth', 'market_retention'] };
+  // Адаптивный вес выручки по возрасту компании (0-90д:65% / 91-180:45% / 181+:30%):
+  // в Operational-пилляре блок роста выручки тяжелее у молодых компаний, остальные
+  // пилляры — равный вес блоков.
+  const rw = bhiRevenueWeight(daysActive) / 100;
+  const pillarScores = {};
+  let activeCount = 0;
+  for (const [pk, keys] of Object.entries(pillarBlocks)) {
+    const act = keys.filter(k => blocks[k].active);
+    activeCount += act.length;
+    if (!act.length) { pillarScores[pk] = null; continue; }
+    if (pk === 'ops' && blocks.ops_growth.active && blocks.ops_inventory.active) {
+      pillarScores[pk] = Math.round(blocks.ops_growth.score * rw + blocks.ops_inventory.score * (1 - rw));
+    } else {
+      pillarScores[pk] = Math.round(act.reduce((a, k) => a + blocks[k].score, 0) / act.length);
+    }
+  }
+  let wSum = 0, acc = 0;
+  for (const pk of Object.keys(PILLAR_W)) {
+    if (pillarScores[pk] != null) { wSum += PILLAR_W[pk]; acc += pillarScores[pk] * PILLAR_W[pk]; }
+  }
+  const bhi = wSum > 0 ? Math.round(acc / wSum) : 0;
+  const weakest = Object.entries(pillarScores).filter(([, v]) => v != null).sort((a, b) => a[1] - b[1])[0];
+
+  return {
+    date: now.toISOString().slice(0, 10),
+    days_active: daysActive,
+    revenue_weight: bhiRevenueWeight(daysActive),
+    blocks_active: activeCount,
+    bhi,
+    zone: bhiZone(bhi),
+    pillars: {
+      fin: { score: pillarScores.fin, weight: 35 },
+      ops: { score: pillarScores.ops, weight: 30 },
+      people: { score: pillarScores.people, weight: 20 },
+      market: { score: pillarScores.market, weight: 15 },
+    },
+    weakest_pillar: weakest ? weakest[0] : null,
+    blocks: Object.fromEntries(Object.entries(blocks).map(([k, v]) => [k, { score: Math.round(v.score), active: v.active, pillar: v.pillar }])),
+  };
+}
+
+function bhiRowToSnapshot(row) {
+  const num = (x) => (x == null ? null : Math.round(parseFloat(x)));
+  const ps = { fin: num(row.fin_health), ops: num(row.ops_health), people: num(row.people_health), market: num(row.market_health) };
+  const weakest = Object.entries(ps).filter(([, v]) => v != null).sort((a, b) => a[1] - b[1])[0];
+  const bhi = Math.round(parseFloat(row.bhi));
+  return {
+    date: row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10),
+    days_active: row.days_active,
+    revenue_weight: parseFloat(row.revenue_weight),
+    blocks_active: row.blocks_active,
+    bhi,
+    zone: bhiZone(bhi),
+    pillars: {
+      fin: { score: ps.fin, weight: 35 }, ops: { score: ps.ops, weight: 30 },
+      people: { score: ps.people, weight: 20 }, market: { score: ps.market, weight: 15 },
+    },
+    weakest_pillar: weakest ? weakest[0] : null,
+    blocks: row.blocks || {},
+  };
+}
+
+// Кэш-обёртка: сегодняшний снапшот, пересчёт при отсутствии/устаревании (TTL 2ч).
+async function bhiGetToday(companyId) {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const c = await pool.query('SELECT * FROM bhi_daily WHERE company_id=$1 AND date=$2', [companyId, today]);
+    const row = c.rows[0];
+    if (row && row.calculated_at && (Date.now() - new Date(row.calculated_at).getTime()) < BHI_TTL_MS) {
+      return bhiRowToSnapshot(row);
+    }
+  } catch {}
+  const snap = await bhiCompute(companyId);
+  try {
+    await pool.query(`
+      INSERT INTO bhi_daily (company_id, date, days_active, bhi, revenue_weight, blocks_active, fin_health, ops_health, people_health, market_health, blocks, calculated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+      ON CONFLICT (company_id, date) DO UPDATE SET
+        days_active=EXCLUDED.days_active, bhi=EXCLUDED.bhi, revenue_weight=EXCLUDED.revenue_weight,
+        blocks_active=EXCLUDED.blocks_active, fin_health=EXCLUDED.fin_health, ops_health=EXCLUDED.ops_health,
+        people_health=EXCLUDED.people_health, market_health=EXCLUDED.market_health, blocks=EXCLUDED.blocks, calculated_at=NOW()`,
+      [companyId, snap.date, snap.days_active, snap.bhi, snap.revenue_weight, snap.blocks_active,
+        snap.pillars.fin.score, snap.pillars.ops.score, snap.pillars.people.score, snap.pillars.market.score,
+        JSON.stringify(snap.blocks)]);
+  } catch (e) { console.error('bhi upsert', e.message); }
+  return snap;
+}
+
+async function bhiAlerts(companyId) {
+  const today = await bhiGetToday(companyId);
+  let fallingStreak = 0;
+  try {
+    const q = await pool.query('SELECT bhi FROM bhi_daily WHERE company_id=$1 ORDER BY date DESC LIMIT 8', [companyId]);
+    const rows = q.rows.map(r => Math.round(parseFloat(r.bhi)));
+    for (let i = 0; i + 1 < rows.length; i++) { if (rows[i] < rows[i + 1]) fallingStreak++; else break; }
+  } catch {}
+  const level = today.bhi < 50 ? 'critical' : today.bhi < 75 ? 'attention' : (today.bhi >= 85 ? 'excellent' : 'normal');
+  return { bhi: today.bhi, falling_streak: fallingStreak, alert_level: level, weakest_pillar: today.weakest_pillar };
+}
+
+app.get('/api/bhi/monthly', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const now = new Date();
+    const m = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const [yy, mm] = m.split('-').map(Number);
+    const today = await bhiGetToday(companyId);
+    const goal = await bhiGoal(companyId);
+    // Скользящее окно последних 30 дней (а не строго календарный месяц): иначе 1-3 числа
+    // график почти пустой (сброс на 1-е). Показываем реальную динамику последних дней.
+    const pad2 = (x) => String(x).padStart(2, '0');
+    const dstr = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    const startD = new Date(now); startD.setDate(startD.getDate() - 29);
+    const start = dstr(startD);
+    const end = dstr(now);
+    const hq = await pool.query('SELECT date, bhi FROM bhi_daily WHERE company_id=$1 AND date>=$2 AND date<=$3 ORDER BY date', [companyId, start, end]);
+    const points = hq.rows.map(r => ({ date: (r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10)), bhi: Math.round(parseFloat(r.bhi)) }));
+    // Добавляем сегодняшний (живой) BHI, если его ещё нет в истории — чтобы график доходил до сегодня.
+    if (today.bhi != null && (points.length === 0 || points[points.length - 1].date !== end)) {
+      points.push({ date: end, bhi: Math.round(today.bhi) });
+    }
+    const trend = points.length >= 2 ? points[points.length - 1].bhi - points[0].bhi : 0;
+    const alert = await bhiAlerts(companyId);
+    res.json({
+      month: m,
+      current: today.bhi, zone: today.zone, goal,
+      days_active: today.days_active, revenue_weight: today.revenue_weight,
+      adaptive_mode: today.days_active <= 90 ? 'launch' : today.days_active <= 180 ? 'growth' : 'mature',
+      blocks_active: today.blocks_active,
+      pillars: today.pillars,
+      blocks: today.blocks,
+      weakest_pillar: today.weakest_pillar,
+      trend, points, alert,
+    });
+  } catch (e) { console.error('bhi monthly', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/bhi/day', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : today;
+    let snap;
+    if (date === today) snap = await bhiGetToday(companyId);
+    else {
+      const q = await pool.query('SELECT * FROM bhi_daily WHERE company_id=$1 AND date=$2', [companyId, date]);
+      if (!q.rows[0]) return res.json({ available: false, date });
+      snap = bhiRowToSnapshot(q.rows[0]);
+    }
+    res.json({ available: true, goal: await bhiGoal(companyId), ...snap });
+  } catch (e) { console.error('bhi day', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/bhi/alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try { res.json(await bhiAlerts(req.user.company_id)); }
+  catch (e) { console.error('bhi alerts', e); res.status(500).json({ error: e.message }); }
+});
+
+
+// === Жалобы и обращения (complaints) — единый тикетинг по всем каналам ===
+// Авто-эскалация считается НА ЧТЕНИИ (compute-on-read): открытый тикет (new/in_progress)
+// старше 24ч → urgency='urgent'. Никаких cron/setInterval/pg-триггеров.
+const CMPL_CATEGORIES   = ['product_quality', 'staff_rudeness', 'slow_service', 'refund_delay', 'wrong_price', 'other'];
+const CMPL_CHANNELS     = ['in_store', 'instagram', 'telegram', 'phone', 'email', 'website'];
+const CMPL_STATUSES     = ['new', 'in_progress', 'resolved', 'rejected'];
+const CMPL_COMPENSATION = ['refund', 'replacement', 'discount', 'apology', 'none'];
+const CMPL_PERIODS = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+const CMPL_OVERDUE_MS = 24 * 60 * 60 * 1000;
+
+// Эффективная срочность с учётом просрочки 24ч (только открытые тикеты).
+function cmplEffectiveUrgency(row) {
+  const open = row.status === 'new' || row.status === 'in_progress';
+  if (open && (Date.now() - new Date(row.created_at).getTime()) > CMPL_OVERDUE_MS) return 'urgent';
+  return row.urgency || 'normal';
+}
+
+// Сводка-тайлы + разбивка по категориям + список жалоб.
+app.get('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // null = вся компания (владелец)
+    const period = CMPL_PERIODS[req.query.period] || CMPL_PERIODS.month; // whitelisted интервал
+    const statusFilter = (req.query.status && CMPL_STATUSES.includes(req.query.status)) ? req.query.status : null;
+
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND c.branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(`
+      SELECT c.*, b.name AS branch_name,
+             cu.name AS linked_customer_name,
+             (u.first_name || ' ' || u.last_name) AS assignee_name,
+             (e.first_name || ' ' || e.last_name) AS employee_name
+      FROM complaints c
+      LEFT JOIN branches b  ON b.id = c.branch_id
+      LEFT JOIN customers cu ON cu.id = c.customer_id
+      LEFT JOIN users u  ON u.id = c.assigned_to
+      LEFT JOIN users e  ON e.id = c.related_employee_id
+      WHERE c.company_id = $1 ${branchSQL}
+        AND c.created_at >= NOW() - INTERVAL '${period}'
+      ORDER BY c.created_at DESC
+      LIMIT 1000
+    `, params);
+
+    const items = rows.map(r => {
+      const urgency = cmplEffectiveUrgency(r);
+      const open = r.status === 'new' || r.status === 'in_progress';
+      const overdue = open && (Date.now() - new Date(r.created_at).getTime()) > CMPL_OVERDUE_MS;
+      const resolve_hours = r.resolved_at
+        ? (new Date(r.resolved_at).getTime() - new Date(r.created_at).getTime()) / 3600000
+        : null;
+      return {
+        id: r.id,
+        branch_id: r.branch_id, branch_name: r.branch_name,
+        customer_id: r.customer_id,
+        customer_name: r.customer_name || r.linked_customer_name || null,
+        customer_phone: r.customer_phone || null,
+        category: r.category, channel: r.channel, description: r.description,
+        related_employee_id: r.related_employee_id, employee_name: r.employee_name,
+        status: r.status, urgency, overdue,
+        assigned_to: r.assigned_to, assignee_name: r.assignee_name,
+        resolution: r.resolution,
+        compensation_type: r.compensation_type,
+        compensation_amount: parseFloat(r.compensation_amount) || 0,
+        customer_satisfaction: r.customer_satisfaction != null ? Number(r.customer_satisfaction) : null,
+        resolved_at: r.resolved_at,
+        created_at: r.created_at, updated_at: r.updated_at,
+        resolve_hours,
+      };
+    });
+
+    // Тайлы по всем тикетам периода (до фильтра статуса).
+    const summary = {
+      total:       items.length,
+      resolved:    items.filter(i => i.status === 'resolved').length,
+      in_progress: items.filter(i => i.status === 'in_progress').length,
+      new:         items.filter(i => i.status === 'new').length,
+      rejected:    items.filter(i => i.status === 'rejected').length,
+      overdue:     items.filter(i => i.overdue).length,
+      urgent:      items.filter(i => i.urgency === 'urgent').length,
+    };
+    const resolvedTimes = items.filter(i => i.resolve_hours != null).map(i => i.resolve_hours);
+    summary.avg_resolve_hours = resolvedTimes.length
+      ? Math.round((resolvedTimes.reduce((s, h) => s + h, 0) / resolvedTimes.length) * 10) / 10 : 0;
+    const sats = items.filter(i => i.customer_satisfaction != null).map(i => i.customer_satisfaction);
+    summary.avg_satisfaction = sats.length
+      ? Math.round((sats.reduce((s, v) => s + v, 0) / sats.length) * 10) / 10 : 0;
+
+    // Разбивка по категориям: доля % и среднее время решения.
+    const catAcc = {};
+    for (const cat of CMPL_CATEGORIES) catAcc[cat] = { count: 0, times: [] };
+    for (const i of items) {
+      if (!catAcc[i.category]) catAcc[i.category] = { count: 0, times: [] };
+      catAcc[i.category].count++;
+      if (i.resolve_hours != null) catAcc[i.category].times.push(i.resolve_hours);
+    }
+    const byCategory = Object.entries(catAcc)
+      .map(([category, a]) => ({
+        category,
+        count: a.count,
+        pct: items.length > 0 ? Math.round((a.count / items.length) * 1000) / 10 : 0,
+        avg_resolve_hours: a.times.length
+          ? Math.round((a.times.reduce((s, h) => s + h, 0) / a.times.length) * 10) / 10 : null,
+      }))
+      .filter(c => c.count > 0)
+      .sort((x, y) => y.count - x.count);
+
+    const list = statusFilter ? items.filter(i => i.status === statusFilter) : items;
+    res.json({ summary, byCategory, items: list });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('complaints list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Создать жалобу + запись 'created' в историю.
+app.post('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const body = req.body || {};
+
+    // Менеджер пишет только в свой филиал; владелец может указать branch_id (проверяем принадлежность компании).
+    let branchId = isManager
+      ? req.user.branch_id
+      : (body.branch_id ? parseInt(body.branch_id, 10) : (req.user.branch_id || null));
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const category = CMPL_CATEGORIES.includes(body.category) ? body.category : 'other';
+    const channel  = CMPL_CHANNELS.includes(body.channel) ? body.channel : 'in_store';
+    const description = (body.description || '').toString().trim();
+    if (!description) return res.status(400).json({ error: 'Опишите суть жалобы' });
+
+    const customerId = body.customer_id ? parseInt(body.customer_id, 10) : null;
+    const customerName = (body.customer_name || '').toString().trim() || null;
+    const customerPhone = (body.customer_phone || '').toString().trim() || null;
+    const relatedEmployeeId = body.related_employee_id ? parseInt(body.related_employee_id, 10) : null;
+
+    const { rows } = await pool.query(`
+      INSERT INTO complaints
+        (company_id, branch_id, customer_id, customer_name, customer_phone,
+         category, description, channel, related_employee_id, status, urgency, created_at, updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'new','normal',NOW(),NOW())
+      RETURNING id`,
+      [companyId, branchId, customerId, customerName, customerPhone,
+       category, description, channel, relatedEmployeeId]);
+    const id = rows[0].id;
+
+    await pool.query(`
+      INSERT INTO complaint_history (complaint_id, event_type, new_value, comment, created_by)
+      VALUES ($1,'created',$2,$3,$4)`,
+      [id, 'new', `Жалоба создана (${channel} · ${category})`, req.user.id]);
+
+    audit(req, 'create', 'complaint', id, null, { category, channel, branch_id: branchId });
+    res.json({ ok: true, id });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('complaint create err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Сменить статус new/in_progress/rejected (НЕ resolved — для решения отдельный endpoint) + история.
+app.patch('/api/crm/complaints/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const next = req.body?.status;
+    if (!CMPL_STATUSES.includes(next)) return res.status(400).json({ error: 'Неверный статус' });
+    if (next === 'resolved') return res.status(400).json({ error: 'Используйте /resolve для решения' });
+
+    const cur = await pool.query(`SELECT * FROM complaints WHERE id=$1 AND company_id=$2`, [id, companyId]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Жалоба не найдена' });
+    const row = cur.rows[0];
+    if (req.user.role === 'manager' && row.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Чужой филиал' });
+    }
+
+    await pool.query(`UPDATE complaints SET status=$1, updated_at=NOW() WHERE id=$2`, [next, id]);
+    await pool.query(`
+      INSERT INTO complaint_history (complaint_id, event_type, old_value, new_value, comment, created_by)
+      VALUES ($1,'status_change',$2,$3,$4,$5)`,
+      [id, row.status, next, (req.body?.comment || '').toString().trim() || null, req.user.id]);
+
+    audit(req, 'update', 'complaint', id, { status: row.status }, { status: next });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('complaint status err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Решить жалобу: resolution + компенсация + оценка → status=resolved.
+app.patch('/api/crm/complaints/:id/resolve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const body = req.body || {};
+
+    const cur = await pool.query(`SELECT * FROM complaints WHERE id=$1 AND company_id=$2`, [id, companyId]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Жалоба не найдена' });
+    const row = cur.rows[0];
+    if (req.user.role === 'manager' && row.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Чужой филиал' });
+    }
+
+    const resolution = (body.resolution || '').toString().trim();
+    if (!resolution) return res.status(400).json({ error: 'Опишите решение' });
+    const compType = CMPL_COMPENSATION.includes(body.compensation_type) ? body.compensation_type : 'none';
+    const compAmount = (compType === 'refund' || compType === 'discount')
+      ? (parseFloat(body.compensation_amount) || 0) : 0;
+    let satisfaction = body.customer_satisfaction != null ? parseInt(body.customer_satisfaction, 10) : null;
+    if (satisfaction != null && (Number.isNaN(satisfaction) || satisfaction < 1 || satisfaction > 5)) satisfaction = null;
+
+    await pool.query(`
+      UPDATE complaints
+      SET status='resolved', resolution=$1, compensation_type=$2, compensation_amount=$3,
+          customer_satisfaction=$4, resolved_at=NOW(), resolved_by=$5, updated_at=NOW()
+      WHERE id=$6`,
+      [resolution, compType, compAmount, satisfaction, req.user.id, id]);
+
+    await pool.query(`
+      INSERT INTO complaint_history (complaint_id, event_type, old_value, new_value, comment, created_by)
+      VALUES ($1,'resolved',$2,'resolved',$3,$4)`,
+      [id, row.status, resolution, req.user.id]);
+
+    audit(req, 'resolve', 'complaint', id, { status: row.status },
+      { status: 'resolved', compensation_type: compType, compensation_amount: compAmount });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('complaint resolve err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Дни рождения и события (bday) ========================================
+// Эталон: ближайшие ДР клиентов (окно вперёд), сводка по поздравлениям, отправка
+// поздравления с промокодом (без реальной SMS — только запись в event_greetings).
+// У customers нет branch_id → менеджер скоупится через покупки клиента (stock_outcome).
+// Скидка по RFM-сегменту: champions 25 · loyal 20 · new 10 · at_risk/hibernating 25 · иначе 15.
+// Промокод: BD + customer_id + год. compute-on-read; никаких триггеров/cron.
+
+const BDAY_DISCOUNT_BY_SEGMENT = {
+  champions: 25,
+  loyal: 20,
+  new: 10,
+  at_risk: 25,
+  hibernating: 25,
+};
+const bdayDiscountFor = (segment) =>
+  BDAY_DISCOUNT_BY_SEGMENT[segment] != null ? BDAY_DISCOUNT_BY_SEGMENT[segment] : 15;
+const bdayPromoCode = (customerId, year) => `BD${customerId}${year}`;
+const BDAY_CHANNELS = ['sms', 'telegram', 'whatsapp', 'email'];
+
+// SQL: дней до ближайшей годовщины ДР (0 = сегодня). Корректно для конца месяца и 29 фев:
+// если в текущем/следующем году такой даты нет (29 фев), сдвигаем на 1 марта.
+// Берём ближайшую из годовщин этого и следующего года, не раньше сегодня.
+const BDAY_DAYS_UNTIL = `
+  (
+    SELECT MIN(d - CURRENT_DATE)
+    FROM (
+      SELECT make_date(y, EXTRACT(MONTH FROM c.birth_date)::int,
+               LEAST(EXTRACT(DAY FROM c.birth_date)::int,
+                     EXTRACT(DAY FROM (date_trunc('month',
+                       make_date(y, EXTRACT(MONTH FROM c.birth_date)::int, 1)) + INTERVAL '1 month - 1 day'))::int)) AS d
+      FROM generate_series(EXTRACT(YEAR FROM CURRENT_DATE)::int,
+                           EXTRACT(YEAR FROM CURRENT_DATE)::int + 1) AS y
+    ) anniv
+    WHERE d >= CURRENT_DATE
+  )
+`;
+
+// SQL-фрагмент: клиент относится к филиалу, если у него есть продажа в этом филиале.
+const bdayBranchExists = (branchId) =>
+  branchId
+    ? `AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.customer_id = c.id AND so.branch_id = ${parseInt(branchId, 10)})`
+    : '';
+
+// GET /api/crm/birthdays?branch_id&days=7 — ближайшие ДР в окне [сегодня; +days].
+app.get('/api/crm/birthdays', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager ? req.user.branch_id : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    let days = parseInt(req.query.days, 10);
+    if (!Number.isFinite(days) || days < 1) days = 7;
+    if (days > 366) days = 366;
+
+    await rfmEnsureFresh(companyId);
+    const year = new Date().getFullYear();
+
+    const { rows } = await pool.query(`
+      WITH bd AS (
+        SELECT c.id, c.name, c.phone, c.birth_date,
+               cr.segment, cr.segment_label,
+               cr.total_spent_uzs AS ltv,
+               cr.total_orders,
+               ${BDAY_DAYS_UNTIL} AS days_until
+        FROM customers c
+        LEFT JOIN customer_rfm cr ON cr.customer_id = c.id
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL AND c.birth_date IS NOT NULL
+        ${bdayBranchExists(branchId)}
+      )
+      SELECT bd.*,
+             (eg.id IS NOT NULL) AS greeted,
+             eg.channel, eg.promo_code, eg.discount_pct, eg.used, eg.sent_at
+      FROM bd
+      LEFT JOIN event_greetings eg
+        ON eg.customer_id = bd.id AND eg.event_type = 'birthday' AND eg.event_year = $3
+      WHERE bd.days_until IS NOT NULL AND bd.days_until <= $2
+      ORDER BY bd.days_until ASC, bd.ltv DESC NULLS LAST
+      LIMIT 500`, [companyId, days, year]);
+
+    const list = rows.map(r => {
+      const bdt = r.birth_date ? new Date(r.birth_date) : null;
+      const turning = bdt ? (year - bdt.getFullYear()) : null;
+      return {
+        id: r.id,
+        name: r.name,
+        phone: r.phone || null,
+        birth_date: r.birth_date,
+        days_until: parseInt(r.days_until, 10),
+        turning_age: (turning != null && turning > 0 && turning < 130) ? turning : null,
+        segment: r.segment || null,
+        segment_label: r.segment_label || null,
+        ltv: parseFloat(r.ltv) || 0,
+        total_orders: parseInt(r.total_orders) || 0,
+        suggested_discount: bdayDiscountFor(r.segment),
+        greeted: !!r.greeted,
+        greeting: r.greeted ? {
+          channel: r.channel, promo_code: r.promo_code,
+          discount_pct: r.discount_pct, used: r.used, sent_at: r.sent_at,
+        } : null,
+      };
+    });
+
+    res.json({
+      year, days, branch_id: branchId,
+      today: new Date().toISOString().slice(0, 10),
+      total: list.length,
+      greeted: list.filter(x => x.greeted).length,
+      channels: BDAY_CHANNELS,
+      birthdays: list,
+    });
+  } catch (e) {
+    console.error('crm/birthdays err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/crm/events?branch_id&period=day|week|month|year — сводка поздравлений/событий.
+app.get('/api/crm/events', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager ? req.user.branch_id : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const INTERVAL = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' }[period];
+    const WINDOW = { day: 1, week: 7, month: 30, year: 366 }[period];
+
+    // EXISTS-скоуп по филиалу для лога поздравлений.
+    const branchSQL = branchId
+      ? `AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.customer_id = eg.customer_id AND so.branch_id = ${parseInt(branchId, 10)})`
+      : '';
+
+    const sumQ = await pool.query(`
+      SELECT COUNT(*)::int AS sent,
+             COUNT(*) FILTER (WHERE eg.used)::int AS used,
+             COUNT(DISTINCT eg.event_type)::int AS event_types
+      FROM event_greetings eg
+      WHERE eg.company_id = $1 AND eg.sent_at >= NOW() - INTERVAL '${INTERVAL}'
+      ${branchSQL}`, [companyId]);
+
+    // Приблизительная выручка: approved-продажи клиента после даты поздравления (по использованным).
+    const revQ = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM event_greetings eg
+      JOIN stock_outcome so ON so.customer_id = eg.customer_id
+        AND so.status = 'approved' AND so.created_at >= eg.sent_at
+      WHERE eg.company_id = $1 AND eg.used = TRUE
+        AND eg.sent_at >= NOW() - INTERVAL '${INTERVAL}'
+        ${branchId ? `AND so.branch_id = ${parseInt(branchId, 10)}` : ''}`, [companyId]);
+
+    // Сколько ДР приходится на окно периода (та же формула, что в /birthdays).
+    const upQ = await pool.query(`
+      SELECT COUNT(*)::int AS upcoming
+      FROM customers c
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL AND c.birth_date IS NOT NULL
+        AND (${BDAY_DAYS_UNTIL}) <= ${WINDOW}
+        ${bdayBranchExists(branchId)}`, [companyId]);
+
+    // Разбивка отправленных по типу события.
+    const byTypeQ = await pool.query(`
+      SELECT eg.event_type,
+             COUNT(*)::int AS sent,
+             COUNT(*) FILTER (WHERE eg.used)::int AS used
+      FROM event_greetings eg
+      WHERE eg.company_id = $1 AND eg.sent_at >= NOW() - INTERVAL '${INTERVAL}'
+      ${branchSQL}
+      GROUP BY eg.event_type
+      ORDER BY sent DESC`, [companyId]);
+
+    const sent = sumQ.rows[0]?.sent || 0;
+    const used = sumQ.rows[0]?.used || 0;
+    res.json({
+      period, branch_id: branchId,
+      upcoming: upQ.rows[0]?.upcoming || 0,
+      sent,
+      used,
+      conversion: sent > 0 ? Math.round((used / sent) * 1000) / 10 : 0,
+      revenue: parseFloat(revQ.rows[0]?.revenue) || 0,
+      by_type: byTypeQ.rows,
+    });
+  } catch (e) {
+    console.error('crm/events err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/crm/birthdays/:customer_id/send-greeting  body: { channel }
+// Скидка по RFM-сегменту; промокод BD+id+год; dedup ON CONFLICT. Без реальной отправки.
+app.post('/api/crm/birthdays/:customer_id/send-greeting', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager ? req.user.branch_id : null;
+    const customerId = parseInt(req.params.customer_id, 10);
+    if (!Number.isFinite(customerId)) return res.status(400).json({ error: 'bad customer_id' });
+
+    const channel = BDAY_CHANNELS.includes(req.body?.channel) ? req.body.channel : 'sms';
+    const year = new Date().getFullYear();
+
+    await rfmEnsureFresh(companyId);
+
+    // Клиент в рамках компании (+ филиала для менеджера).
+    const { rows: [cust] } = await pool.query(`
+      SELECT c.id, c.name, cr.segment
+      FROM customers c
+      LEFT JOIN customer_rfm cr ON cr.customer_id = c.id
+      WHERE c.id = $1 AND c.company_id = $2 AND c.deleted_at IS NULL
+        ${branchId ? `AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.customer_id = c.id AND so.branch_id = ${parseInt(branchId, 10)})` : ''}
+      LIMIT 1`, [customerId, companyId]);
+    if (!cust) return res.status(404).json({ error: 'Клиент не найден или вне зоны доступа' });
+
+    const discount = bdayDiscountFor(cust.segment);
+    const promo = bdayPromoCode(customerId, year);
+
+    const ins = await pool.query(`
+      INSERT INTO event_greetings (customer_id, company_id, event_type, event_year, channel, promo_code, discount_pct)
+      VALUES ($1, $2, 'birthday', $3, $4, $5, $6)
+      ON CONFLICT (customer_id, event_type, event_year) DO NOTHING
+      RETURNING id, channel, promo_code, discount_pct, used, sent_at`,
+      [customerId, companyId, year, channel, promo, discount]);
+
+    if (ins.rows.length === 0) {
+      const { rows: [ex] } = await pool.query(
+        `SELECT id, channel, promo_code, discount_pct, used, sent_at
+         FROM event_greetings WHERE customer_id=$1 AND event_type='birthday' AND event_year=$2`,
+        [customerId, year]);
+      return res.json({ ok: true, already_sent: true, greeting: ex });
+    }
+
+    audit(req, 'send_greeting', 'customer', customerId, null,
+      { event_type: 'birthday', year, channel, promo_code: promo, discount_pct: discount });
+
+    res.json({ ok: true, already_sent: false, greeting: ins.rows[0] });
+  } catch (e) {
+    console.error('crm/send-greeting err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/crm/birthdays/:customer_id/redeem — отметить промокод поздравления
+// использованным. Связи промокод↔продажа нет, поэтому отметка ручная — именно она
+// делает реальными метрики «Использовано»/«конверсия»/«выручка» в сводке событий
+// (без неё они были бы вечно 0). Менеджер — только клиент своего филиала.
+app.post('/api/crm/birthdays/:customer_id/redeem', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager ? req.user.branch_id : null;
+    const customerId = parseInt(req.params.customer_id, 10);
+    if (!Number.isFinite(customerId)) return res.status(400).json({ error: 'bad customer_id' });
+    const year = new Date().getFullYear();
+
+    if (branchId) {
+      const { rows: [ok] } = await pool.query(
+        `SELECT 1 FROM customers c WHERE c.id=$1 AND c.company_id=$2 AND c.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.customer_id=c.id AND so.branch_id=$3) LIMIT 1`,
+        [customerId, companyId, branchId]);
+      if (!ok) return res.status(404).json({ error: 'Клиент вне зоны доступа' });
+    }
+
+    const upd = await pool.query(
+      `UPDATE event_greetings SET used=TRUE
+       WHERE customer_id=$1 AND company_id=$2 AND event_type='birthday' AND event_year=$3
+       RETURNING id`,
+      [customerId, companyId, year]);
+    if (upd.rows.length === 0) return res.status(404).json({ error: 'Поздравление не найдено' });
+
+    audit(req, 'redeem_greeting', 'customer', customerId, null, { event_type: 'birthday', year });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('crm/redeem err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// Реферальная программа (referrals): «Приведи друга» — бонус рефереру 20000,
+// скидка другу 15%, мин. первая покупка 50000, срок бонуса 90 дн., ROI.
+// Активация — ЯВНЫМ endpoint (без триггеров/cron на путь продажи).
+// Менеджер скоупится своим филиалом (выручка приглашённого по stock_outcome.branch_id).
+// Префикс /api/crm/... (фронт api.get('/crm/...') → baseURL '/api').
+// ============================================================================
+
+// Дефолты порогов/формул (совпадают с DEFAULT в referral_settings).
+const REF_DEFAULTS = { min_purchase_uzs: 50000, bonus_to_referrer: 20000, discount_pct: 15, validity_days: 90 };
+
+// Вернуть (или создать дефолтные) настройки реферальной программы компании.
+async function refGetSettings(companyId) {
+  const { rows } = await pool.query('SELECT * FROM referral_settings WHERE company_id=$1', [companyId]);
+  if (rows[0]) return rows[0];
+  const ins = await pool.query(
+    `INSERT INTO referral_settings (company_id) VALUES ($1)
+     ON CONFLICT (company_id) DO UPDATE SET company_id=EXCLUDED.company_id
+     RETURNING *`, [companyId]);
+  return ins.rows[0];
+}
+
+// Начислить бонус рефереру: upsert customer_bonuses + запись bonus_transactions(earned).
+// ВАЖНО: при конфликте balance И earned увеличиваются на одну и ту же сумму $3.
+// expires_at параметризован ($7 = validityDays|null), без интерполяции INTERVAL.
+// `db` — pool ИЛИ checked-out client для атомарности с вызывающей транзакцией.
+async function refCreditBonus(companyId, customerId, amount, source, sourceId, validityDays, db = pool) {
+  const amt = Math.round(parseFloat(amount) || 0);
+  if (amt <= 0) return null;
+  const up = await db.query(`
+    INSERT INTO customer_bonuses (customer_id, company_id, balance_uzs, earned_total, updated_at)
+    VALUES ($1, $2, $3, $3, NOW())
+    ON CONFLICT (customer_id) DO UPDATE
+      SET balance_uzs  = customer_bonuses.balance_uzs  + $3,
+          earned_total = customer_bonuses.earned_total + $3,
+          updated_at   = NOW()
+    RETURNING balance_uzs`, [customerId, companyId, amt]);
+  const balanceAfter = parseFloat(up.rows[0].balance_uzs);
+  const vd = validityDays && validityDays > 0 ? parseInt(validityDays, 10) : null;
+  await db.query(`
+    INSERT INTO bonus_transactions (company_id, customer_id, type, amount, source, source_id, balance_after, expires_at)
+    VALUES ($1,$2,'earned',$3,$4,$5,$6,
+            CASE WHEN $7::int IS NULL THEN NULL ELSE NOW() + ($7 || ' days')::interval END)`,
+    [companyId, customerId, amt, source || 'referral', sourceId || null, balanceAfter, vd]);
+  return balanceAfter;
+}
+
+// GET /api/crm/referrals/top — дашборд реферальной программы.
+// Метрики: активные рефереры, новые рефералы, выручка рефералов, выплачено бонусов,
+// ROI = выручка ÷ бонусы. Топ рефереров + список рефералов. Менеджер → свой филиал.
+app.get('/api/crm/referrals/top', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null, уже скоупит менеджера
+    const daysRaw = parseInt(req.query.period, 10);
+    const days = Number.isFinite(daysRaw) && daysRaw > 0 ? daysRaw : null;
+
+    const settings = await refGetSettings(companyId);
+
+    // $1 companyId, $2 days (null = всё время), $3 branchId (null = все филиалы).
+    // Выручка приглашённого — все его одобренные продажи в скоупе филиала.
+    const { rows } = await pool.query(`
+      SELECT r.id, r.referrer_id, r.referred_id, r.promo_code, r.status,
+             r.bonus_amount, r.discount_pct, r.first_purchase_amount,
+             r.activated_at, r.created_at,
+             rf.name AS referrer_name, rf.phone AS referrer_phone,
+             rd.name AS referred_name, rd.phone AS referred_phone,
+             COALESCE(rev.revenue, 0) AS referred_revenue
+      FROM referrals r
+      JOIN customers rf ON rf.id = r.referrer_id
+      JOIN customers rd ON rd.id = r.referred_id
+      LEFT JOIN LATERAL (
+        SELECT SUM(so.quantity * so.price) AS revenue
+        FROM stock_outcome so
+        WHERE so.customer_id = r.referred_id
+          AND so.status = 'approved'
+          AND ($3::int IS NULL OR so.branch_id = $3)
+      ) rev ON TRUE
+      WHERE r.company_id = $1
+        AND ($2::int IS NULL OR r.created_at >= NOW() - ($2 || ' days')::interval)
+      ORDER BY r.created_at DESC
+      LIMIT 2000
+    `, [companyId, days, branchId]);
+
+    const referrers = {};
+    let referralRevenue = 0, bonusesPaid = 0, newReferred = 0;
+
+    for (const r of rows) {
+      const rev = parseFloat(r.referred_revenue) || 0;
+      const bonus = parseFloat(r.bonus_amount) || 0;
+      referralRevenue += rev;
+      bonusesPaid += bonus;
+      newReferred++;
+      const k = r.referrer_id;
+      if (!referrers[k]) {
+        referrers[k] = {
+          referrer_id: k, name: r.referrer_name, phone: r.referrer_phone,
+          invited: 0, activated: 0, revenue: 0, bonus_earned: 0,
+        };
+      }
+      referrers[k].invited++;
+      if (r.status === 'activated') referrers[k].activated++;
+      referrers[k].revenue += rev;
+      referrers[k].bonus_earned += bonus;
+    }
+
+    const top = Object.values(referrers)
+      .map(x => ({ ...x, revenue: Math.round(x.revenue), bonus_earned: Math.round(x.bonus_earned) }))
+      .sort((a, b) => b.activated - a.activated || b.revenue - a.revenue)
+      .slice(0, 50);
+    const activeReferrers = top.filter(x => x.activated > 0).length;
+
+    const referrals = rows.map(r => ({
+      id: r.id,
+      referrer_id: r.referrer_id, referrer_name: r.referrer_name, referrer_phone: r.referrer_phone,
+      referred_id: r.referred_id, referred_name: r.referred_name, referred_phone: r.referred_phone,
+      promo_code: r.promo_code,
+      status: r.status,
+      discount_pct: r.discount_pct != null ? parseFloat(r.discount_pct) : null,
+      bonus_amount: r.bonus_amount != null ? parseFloat(r.bonus_amount) : null,
+      first_purchase_amount: r.first_purchase_amount != null ? parseFloat(r.first_purchase_amount) : null,
+      referred_revenue: Math.round(parseFloat(r.referred_revenue) || 0),
+      activated_at: r.activated_at,
+      created_at: r.created_at,
+    }));
+
+    const roi = bonusesPaid > 0 ? Math.round((referralRevenue / bonusesPaid) * 10) / 10 : null;
+
+    res.json({
+      summary: {
+        active_referrers: activeReferrers,
+        new_referred: newReferred,
+        referral_revenue: Math.round(referralRevenue),
+        bonuses_paid: Math.round(bonusesPaid),
+        roi,
+      },
+      settings: {
+        min_purchase_uzs: parseFloat(settings.min_purchase_uzs),
+        bonus_to_referrer: parseFloat(settings.bonus_to_referrer),
+        discount_pct: parseFloat(settings.discount_pct),
+        validity_days: parseInt(settings.validity_days, 10),
+      },
+      top,
+      referrals,
+    });
+  } catch (e) {
+    console.error('referrals top err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/crm/referrals/code — создать/вернуть промокод FRIEND-<customer_id>.
+// body: { customer_id }.
+app.post('/api/crm/referrals/code', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const customerId = parseInt(req.body.customer_id, 10);
+    if (!customerId) return res.status(400).json({ error: 'customer_id обязателен' });
+
+    const cust = await pool.query(
+      'SELECT id, name FROM customers WHERE id=$1 AND company_id=$2 AND deleted_at IS NULL', [customerId, companyId]);
+    if (!cust.rows[0]) return res.status(404).json({ error: 'Клиент не найден' });
+
+    const code = `FRIEND-${customerId}`;
+    const up = await pool.query(`
+      INSERT INTO referral_codes (customer_id, company_id, code, is_active)
+      VALUES ($1, $2, $3, TRUE)
+      ON CONFLICT (customer_id) DO UPDATE SET is_active = TRUE
+      RETURNING id, customer_id, code, is_active, created_at`,
+      [customerId, companyId, code]);
+
+    audit(req, 'create', 'referral_code', up.rows[0].id, null, { customer_id: customerId, code });
+    res.json({ ok: true, code: up.rows[0] });
+  } catch (e) {
+    console.error('referrals code err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/crm/referrals/use — зарегистрировать промокод за новым клиентом.
+// body: { code, referred_id }. Создаёт referral(pending) со скидкой из настроек.
+app.post('/api/crm/referrals/use', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const code = String(req.body.code || '').trim().toUpperCase();
+    const referredId = parseInt(req.body.referred_id, 10);
+    if (!code || !referredId) return res.status(400).json({ error: 'code и referred_id обязательны' });
+
+    const rc = await pool.query(
+      'SELECT customer_id FROM referral_codes WHERE company_id=$1 AND code=$2 AND is_active=TRUE',
+      [companyId, code]);
+    if (!rc.rows[0]) return res.status(404).json({ error: 'Промокод не найден или не активен' });
+    const referrerId = rc.rows[0].customer_id;
+    if (referrerId === referredId) return res.status(400).json({ error: 'Нельзя пригласить самого себя' });
+
+    const refd = await pool.query(
+      'SELECT id FROM customers WHERE id=$1 AND company_id=$2 AND deleted_at IS NULL', [referredId, companyId]);
+    if (!refd.rows[0]) return res.status(404).json({ error: 'Приглашённый клиент не найден' });
+
+    const exists = await pool.query('SELECT id FROM referrals WHERE referred_id=$1 AND company_id=$2', [referredId, companyId]);
+    if (exists.rows[0]) return res.status(409).json({ error: 'Этот клиент уже пришёл по реферальной программе' });
+
+    const s = await refGetSettings(companyId);
+    const ins = await pool.query(`
+      INSERT INTO referrals (company_id, referrer_id, referred_id, promo_code, status, discount_pct)
+      VALUES ($1, $2, $3, $4, 'pending', $5)
+      RETURNING id, status, discount_pct, created_at`,
+      [companyId, referrerId, referredId, code, s.discount_pct]);
+
+    audit(req, 'create', 'referral', ins.rows[0].id, null, { referrer_id: referrerId, referred_id: referredId, code });
+    res.json({ ok: true, referral: ins.rows[0], discount_pct: parseFloat(s.discount_pct) });
+  } catch (e) {
+    console.error('referrals use err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/crm/referrals/:id/activate — пометить activated и начислить бонус рефереру.
+// Проверяет минимальный порог первой покупки. Идемпотентно (не активирует дважды).
+// body (опц): { first_purchase_id, first_purchase_amount }.
+app.post('/api/crm/referrals/:id/activate', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+
+    const r = await pool.query('SELECT * FROM referrals WHERE id=$1 AND company_id=$2', [id, companyId]);
+    const ref = r.rows[0];
+    if (!ref) return res.status(404).json({ error: 'Реферал не найден' });
+    if (ref.status === 'activated') return res.status(409).json({ error: 'Реферал уже активирован' });
+
+    const s = await refGetSettings(companyId);
+    const minPurchase = parseFloat(s.min_purchase_uzs) || 0;
+
+    // Сумма первой покупки: из body, либо первая одобренная продажа приглашённого.
+    let firstAmount = req.body.first_purchase_amount != null ? parseFloat(req.body.first_purchase_amount) : null;
+    let firstId = req.body.first_purchase_id != null ? parseInt(req.body.first_purchase_id, 10) : null;
+    if (firstAmount == null) {
+      const fp = await pool.query(`
+        SELECT id, quantity*price AS amount FROM stock_outcome
+        WHERE customer_id=$1 AND status='approved'
+        ORDER BY created_at ASC LIMIT 1`, [ref.referred_id]);
+      if (fp.rows[0]) { firstAmount = parseFloat(fp.rows[0].amount); firstId = fp.rows[0].id; }
+    }
+
+    if (firstAmount == null || firstAmount < minPurchase) {
+      return res.status(400).json({
+        error: `Первая покупка ниже порога (${minPurchase.toLocaleString('ru-RU')} сум) или отсутствует`,
+        min_purchase_uzs: minPurchase,
+        first_purchase_amount: firstAmount,
+      });
+    }
+
+    const bonus = parseFloat(s.bonus_to_referrer) || 0;
+    const validity = parseInt(s.validity_days, 10) || 0;
+
+    // Начисление бонуса + смена статуса — АТОМАРНО (иначе краш между ними даёт
+    // двойное начисление при повторе). Блокировка строки реферала (FOR UPDATE)
+    // сериализует параллельные активации.
+    const client = await pool.connect();
+    let balanceAfter, updated;
+    try {
+      await client.query('BEGIN');
+      const lock = await client.query("SELECT status FROM referrals WHERE id=$1 AND company_id=$2 FOR UPDATE", [id, companyId]);
+      if (lock.rows[0]?.status === 'activated') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Реферал уже активирован' });
+      }
+      balanceAfter = await refCreditBonus(companyId, ref.referrer_id, bonus, 'referral', ref.id, validity, client);
+      const upd = await client.query(`
+        UPDATE referrals
+           SET status='activated', activated_at=NOW(),
+               first_purchase_id=$2, first_purchase_amount=$3, bonus_amount=$4
+         WHERE id=$1
+         RETURNING id, status, bonus_amount, activated_at`,
+        [id, firstId, firstAmount, bonus]);
+      updated = upd.rows[0];
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    audit(req, 'activate', 'referral', id, { status: ref.status },
+      { status: 'activated', bonus, referrer_id: ref.referrer_id });
+    res.json({ ok: true, referral: updated, referrer_balance: balanceAfter });
+  } catch (e) {
+    console.error('referrals activate err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/crm/bonuses/:customer_id — баланс + история транзакций клиента.
+app.get('/api/crm/bonuses/:customer_id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const customerId = parseInt(req.params.customer_id, 10);
+    if (!customerId) return res.status(400).json({ error: 'customer_id обязателен' });
+
+    const bal = await pool.query(
+      'SELECT balance_uzs, earned_total, used_total, updated_at FROM customer_bonuses WHERE customer_id=$1 AND company_id=$2',
+      [customerId, companyId]);
+    const tx = await pool.query(`
+      SELECT id, type, amount, source, source_id, balance_after, expires_at, created_at
+      FROM bonus_transactions
+      WHERE customer_id=$1 AND company_id=$2
+      ORDER BY created_at DESC LIMIT 200`, [customerId, companyId]);
+
+    const b = bal.rows[0] || { balance_uzs: 0, earned_total: 0, used_total: 0, updated_at: null };
+    res.json({
+      balance: {
+        balance_uzs: parseFloat(b.balance_uzs) || 0,
+        earned_total: parseFloat(b.earned_total) || 0,
+        used_total: parseFloat(b.used_total) || 0,
+        updated_at: b.updated_at,
+      },
+      transactions: tx.rows.map(t => ({
+        id: t.id, type: t.type, amount: parseFloat(t.amount) || 0,
+        source: t.source, source_id: t.source_id,
+        balance_after: t.balance_after != null ? parseFloat(t.balance_after) : null,
+        expires_at: t.expires_at, created_at: t.created_at,
+      })),
+    });
+  } catch (e) {
+    console.error('bonuses get err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Прогноз клиентской базы (forecast) ===================================
+// Матрица переходов RFM-сегментов по месячным снапшотам customer_rfm_history.
+// Прогноз: forecast[to] = Σ_from current[from] * P(from→to), N шагов на горизонт.
+// История пишется rfmRecompute() (compute-on-read); планировщика/триггеров нет.
+const FCAST_ALL_SEGMENTS = RFM_SEGMENT_META.map(m => m.key);
+// Сегменты в зоне риска (для рекомендаций/реактивации).
+const FCAST_RISK = new Set(['need_attention', 'about_to_sleep', 'at_risk', 'cant_lose', 'hibernating', 'lost']);
+// «Потерянные» (отток) — для подсчёта lost_customers в сводке.
+const FCAST_LOST = new Set(['lost', 'hibernating']);
+
+// Причина изменения сегмента человеческим языком.
+function fcastReason(key, delta) {
+  if (delta > 0) {
+    if (key === 'new') return 'Приток новых покупателей по матрице переходов';
+    if (FCAST_LOST.has(key)) return 'Часть базы перестаёт покупать — растёт отток';
+    if (FCAST_RISK.has(key)) return 'Клиенты сдвигаются в зону риска — нужна реактивация';
+    return 'Положительная миграция из соседних сегментов';
+  }
+  if (delta < 0) {
+    if (FCAST_RISK.has(key)) return 'Часть клиентов реактивируется или уходит дальше';
+    return 'Отток в соседние сегменты и потерянные';
+  }
+  return 'Сегмент стабилен — переходы сбалансированы';
+}
+
+app.get('/api/crm/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    // Скоуп: forecast строится на customer_rfm / customer_rfm_history — у этих таблиц
+    // НЕТ измерения филиала (RFM считается на уровне компании). Поэтому менеджер видит
+    // компанийный прогноз read-only. Параметр branch_id принимается, но не применяется.
+    await rfmEnsureFresh(companyId); // гарантирует свежесть + пишет снапшот текущего месяца
+
+    const horizon = req.query.horizon === '6m' ? '6m' : 'month';
+
+    // Текущее распределение (последний снапшот = текущий кэш).
+    const curQ = await pool.query(
+      `SELECT segment, COUNT(*)::int AS cnt FROM customer_rfm WHERE company_id=$1 GROUP BY segment`,
+      [companyId]);
+    const current = {};
+    for (const k of FCAST_ALL_SEGMENTS) current[k] = 0;
+    let totalCurrent = 0;
+    for (const r of curQ.rows) { current[r.segment] = r.cnt; totalCurrent += r.cnt; }
+
+    // Сколько различных периодов есть в истории.
+    const periodsQ = await pool.query(
+      `SELECT DISTINCT period FROM customer_rfm_history WHERE company_id=$1 ORDER BY period ASC`,
+      [companyId]);
+    const periods = periodsQ.rows.map(r => r.period);
+
+    // Средний LTV: общий и по «новым» (приближение avg_new_ltv).
+    const ltvQ = await pool.query(
+      `SELECT COALESCE(AVG(total_spent_uzs),0)::numeric AS avg_all,
+              COALESCE(AVG(total_spent_uzs) FILTER (WHERE segment='new'),0)::numeric AS avg_new
+       FROM customer_rfm WHERE company_id=$1`, [companyId]);
+    const avgNewLtvBase = parseFloat(ltvQ.rows[0]?.avg_new) || parseFloat(ltvQ.rows[0]?.avg_all) || 0;
+
+    // Недостаточно истории (<2 периодов) — отдаём текущий срез без прогноза.
+    if (periods.length < 2) {
+      const by_segment = RFM_SEGMENT_META.map(m => ({
+        segment: m.key, label: RFM_SEGMENTS[m.key], icon: m.icon, tone: m.tone,
+        current: current[m.key] || 0, forecast: current[m.key] || 0, change: 0,
+        reason: 'Недостаточно истории для прогноза (нужно ≥2 месяца снапшотов)',
+      }));
+      return res.json({
+        enough_data: false,
+        periods_collected: periods.length,
+        horizon,
+        total_current: totalCurrent,
+        total_forecast: totalCurrent,
+        summary: { new_customers: 0, lost_customers: 0, net_growth: 0, avg_new_ltv: Math.round(avgNewLtvBase) },
+        by_segment,
+        recommendations: [],
+      });
+    }
+
+    // Матрица переходов: по всем последовательным парам периодов (prev→next) на клиента.
+    const trQ = await pool.query(`
+      WITH ordered AS (
+        SELECT customer_id, period, segment,
+               LEAD(segment) OVER (PARTITION BY customer_id ORDER BY period) AS next_seg
+        FROM customer_rfm_history
+        WHERE company_id=$1
+      )
+      SELECT segment AS from_seg, next_seg AS to_seg, COUNT(*)::int AS cnt
+      FROM ordered
+      WHERE next_seg IS NOT NULL
+      GROUP BY segment, next_seg`, [companyId]);
+
+    // Вероятности P(from→to), нормированные по сумме исходящих из from.
+    const counts = {};   // counts[from][to]
+    const rowTotal = {}; // сумма исходящих из from
+    for (const k of FCAST_ALL_SEGMENTS) { counts[k] = {}; rowTotal[k] = 0; }
+    for (const r of trQ.rows) {
+      counts[r.from_seg] = counts[r.from_seg] || {};
+      counts[r.from_seg][r.to_seg] = (counts[r.from_seg][r.to_seg] || 0) + r.cnt;
+      rowTotal[r.from_seg] = (rowTotal[r.from_seg] || 0) + r.cnt;
+    }
+    // Если по сегменту нет наблюдений переходов — считаем его «остающимся собой» (absorbing).
+    const prob = (from, to) => {
+      if (!rowTotal[from]) return from === to ? 1 : 0;
+      return (counts[from]?.[to] || 0) / rowTotal[from];
+    };
+
+    // Прогноз: vec = vec · P, повторить steps раз.
+    const steps = horizon === '6m' ? 6 : 1;
+    let vec = { ...current };
+    for (let step = 0; step < steps; step++) {
+      const next = {};
+      for (const to of FCAST_ALL_SEGMENTS) next[to] = 0;
+      for (const from of FCAST_ALL_SEGMENTS) {
+        const mass = vec[from] || 0;
+        if (!mass) continue;
+        for (const to of FCAST_ALL_SEGMENTS) next[to] += mass * prob(from, to);
+      }
+      vec = next;
+    }
+    const forecast = {};
+    for (const k of FCAST_ALL_SEGMENTS) forecast[k] = Math.round(vec[k] || 0);
+
+    // by_segment.
+    const by_segment = RFM_SEGMENT_META.map(m => {
+      const cur = current[m.key] || 0;
+      const fc = forecast[m.key] || 0;
+      const change = fc - cur;
+      return {
+        segment: m.key, label: RFM_SEGMENTS[m.key], icon: m.icon, tone: m.tone,
+        current: cur, forecast: fc, change, reason: fcastReason(m.key, change),
+      };
+    });
+
+    // Сводка.
+    const newCustomers = Math.max(0, (forecast.new || 0) - (current.new || 0));
+    let lostCur = 0, lostFc = 0;
+    for (const k of FCAST_LOST) { lostCur += current[k] || 0; lostFc += forecast[k] || 0; }
+    const lostCustomers = Math.max(0, lostFc - lostCur);
+    const totalForecast = FCAST_ALL_SEGMENTS.reduce((a, k) => a + (forecast[k] || 0), 0);
+    const netGrowth = totalForecast - totalCurrent;
+
+    const summary = {
+      new_customers: newCustomers,
+      lost_customers: lostCustomers,
+      net_growth: netGrowth,
+      avg_new_ltv: Math.round(avgNewLtvBase),
+    };
+
+    // Средний LTV по сегментам — для revenue_at_risk.
+    const segLtvQ = await pool.query(
+      `SELECT segment, COALESCE(AVG(total_spent_uzs),0)::numeric AS avg_ltv
+       FROM customer_rfm WHERE company_id=$1 GROUP BY segment`, [companyId]);
+    const segLtv = {};
+    for (const r of segLtvQ.rows) segLtv[r.segment] = parseFloat(r.avg_ltv) || 0;
+
+    // Рекомендации: сегменты в зоне риска. revenue_at_risk = клиенты * средний LTV сегмента.
+    const recommendations = [];
+    for (const m of RFM_SEGMENT_META) {
+      if (!FCAST_RISK.has(m.key)) continue;
+      const cur = current[m.key] || 0;
+      const fc = forecast[m.key] || 0;
+      if (fc <= 0 && cur <= 0) continue;
+      const atRiskCount = Math.max(cur, fc);
+      const revenueAtRisk = Math.round(atRiskCount * (segLtv[m.key] || avgNewLtvBase));
+      let type = 'reactivation', urgency = 'medium';
+      if (m.key === 'at_risk' || m.key === 'cant_lose') { type = 'reactivation'; urgency = 'high'; }
+      else if (m.key === 'hibernating' || m.key === 'lost') { type = 'mass_campaign'; urgency = m.key === 'lost' ? 'low' : 'medium'; }
+      // Ожидаемая реактивация: доля массы, уходящая в «нериск» сегменты.
+      const upProb = FCAST_ALL_SEGMENTS
+        .filter(to => !FCAST_RISK.has(to))
+        .reduce((a, to) => a + prob(m.key, to), 0);
+      const expectedReactivation = Math.round(atRiskCount * upProb);
+      recommendations.push({
+        type, urgency, segment: m.key, label: RFM_SEGMENTS[m.key], icon: m.icon, tone: m.tone,
+        customer_count: atRiskCount,
+        revenue_at_risk: revenueAtRisk,
+        expected_reactivation: expectedReactivation,
+        action: m.action,
+      });
+    }
+    const urgRank = { high: 0, medium: 1, low: 2 };
+    recommendations.sort((a, b) =>
+      (urgRank[a.urgency] - urgRank[b.urgency]) || (b.revenue_at_risk - a.revenue_at_risk));
+
+    res.json({
+      enough_data: true,
+      periods_collected: periods.length,
+      horizon,
+      total_current: totalCurrent,
+      total_forecast: totalForecast,
+      summary,
+      by_segment,
+      recommendations,
+    });
+  } catch (e) {
+    console.error('forecast err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ============================================================================
+// === Центр алертов (alert-center) ==========================================
+// Единый экран всех уведомлений системы. Источники (как в /api/risks + complaints):
+//   inventory: остаток <5 (warning, <2 → critical) · out-of-stock с недавним спросом (critical)
+//   crm:       неотвеченные жалобы (new/in_progress) старше 24ч (critical)
+//   finance:   просрочка долга клиента (>7дн → critical, иначе warning)
+//   purchase:  просрочка долга поставщику (>7дн → critical, иначе warning)
+// hr-алерты (attendance/late/vacation) и cash_forecast/PO expected_date из спеки
+// НЕ реализуем — данных нет в монолите (см. NOTES, помечено placeholder).
+//
+// Генерация compute-on-read: на каждый GET пересчитываем активные алерты, UPSERT по
+// (company_id, module, source_table, source_id), а исчезнувшие из источников помечаем
+// status='resolved'. Без cron/setInterval/pg-триггеров.
+const ALERT_MODULES = ['inventory', 'finance', 'hr', 'crm', 'purchase'];
+const ALERT_SEVERITIES = ['critical', 'warning', 'info'];
+
+// Собрать актуальные алерты из источников. Возвращает массив дескрипторов с
+// устойчивым ключом dedup (module, source_table, source_id).
+async function alertCollect(companyId, branchId) {
+  const branchSQLps = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+  const branchSQLso = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+  const branchSQLsi = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+  const branchSQLc  = branchId ? `AND c.branch_id  = ${parseInt(branchId)}` : '';
+  const out = [];
+
+  // 1) inventory — низкий остаток (<5; <2 → critical)
+  const lowStock = await pool.query(`
+    SELECT p.id, p.name_ru, ps.quantity, ps.branch_id, b.name AS branch_name
+    FROM product_stock ps
+    JOIN products p ON p.id = ps.product_id
+    LEFT JOIN branches b ON b.id = ps.branch_id
+    WHERE p.company_id = $1 AND ps.quantity > 0 AND ps.quantity < 5 ${branchSQLps}
+    LIMIT 100
+  `, [companyId]);
+  for (const r of lowStock.rows) {
+    out.push({
+      module: 'inventory',
+      severity: parseFloat(r.quantity) < 2 ? 'critical' : 'warning',
+      title: `Низкий остаток: ${r.name_ru}`,
+      description: `Осталось ${parseFloat(r.quantity)} шт${r.branch_name ? ` · ${r.branch_name}` : ''}`,
+      action: '/owner/warehouse/stock',
+      source_table: 'product_stock',
+      source_id: `${r.branch_id}:${r.id}`,
+      branch_id: r.branch_id || null,
+    });
+  }
+
+  // 2) inventory — out-of-stock для товаров со спросом за 14 дней
+  const outOfStock = await pool.query(`
+    SELECT p.id, p.name_ru, ps.branch_id, b.name AS branch_name
+    FROM product_stock ps
+    JOIN products p ON p.id = ps.product_id
+    LEFT JOIN branches b ON b.id = ps.branch_id
+    WHERE p.company_id = $1 AND ps.quantity = 0 ${branchSQLps}
+      AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+    LIMIT 60
+  `, [companyId]);
+  for (const r of outOfStock.rows) {
+    out.push({
+      module: 'inventory',
+      severity: 'critical',
+      title: `Нет в наличии: ${r.name_ru}`,
+      description: `Был спрос за 14 дней${r.branch_name ? ` · ${r.branch_name}` : ''}`,
+      action: '/owner/procurement/income',
+      source_table: 'product_stock_oos',
+      source_id: `${r.branch_id}:${r.id}`,
+      branch_id: r.branch_id || null,
+    });
+  }
+
+  // 3) finance — просроченные долги клиентов (>7дн → critical)
+  const overdueDebts = await pool.query(`
+    SELECT so.id, so.due_date, so.branch_id,
+           ((so.quantity * so.price) - COALESCE(so.paid_amount, 0)) AS remaining,
+           c.name AS customer_name
+    FROM stock_outcome so
+    JOIN products p ON p.id = so.product_id
+    LEFT JOIN customers c ON c.id = so.customer_id
+    WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+      AND so.due_date IS NOT NULL AND so.due_date < CURRENT_DATE
+      ${branchSQLso}
+    ORDER BY so.due_date ASC LIMIT 60
+  `, [companyId]);
+  for (const r of overdueDebts.rows) {
+    const daysLate = Math.floor((Date.now() - new Date(r.due_date).getTime()) / 86400000);
+    out.push({
+      module: 'finance',
+      severity: daysLate > 7 ? 'critical' : 'warning',
+      title: `Просрочен долг: ${r.customer_name || 'клиент'}`,
+      description: `${Math.round(parseFloat(r.remaining)).toLocaleString('ru-RU')} UZS · ${daysLate} дн.`,
+      action: '/owner/support/debts-clients',
+      source_table: 'stock_outcome',
+      source_id: String(r.id),
+      branch_id: r.branch_id || null,
+    });
+  }
+
+  // 4) purchase — просроченные долги поставщикам (>7дн → critical)
+  const overdueSupplier = await pool.query(`
+    SELECT si.id, si.due_date, si.branch_id,
+           ((si.quantity * si.price) - COALESCE(si.paid_amount, 0)) AS remaining,
+           s.name AS supplier_name
+    FROM stock_income si
+    JOIN products p ON p.id = si.product_id
+    LEFT JOIN suppliers s ON s.id = si.supplier_id
+    WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+      AND si.due_date IS NOT NULL AND si.due_date < CURRENT_DATE
+      ${branchSQLsi}
+    ORDER BY si.due_date ASC LIMIT 60
+  `, [companyId]);
+  for (const r of overdueSupplier.rows) {
+    const daysLate = Math.floor((Date.now() - new Date(r.due_date).getTime()) / 86400000);
+    out.push({
+      module: 'purchase',
+      severity: daysLate > 7 ? 'critical' : 'warning',
+      title: `Долг поставщику: ${r.supplier_name || 'поставщик'}`,
+      description: `${Math.round(parseFloat(r.remaining)).toLocaleString('ru-RU')} UZS · ${daysLate} дн. просрочки`,
+      action: '/owner/procurement/debts-suppliers',
+      source_table: 'stock_income',
+      source_id: String(r.id),
+      branch_id: r.branch_id || null,
+    });
+  }
+
+  // 5) crm — неотвеченные жалобы (открытые new/in_progress) старше 24ч → critical
+  const staleComplaints = await pool.query(`
+    SELECT c.id, c.branch_id, c.created_at,
+           COALESCE(c.customer_name, cu.name, 'клиент') AS who
+    FROM complaints c
+    LEFT JOIN customers cu ON cu.id = c.customer_id
+    WHERE c.company_id = $1
+      AND c.status IN ('new', 'in_progress')
+      AND c.created_at < NOW() - INTERVAL '24 hours'
+      ${branchSQLc}
+    ORDER BY c.created_at ASC LIMIT 60
+  `, [companyId]);
+  for (const r of staleComplaints.rows) {
+    const hours = Math.floor((Date.now() - new Date(r.created_at).getTime()) / 3600000);
+    out.push({
+      module: 'crm',
+      severity: 'critical',
+      title: `Жалоба без ответа: ${r.who}`,
+      description: `Открыта ${hours} ч назад · без реакции >24ч`,
+      action: '/owner/support/complaints',
+      source_table: 'complaints',
+      source_id: String(r.id),
+      branch_id: r.branch_id || null,
+    });
+  }
+
+  return out;
+}
+
+// Пересчёт alerts из источников: UPSERT актуальных + resolve исчезнувших.
+// branchId=null → пересчитываем всю компанию (владелец); иначе только этот филиал.
+async function alertSync(companyId, branchId, userId) {
+  const fresh = await alertCollect(companyId, branchId);
+  const seenKeys = new Set(fresh.map(a => `${a.module}|${a.source_table}|${a.source_id}`));
+
+  // Один bulk-UPSERT вместо N последовательных INSERT (избегаем исчерпания пула при
+  // десятках алертов). Реанимируем ранее закрытые (status снова open).
+  if (fresh.length) {
+    await pool.query(`
+      INSERT INTO alerts
+        (company_id, branch_id, module, severity, title, description, action, source_table, source_id, status, created_at)
+      SELECT $1, branch_id, module, severity, title, description, action, source_table, source_id, 'open', NOW()
+      FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+        AS t(branch_id, module, severity, title, description, action, source_table, source_id)
+      ON CONFLICT (company_id, module, source_table, source_id)
+      WHERE source_table IS NOT NULL AND source_id IS NOT NULL
+      DO UPDATE SET
+        branch_id   = EXCLUDED.branch_id,
+        severity    = EXCLUDED.severity,
+        title       = EXCLUDED.title,
+        description = EXCLUDED.description,
+        action      = EXCLUDED.action,
+        status      = 'open',
+        resolved_by = NULL,
+        resolved_at = NULL
+    `, [companyId,
+        fresh.map(a => a.branch_id), fresh.map(a => a.module), fresh.map(a => a.severity),
+        fresh.map(a => a.title), fresh.map(a => a.description), fresh.map(a => a.action),
+        fresh.map(a => a.source_table), fresh.map(a => a.source_id)]);
+  }
+
+  // Помечаем resolved те open-алерты текущего скоупа, которых больше нет в источниках.
+  // Только авто-сгенерированные (source_table/source_id NOT NULL).
+  const open = await pool.query(`
+    SELECT id, module, source_table, source_id FROM alerts
+    WHERE company_id = $1 AND status = 'open'
+      AND source_table IS NOT NULL AND source_id IS NOT NULL
+      ${branchId ? 'AND branch_id = ' + parseInt(branchId) : ''}
+  `, [companyId]);
+  const toResolve = open.rows
+    .filter(r => !seenKeys.has(`${r.module}|${r.source_table}|${r.source_id}`))
+    .map(r => r.id);
+  if (toResolve.length) {
+    await pool.query(
+      `UPDATE alerts SET status='resolved', resolved_by=$2, resolved_at=NOW()
+       WHERE id = ANY($1::int[]) AND status='open'`,
+      [toResolve, userId || null]
+    );
+  }
+}
+
+// GET /api/analytics/alerts?branch_id&status&module
+// Пересчитывает (compute-on-read) и возвращает summary + items.
+app.get('/api/analytics/alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // менеджер пинится своим филиалом
+    const statusFilter = (req.query.status && ['open', 'resolved'].includes(req.query.status)) ? req.query.status : null;
+    const moduleFilter = (req.query.module && ALERT_MODULES.includes(req.query.module)) ? req.query.module : null;
+
+    // 1) пересчитать источники
+    await alertSync(companyId, branchId, req.user.id);
+
+    // 2) summary по open + resolved_today (всегда по полному скоупу, без фильтра status/module)
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND branch_id = $${params.length}`; }
+    const summaryQ = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status='open' AND severity='critical') AS critical,
+        COUNT(*) FILTER (WHERE status='open' AND severity='warning')  AS warning,
+        COUNT(*) FILTER (WHERE status='open' AND severity='info')     AS info,
+        COUNT(*) FILTER (WHERE status='resolved' AND resolved_at >= CURRENT_DATE) AS resolved_today
+      FROM alerts
+      WHERE company_id = $1 ${branchSQL}
+    `, params);
+    const s = summaryQ.rows[0] || {};
+    const summary = {
+      critical: parseInt(s.critical || 0),
+      warning: parseInt(s.warning || 0),
+      info: parseInt(s.info || 0),
+      resolved_today: parseInt(s.resolved_today || 0),
+    };
+
+    // 3) items с применением фильтров (status по умолчанию = open)
+    const itemParams = [companyId];
+    let where = '';
+    if (branchId) { itemParams.push(branchId); where += ` AND a.branch_id = $${itemParams.length}`; }
+    const effStatus = statusFilter || 'open';
+    itemParams.push(effStatus); where += ` AND a.status = $${itemParams.length}`;
+    if (moduleFilter) { itemParams.push(moduleFilter); where += ` AND a.module = $${itemParams.length}`; }
+    const itemsQ = await pool.query(`
+      SELECT a.id, a.branch_id, a.module, a.severity, a.title, a.description, a.action,
+             a.source_table, a.source_id, a.status, a.resolved_at, a.created_at,
+             b.name AS branch_name
+      FROM alerts a
+      LEFT JOIN branches b ON b.id = a.branch_id
+      WHERE a.company_id = $1 ${where}
+      ORDER BY
+        CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+        a.created_at DESC
+      LIMIT 300
+    `, itemParams);
+
+    res.json({ summary, items: itemsQ.rows });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('alert-center err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/analytics/alerts/:id/resolve — ручное закрытие алерта
+app.patch('/api/analytics/alerts/:id/resolve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const cur = await pool.query('SELECT * FROM alerts WHERE id=$1 AND company_id=$2', [id, companyId]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'Алерт не найден' });
+    const row = cur.rows[0];
+    // менеджер может закрывать только алерты своего филиала
+    if (req.user.role === 'manager' && row.branch_id && row.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Out of branch scope' });
+    }
+    const upd = await pool.query(
+      `UPDATE alerts SET status='resolved', resolved_by=$2, resolved_at=NOW()
+       WHERE id=$1 AND status='open' RETURNING *`,
+      [id, req.user.id]
+    );
+    audit(req, 'resolve', 'alert', id, { status: row.status }, { status: 'resolved' });
+    res.json({ ok: true, alert: upd.rows[0] || row });
+  } catch (e) {
+    console.error('alert resolve err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Сравнение филиалов (branch-compare) — OWNER only ======================
+// Кросс-филиальная прибыль/маржа недоступна менеджеру (правило прибыли монолита):
+// auth ТОЛЬКО ['admin','gen_dir','founder']. Метрики per-branch собираются теми же
+// агрегатами, что и /api/company/dashboard (стр. 835–896), но GROUP BY branch_id по
+// ВСЕМ филиалам компании. BHI — company-level (bhiGetToday), NPS — данных нет → null.
+
+// Краткий формат суммы для серверных текстов инсайтов (12.3M / 980K).
+// Суффикс ...Server, чтобы не путать с фронтовым fmtMoney. В монолите отсутствует.
+function bcmpFmtMoney(v) {
+  // Полное число с разделителями разрядов (без M/K) — по требованию.
+  return Math.round(parseFloat(v) || 0).toLocaleString('ru-RU');
+}
+
+const BCMP_PERIODS = { day: 1, week: 7, month: 30, year: 365 }; // окно в днях
+
+// Метрики таблицы: ключ, подпись, направление «лучше = больше» (higher), формат.
+const BCMP_METRICS = [
+  { key: 'bhi',                  label: 'BHI',                   higher: true,  fmt: 'num',   companyLevel: true },
+  { key: 'revenue',              label: 'Выручка',               higher: true,  fmt: 'money' },
+  { key: 'profit',               label: 'Прибыль',               higher: true,  fmt: 'money' },
+  { key: 'margin',               label: 'Маржа',                 higher: true,  fmt: 'pct'  },
+  { key: 'avg_check',            label: 'Средний чек',           higher: true,  fmt: 'money' },
+  { key: 'checks_per_day',       label: 'Чеков в день',          higher: true,  fmt: 'num'  },
+  { key: 'clients',              label: 'Клиентов',              higher: true,  fmt: 'num'  },
+  { key: 'inventory_turnover',   label: 'Оборачиваемость (дни)', higher: false, fmt: 'num'  },
+  { key: 'nps',                  label: 'NPS',                   higher: true,  fmt: 'num',   placeholder: true },
+  { key: 'staff',                label: 'Сотрудников',           higher: null,  fmt: 'num'  }, // у «штата» нет лидера
+  { key: 'revenue_per_employee', label: 'Выручка/сотрудник',     higher: true,  fmt: 'money' },
+];
+
+app.get('/api/analytics/branches/compare', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    // Единый канон периода: 'month' = календарный месяц (как founder/trends). days — фактич. дни окна.
+    const pr = periodRangeUnified(req.query.period);
+    const fromIso = pr.from;
+    const periodDays = pr.days;
+
+    // Все филиалы компании (owner — кросс-филиально).
+    const bq = await pool.query('SELECT id, name FROM branches WHERE company_id=$1 ORDER BY id', [companyId]);
+    const branches = bq.rows;
+    const ids = branches.map(b => b.id);
+    if (!ids.length) {
+      return res.json({ period: req.query.period || 'month', branches: [], metrics: [], trend: [], insights: [], bhi_company: null });
+    }
+
+    // Per-branch агрегаты за период (продажи), плюс штат, склад и клиенты.
+    const [salesAgg, staffAgg, stockAgg, clientsAgg, bhi] = await Promise.all([
+      pool.query(`
+        SELECT so.branch_id,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+               COUNT(*) AS deals
+        FROM stock_outcome so JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+        GROUP BY so.branch_id`, [ids, fromIso]),
+      pool.query(`SELECT branch_id, COUNT(*) AS c FROM users WHERE branch_id = ANY($1::int[]) GROUP BY branch_id`, [ids]),
+      pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity * COALESCE(p.price_buy,0)),0) AS cost_value
+                  FROM product_stock ps JOIN products p ON p.id = ps.product_id
+                  WHERE ps.branch_id = ANY($1::int[]) GROUP BY ps.branch_id`, [ids]),
+      // Уникальные клиенты за период (по продажам филиала).
+      pool.query(`SELECT branch_id, COUNT(DISTINCT customer_id) AS c FROM stock_outcome
+                  WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND customer_id IS NOT NULL
+                  GROUP BY branch_id`, [ids, fromIso]),
+      bhiGetToday(companyId).catch(() => null),
+    ]);
+
+    const idx = (rows, k = 'c') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[k]) || 0]));
+    const sales = Object.fromEntries(salesAgg.rows.map(r => [r.branch_id, {
+      revenue: parseFloat(r.revenue) || 0, cost: parseFloat(r.cost) || 0, deals: parseInt(r.deals) || 0,
+    }]));
+    const staff = idx(staffAgg.rows), stockCost = idx(stockAgg.rows, 'cost_value'), clients = idx(clientsAgg.rows);
+    const bhiVal = bhi && typeof bhi.bhi === 'number' ? Math.round(bhi.bhi) : null;
+
+    // Сводка по каждому филиалу (одно значение каждой метрики).
+    const perBranch = branches.map(b => {
+      const s = sales[b.id] || { revenue: 0, cost: 0, deals: 0 };
+      const profit = s.revenue - s.cost;
+      const margin = s.revenue > 0 ? Math.round((profit / s.revenue) * 1000) / 10 : 0;
+      const st = staff[b.id] || 0;
+      // Оборачиваемость = склад_по_себестоимости / (себестоимость_продаж / дни_периода).
+      const dailyCogs = s.cost / periodDays;
+      const turnover = dailyCogs > 0 ? Math.round((stockCost[b.id] || 0) / dailyCogs) : null;
+      return {
+        branch_id: b.id,
+        branch_name: b.name,
+        values: {
+          bhi: bhiVal,                                  // company-level — одинаков для всех
+          revenue: s.revenue,
+          profit,
+          margin,
+          avg_check: s.deals > 0 ? Math.round(s.revenue / s.deals) : 0,
+          checks_per_day: Math.round((s.deals / periodDays) * 10) / 10,
+          clients: clients[b.id] || 0,
+          inventory_turnover: turnover,                 // может быть null (нет продаж за период)
+          nps: null,                                    // данных нет → прочерк
+          staff: st,
+          revenue_per_employee: st > 0 ? Math.round(s.revenue / st) : null,
+        },
+      };
+    });
+
+    // Таблица метрик с лидером по каждой строке (учитывая направление higher).
+    // BHI/NPS/staff лидера не выделяем (companyLevel / placeholder / higher=null).
+    const metrics = BCMP_METRICS.map(m => {
+      const values = Object.fromEntries(perBranch.map(b => [b.branch_id, b.values[m.key]]));
+      let leader_branch_id = null;
+      if (m.higher !== null && !m.companyLevel && !m.placeholder) {
+        let best = null;
+        for (const b of perBranch) {
+          const v = b.values[m.key];
+          if (v === null || v === undefined) continue;
+          if (best === null || (m.higher ? v > best.v : v < best.v)) best = { id: b.branch_id, v };
+        }
+        if (best && best.v !== 0) leader_branch_id = best.id; // лидера по нулям не назначаем
+      }
+      return { metric: m.key, label: m.label, fmt: m.fmt, higher: m.higher, placeholder: !!m.placeholder, values, leader_branch_id };
+    });
+
+    // 6-месячный тренд выручки помесячно per-branch (из stock_outcome — там есть revenue).
+    const trendFrom = new Date(); trendFrom.setMonth(trendFrom.getMonth() - 5); trendFrom.setDate(1); trendFrom.setHours(0, 0, 0, 0);
+    const trendQ = await pool.query(`
+      SELECT so.branch_id, to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS m,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+      GROUP BY so.branch_id, m`, [ids, trendFrom.toISOString()]);
+    const months = [];
+    for (let i = 5; i >= 0; i--) { const d = new Date(); d.setMonth(d.getMonth() - i); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`); }
+    const trendMap = new Map(); // `${branch}|${month}` → revenue
+    for (const r of trendQ.rows) trendMap.set(`${r.branch_id}|${r.m}`, parseFloat(r.revenue) || 0);
+    const trend = branches.map(b => ({
+      branch_id: b.id,
+      branch_name: b.name,
+      points: months.map(m => ({ month: m, revenue: trendMap.get(`${b.id}|${m}`) || 0 })),
+    }));
+
+    // Insights (авто): лидер по выручке, отстающий по выручке, низкая маржа.
+    const insights = [];
+    const byRevenue = [...perBranch].filter(b => b.values.revenue > 0).sort((a, b) => b.values.revenue - a.values.revenue);
+    const byMargin  = [...perBranch].filter(b => b.values.revenue > 0).sort((a, b) => b.values.margin - a.values.margin);
+    if (byRevenue.length >= 2) {
+      const top = byRevenue[0], low = byRevenue[byRevenue.length - 1];
+      const topMarginLead = byMargin.length > 0 && byMargin[byMargin.length - 1].branch_id === top.branch_id;
+      insights.push({
+        type: 'leader', branch_id: top.branch_id,
+        title: `Лидер: ${top.branch_name}`,
+        recommendation: topMarginLead
+          ? 'Лидер по выручке и по марже — модель для масштабирования на другие филиалы.'
+          : `Лидер по выручке (${bcmpFmtMoney(top.values.revenue)} сум). Разберите его процессы продаж.`,
+      });
+      if (low.branch_id !== top.branch_id && low.values.revenue < top.values.revenue * 0.75) {
+        const gap = Math.round((1 - low.values.revenue / top.values.revenue) * 100);
+        insights.push({
+          type: 'laggard', branch_id: low.branch_id,
+          title: `Отстаёт по выручке: ${low.branch_name}`,
+          recommendation: `Выручка ниже лидера на ${gap}%. Проверьте трафик, ассортимент и работу персонала.`,
+        });
+      }
+    }
+    if (byMargin.length >= 2) {
+      const lowM = byMargin[0];          // отсортировано по возрастанию маржи → [0] минимальная
+      const topM = byMargin[byMargin.length - 1];
+      if (lowM.values.margin > 0 && lowM.values.margin < (topM.values.margin - 5) && lowM.branch_id !== topM.branch_id) {
+        insights.push({
+          type: 'opportunity', branch_id: lowM.branch_id,
+          title: `Низкая маржа: ${lowM.branch_name}`,
+          recommendation: `Маржа ${lowM.values.margin}% — ниже лучшего филиала. Возможность поднять цены на 5–15% или пересмотреть закупку.`,
+        });
+      }
+    }
+
+    res.json({ period: req.query.period || 'month', branches, metrics, trend, insights, bhi_company: bhiVal });
+  } catch (e) {
+    console.error('branch-compare error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === ТРЕНДЫ И ДИНАМИКА (trends) =============================================
+// 12-мес помесячный тренд ключевых метрик. Источник — реальные таблицы:
+//   revenue/gross_profit/margin/avg_check/checks — stock_outcome (approved) + products.price_buy;
+//   inventory(stock_value) — branch_daily_summary (последний снапшот месяца);
+//   expense — cash_expense; new_customers — customers.created_at.
+// NPS / ФОТ / история мёртвого стока — данных НЕТ → метрики НЕ возвращаем (не выдумываем).
+// Тренд: firstHalf=avg(первой половины окна), secondHalf=avg(второй),
+//   growth% = (second-first)/|first|*100. Ярлык зависит от направления метрики.
+// Менеджер жёстко скоупится своим филиалом; владелец — опционально branch_id, иначе вся компания.
+// Это тренд ОДНОЙ агрегированной точки (не кросс-филиальная разбивка прибыли) → manager допустим
+// со скоупом филиала, как у /api/company/dashboard и /api/company/branch-daily.
+
+// Направление метрики: 'down' → снижение = улучшение (инверсия ярлыка статуса).
+const TRENDS_DIRECTION = {
+  revenue: 'up', gross_profit: 'up', margin: 'up',
+  avg_check: 'up', checks: 'up', new_customers: 'up',
+  inventory: 'down', expense: 'down',
+};
+const TRENDS_META = {
+  revenue:       { label: 'Выручка',         unit: 'сум' },
+  gross_profit:  { label: 'Валовая прибыль',  unit: 'сум' },
+  margin:        { label: 'Маржа',            unit: '%'   },
+  avg_check:     { label: 'Средний чек',      unit: 'сум' },
+  checks:        { label: 'Чеков в день',     unit: 'шт'  },
+  new_customers: { label: 'Новые клиенты',    unit: 'чел' },
+  inventory:     { label: 'Склад (остаток)',  unit: 'сум' },
+  expense:       { label: 'Расходы',          unit: 'сум' },
+};
+
+// Тренд по ряду помесячных значений: делим окно пополам, сравниваем средние.
+// Возвращает { growth_pct, trend('up'|'flat'|'down'), status, status_label }.
+// ВАЖНО: flat (|growth|<=0.5%) трактуется как нейтральный статус для ОБОИХ направлений —
+//   статус не должен противоречить trend='flat'.
+function trendsAnalyze(values, direction) {
+  const vals = values.map(v => Number(v) || 0);
+  const n = vals.length;
+  if (n < 2) return { growth_pct: 0, trend: 'flat', status: 'flat', status_label: 'Недостаточно данных' };
+  const half = Math.floor(n / 2);
+  const first = vals.slice(0, half);
+  const second = vals.slice(n - half); // хвост окна
+  const avg = a => a.reduce((s, x) => s + x, 0) / (a.length || 1);
+  const a1 = avg(first), a2 = avg(second);
+  let growth = a1 !== 0 ? ((a2 - a1) / Math.abs(a1)) * 100 : (a2 > 0 ? 100 : 0);
+  growth = Math.round(growth * 10) / 10;
+  const trend = growth > 0.5 ? 'up' : (growth < -0.5 ? 'down' : 'flat');
+
+  let status, status_label;
+  if (trend === 'flat') {
+    status = 'flat'; status_label = 'Стабильно';
+  } else if (direction === 'down') {
+    // down_is_good: снижение = улучшение
+    if (growth < -10)    { status = 'good'; status_label = 'Улучшение'; }
+    else if (growth < 0) { status = 'ok';   status_label = 'Лёгкое улучшение'; }
+    else                 { status = 'bad';  status_label = 'Ухудшение'; }
+  } else {
+    if (growth > 10)     { status = 'good'; status_label = 'Стабильный рост'; }
+    else if (growth > 0) { status = 'ok';   status_label = 'Слабый рост'; }
+    else                 { status = 'bad';  status_label = 'Спад'; }
+  }
+  return { growth_pct: growth, trend, status, status_label };
+}
+
+app.get('/api/analytics/trends', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const scopedBranch = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+
+    let months = parseInt(req.query.months, 10);
+    if (!Number.isFinite(months) || months < 3) months = 12;
+    if (months > 24) months = 24;
+
+    // Список филиалов в скоупе (с проверкой принадлежности компании).
+    let bq;
+    if (isManager) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [req.user.branch_id, companyId]);
+    else if (scopedBranch) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [scopedBranch, companyId]);
+    else bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    const ids = bq.rows.map(r => r.id);
+
+    // Каркас месяцев: [{key:'YYYY-MM', label:'MM.YY', ...}] — от старого к новому.
+    const now = new Date();
+    const monthsArr = [];
+    for (let i = months - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const y = d.getFullYear(), m = d.getMonth() + 1;
+      const key = `${y}-${String(m).padStart(2, '0')}`;
+      monthsArr.push({
+        key,
+        label: `${String(m).padStart(2, '0')}.${String(y).slice(2)}`,
+        start: `${key}-01`,
+        startIso: new Date(y, m - 1, 1).toISOString(),
+        endIso: new Date(y, m, 1).toISOString(),
+      });
+    }
+    const labels = monthsArr.map(x => x.label);
+    const monthKeys = monthsArr.map(x => x.key);
+
+    if (!ids.length) {
+      return res.json({ months: monthKeys, labels, metrics: [], insights: [] });
+    }
+
+    const periodStart = monthsArr[0].startIso;
+    const periodEnd = monthsArr[monthsArr.length - 1].endIso;
+
+    // 1) Продажи помесячно: выручка, себестоимость, число чеков, дни с продажами.
+    const salesQ = await pool.query(
+      `SELECT to_char(so.created_at, 'YYYY-MM') AS ym,
+              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+              COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+              COUNT(*) AS checks,
+              COUNT(DISTINCT so.created_at::date) AS active_days
+       FROM stock_outcome so
+       JOIN products p ON p.id = so.product_id
+       WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         AND so.created_at >= $2 AND so.created_at < $3
+       GROUP BY 1`,
+      [ids, periodStart, periodEnd]);
+    const salesByM = Object.fromEntries(salesQ.rows.map(r => [r.ym, r]));
+
+    // 2) Расходы кассы помесячно.
+    const expQ = await pool.query(
+      `SELECT to_char(created_at, 'YYYY-MM') AS ym, COALESCE(SUM(amount), 0) AS v
+       FROM cash_expense
+       WHERE branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3
+       GROUP BY 1`,
+      [ids, periodStart, periodEnd]);
+    const expByM = Object.fromEntries(expQ.rows.map(r => [r.ym, parseFloat(r.v) || 0]));
+
+    // 3) Новые клиенты помесячно (на уровне компании — у customers нет branch_id).
+    const custQ = await pool.query(
+      `SELECT to_char(created_at, 'YYYY-MM') AS ym, COUNT(*) AS c
+       FROM customers
+       WHERE company_id = $1 AND deleted_at IS NULL
+         AND created_at >= $2 AND created_at < $3
+       GROUP BY 1`,
+      [companyId, periodStart, periodEnd]);
+    const custByM = Object.fromEntries(custQ.rows.map(r => [r.ym, parseInt(r.c, 10) || 0]));
+
+    // 4) Склад (stock_value) помесячно — последний снапшот месяца из branch_daily_summary,
+    //    затем сумма по филиалам скоупа.
+    const stockQ = await pool.query(
+      `SELECT ym, SUM(last_val) AS v
+       FROM (
+         SELECT DISTINCT ON (branch_id, to_char(date,'YYYY-MM'))
+                branch_id, to_char(date,'YYYY-MM') AS ym, stock_value AS last_val
+         FROM branch_daily_summary
+         WHERE branch_id = ANY($1::int[]) AND date >= $2 AND date < $3
+         ORDER BY branch_id, to_char(date,'YYYY-MM'), date DESC
+       ) t
+       GROUP BY ym`,
+      [ids, monthsArr[0].start, periodEnd.slice(0, 10)]);
+    const stockByM = Object.fromEntries(stockQ.rows.map(r => [r.ym, parseFloat(r.v) || 0]));
+
+    // Собираем ряды значений по месяцам.
+    const series = {
+      revenue: [], gross_profit: [], margin: [], avg_check: [],
+      checks: [], new_customers: [], inventory: [], expense: [],
+    };
+    for (const mo of monthsArr) {
+      const s = salesByM[mo.key] || {};
+      const revenue = parseFloat(s.revenue) || 0;
+      const cost = parseFloat(s.cost) || 0;
+      const checks = parseInt(s.checks, 10) || 0;
+      const activeDays = parseInt(s.active_days, 10) || 0;
+      const gp = revenue - cost;
+      series.revenue.push(revenue);
+      series.gross_profit.push(gp);
+      series.margin.push(revenue > 0 ? Math.round((gp / revenue) * 1000) / 10 : 0);
+      series.avg_check.push(checks > 0 ? Math.round(revenue / checks) : 0);
+      // Чеков в день — усредняем по дням с продажами (не по календарным),
+      // чтобы неполный текущий месяц не занижал.
+      series.checks.push(activeDays > 0 ? Math.round((checks / activeDays) * 10) / 10 : 0);
+      series.new_customers.push(custByM[mo.key] || 0);
+      series.inventory.push(stockByM[mo.key] || 0);
+      series.expense.push(expByM[mo.key] || 0);
+    }
+
+    // Скрываем ряды без единого ненулевого значения (например, склад без снапшотов).
+    const metrics = Object.keys(series)
+      .filter(name => series[name].some(v => v !== 0))
+      .map(name => {
+        const dir = TRENDS_DIRECTION[name];
+        const a = trendsAnalyze(series[name], dir);
+        return {
+          name,
+          label: TRENDS_META[name].label,
+          unit: TRENDS_META[name].unit,
+          direction: dir === 'down' ? 'down_is_good' : 'up_is_good',
+          values: series[name],
+          growth_pct: a.growth_pct,
+          trend: a.trend,
+          status: a.status,
+          status_label: a.status_label,
+        };
+      });
+
+    // --- Авто-инсайты ---
+    const byName = Object.fromEntries(metrics.map(m => [m.name, m]));
+    const insights = [];
+    const rev = byName.revenue, exp = byName.expense, marg = byName.margin, gp = byName.gross_profit, inv = byName.inventory;
+
+    // 1) Расходы растут заметно быстрее выручки.
+    if (rev && exp && exp.growth_pct > 0 && exp.growth_pct > rev.growth_pct + 5) {
+      insights.push({
+        type: 'negative', metric: 'expense',
+        title: 'Расходы растут быстрее выручки',
+        description: `Расходы ${exp.growth_pct > 0 ? '+' : ''}${exp.growth_pct}% против выручки ${rev.growth_pct > 0 ? '+' : ''}${rev.growth_pct}% за период. Контролируйте затраты.`,
+      });
+    }
+    // 2) Маржа сжимается при росте выручки.
+    if (rev && marg && rev.growth_pct > 0 && marg.growth_pct < 0) {
+      insights.push({
+        type: 'negative', metric: 'margin',
+        title: 'Маржа сжимается на росте выручки',
+        description: `Выручка растёт (+${rev.growth_pct}%), но маржа падает (${marg.growth_pct}%). Проверьте закупочные цены и скидки.`,
+      });
+    }
+    // 3) Устойчивый рост выручки и прибыли.
+    if (rev && gp && rev.growth_pct > 10 && gp.growth_pct > 10) {
+      insights.push({
+        type: 'positive', metric: 'revenue',
+        title: 'Устойчивый рост бизнеса',
+        description: `Выручка +${rev.growth_pct}% и прибыль +${gp.growth_pct}% — здоровая динамика за ${months} мес.`,
+      });
+    }
+    // 4) Склад растёт быстрее продаж → заморозка денег.
+    if (inv && rev && inv.growth_pct > 10 && inv.growth_pct > rev.growth_pct + 10) {
+      insights.push({
+        type: 'negative', metric: 'inventory',
+        title: 'Склад растёт быстрее продаж',
+        description: `Остаток на складе +${inv.growth_pct}% против выручки ${rev.growth_pct > 0 ? '+' : ''}${rev.growth_pct}%. Деньги замораживаются в товаре.`,
+      });
+    }
+
+    res.json({ months: monthKeys, labels, metrics, insights });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// === Детектор аномалий (anomaly) ============================================
+// Сравнение дневных метрик (выручка, число чеков, средний чек) с 30-дневным
+// скользящим средним по ТОМУ ЖЕ дню недели. Пороги отклонения:
+//   |dev| > 50 → critical · > 30 → warning · > 20 → info · ≤ 20 → не пишем.
+// Генерация compute-on-read: на GET считаем последние N дней и UPSERT в anomalies.
+// Источник: stock_outcome (status='approved'). Менеджер скоупится филиалом.
+// ============================================================================
+
+const ANOM_METRICS = {
+  revenue:   { module: 'sales', label: 'Дневная выручка' },
+  deals:     { module: 'sales', label: 'Число чеков' },
+  avg_check: { module: 'sales', label: 'Средний чек' },
+};
+
+function anomSeverity(devPct) {
+  const a = Math.abs(devPct);
+  if (a > 50) return 'critical';
+  if (a > 30) return 'warning';
+  if (a > 20) return 'info';
+  return null; // ≤20 — норма, не пишем
+}
+
+// Эвристики возможных причин (данных по возвратам/скидкам/краже как сущностей нет —
+// причины формулируем как гипотезы по знаку и метрике; это не выдуманные данные,
+// а подсказки для разбора).
+function anomCauses(metric, dir) {
+  const down = dir < 0;
+  const map = {
+    revenue: down
+      ? ['Спад продаж / отток клиентов', 'Нехватка товара на складе', 'Возможен увод выручки мимо кассы']
+      : ['Всплеск спроса / акция', 'Крупная сделка', 'Проверьте корректность проведения'],
+    deals: down
+      ? ['Меньше посетителей', 'Простой кассы / нехватка персонала']
+      : ['Рост потока клиентов', 'Дробление чеков — проверьте кассира'],
+    avg_check: down
+      ? ['Рост доли мелких покупок', 'Избыточные скидки — проверьте дисконт']
+      : ['Крупные позиции в чеке', 'Возможна ручная правка цен'],
+  };
+  return map[metric] || ['Требуется ручной разбор'];
+}
+
+// Пересчёт аномалий за последние `lookbackDays` дней для набора филиалов.
+// baseline = AVG дневной метрики за 30 предыдущих дат того же дня недели.
+async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
+  if (!branchIds || branchIds.length === 0) return;
+  // Окно истории: lookback целевых дней + 30*7 дней назад для baseline + запас.
+  const histDays = lookbackDays + 30 * 7 + 7;
+  const { rows } = await pool.query(`
+    SELECT so.branch_id,
+           (so.created_at AT TIME ZONE 'UTC')::date AS d,
+           COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+           COUNT(*) AS deals
+    FROM stock_outcome so
+    JOIN products p ON p.id = so.product_id
+    WHERE p.company_id = $1 AND so.status='approved'
+      AND so.branch_id = ANY($2::int[])
+      AND so.created_at >= (CURRENT_DATE - ($3 || ' days')::interval)
+    GROUP BY so.branch_id, d
+  `, [companyId, branchIds, String(histDays)]);
+
+  // Индекс: branch -> dateISO -> {revenue,deals,avg_check}
+  const byBranch = {};
+  for (const r of rows) {
+    const b = r.branch_id;
+    const iso = (r.d instanceof Date ? r.d : new Date(r.d)).toISOString().slice(0, 10);
+    const revenue = parseFloat(r.revenue) || 0;
+    const deals = parseInt(r.deals) || 0;
+    (byBranch[b] = byBranch[b] || {})[iso] = {
+      revenue, deals, avg_check: deals > 0 ? revenue / deals : 0,
+    };
+  }
+
+  const today = new Date();
+  const upserts = [];
+  for (const branchId of branchIds) {
+    const days = byBranch[branchId] || {};
+    // Целевые даты — последние lookbackDays (исключая сегодня — день неполный).
+    for (let back = 1; back <= lookbackDays; back++) {
+      const dt = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - back));
+      const iso = dt.toISOString().slice(0, 10);
+      const actual = days[iso];
+      if (!actual) continue; // нет продаж в этот день — пропускаем (нет данных)
+
+      // baseline по 30 предыдущим датам того же дня недели
+      const baseline = { revenue: [], deals: [], avg_check: [] };
+      for (let w = 1; w <= 30; w++) {
+        const bd = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - w * 7));
+        const bIso = bd.toISOString().slice(0, 10);
+        const v = days[bIso];
+        if (!v) continue;
+        baseline.revenue.push(v.revenue);
+        baseline.deals.push(v.deals);
+        baseline.avg_check.push(v.avg_check);
+      }
+
+      for (const metric of Object.keys(ANOM_METRICS)) {
+        const arr = baseline[metric];
+        if (arr.length < 4) continue; // мало истории для надёжного baseline
+        const expected = arr.reduce((s, x) => s + x, 0) / arr.length;
+        if (expected <= 0) continue;
+        const actualVal = actual[metric];
+        const dev = ((actualVal - expected) / expected) * 100;
+        const sev = anomSeverity(dev);
+        if (!sev) continue;
+        upserts.push({
+          branch_id: branchId, date: iso, module: ANOM_METRICS[metric].module, metric,
+          expected: Math.round(expected * 100) / 100,
+          actual: Math.round(actualVal * 100) / 100,
+          dev: Math.round(dev * 100) / 100,
+          severity: sev,
+          causes: anomCauses(metric, dev),
+        });
+      }
+    }
+  }
+
+  // UPSERT (dedup по company_id,branch_id,date,metric). Не трогаем уже разобранные
+  // вручную статусы (reviewed/explained/false_alarm) — обновляем только значения.
+  for (const u of upserts) {
+    await pool.query(`
+      INSERT INTO anomalies (company_id, branch_id, date, module, metric, expected_value, actual_value, deviation_pct, severity, possible_causes, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new')
+      ON CONFLICT (company_id, branch_id, date, metric) DO UPDATE SET
+        expected_value = EXCLUDED.expected_value,
+        actual_value   = EXCLUDED.actual_value,
+        deviation_pct  = EXCLUDED.deviation_pct,
+        severity       = EXCLUDED.severity,
+        possible_causes= EXCLUDED.possible_causes
+    `, [companyId, u.branch_id, u.date, u.module, u.metric, u.expected, u.actual, u.dev, u.severity, u.causes]);
+  }
+}
+
+// GET /api/analytics/anomalies?branch_id&period=day|week|month
+app.get('/api/analytics/anomalies', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+
+    let scopeIds = scope.ids;
+    if (!scope.restrictive || !scopeIds) {
+      const all = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+      scopeIds = all.rows.map(r => r.id);
+    }
+    if (scopeIds.length === 0) {
+      return res.json({ summary: { total: 0, critical: 0, warning: 0, info: 0, open: 0 }, items: [] });
+    }
+
+    const period = req.query.period === 'month' ? 30 : (req.query.period === 'day' ? 1 : 7);
+
+    // compute-on-read с TTL-гейтом (2ч): тяжёлый per-row пересчёт не на каждый запрос.
+    const anomKey = `anom:${companyId}:${[...scopeIds].sort((a, b) => a - b).join(',')}`;
+    if (recomputeDue(anomKey, 2 * 60 * 60 * 1000)) {
+      await anomRecompute(companyId, scopeIds, Math.max(period, 7));
+      markRecomputed(anomKey);
+    }
+
+    const { rows } = await pool.query(`
+      SELECT a.id, a.branch_id, b.name AS branch_name, a.date, a.module, a.metric,
+             a.expected_value, a.actual_value, a.deviation_pct, a.severity,
+             a.possible_causes, a.status, a.review_note, a.created_at
+      FROM anomalies a
+      LEFT JOIN branches b ON b.id = a.branch_id
+      WHERE a.company_id = $1 AND a.branch_id = ANY($2::int[])
+        AND a.date >= (CURRENT_DATE - ($3 || ' days')::interval)
+      ORDER BY
+        CASE a.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+        a.date DESC, ABS(a.deviation_pct) DESC
+      LIMIT 300
+    `, [companyId, scopeIds, String(period)]);
+
+    const items = rows.map(r => ({
+      id: r.id,
+      branch_id: r.branch_id,
+      branch_name: r.branch_name,
+      date: r.date,
+      module: r.module,
+      metric: r.metric,
+      metric_label: ANOM_METRICS[r.metric]?.label || r.metric,
+      expected_value: parseFloat(r.expected_value),
+      actual_value: parseFloat(r.actual_value),
+      deviation_pct: parseFloat(r.deviation_pct),
+      severity: r.severity,
+      possible_causes: r.possible_causes || [],
+      status: r.status,
+      review_note: r.review_note,
+      created_at: r.created_at,
+    }));
+
+    const summary = {
+      total: items.length,
+      critical: items.filter(i => i.severity === 'critical').length,
+      warning: items.filter(i => i.severity === 'warning').length,
+      info: items.filter(i => i.severity === 'info').length,
+      open: items.filter(i => i.status === 'new').length,
+    };
+    res.json({ summary, items });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/analytics/anomalies/:id/review  { status, note }
+app.patch('/api/analytics/anomalies/:id/review', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const { status, note } = req.body || {};
+    const ALLOWED = ['new', 'reviewed', 'explained', 'false_alarm'];
+    if (!ALLOWED.includes(status)) return res.status(400).json({ error: 'bad status' });
+
+    // Проверка владения + branch-скоуп менеджера.
+    const cur = await pool.query('SELECT id, branch_id, status FROM anomalies WHERE id=$1 AND company_id=$2', [id, companyId]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (req.user.role === 'manager' && cur.rows[0].branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Out of branch scope' });
+    }
+
+    const upd = await pool.query(`
+      UPDATE anomalies SET status=$1, review_note=$2, reviewed_by=$3
+      WHERE id=$4 AND company_id=$5
+      RETURNING id, status, review_note
+    `, [status, note || null, req.user.id, id, companyId]);
+    audit(req, 'review', 'anomaly', id, { status: cur.rows[0].status }, { status, note: note || null });
+    res.json(upd.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Когортный анализ (cohorts) ============================================
+// Клиенты группируются по месяцу ПЕРВОЙ покупки (MIN(created_at) на клиента).
+// retention_n = клиентов когорты с покупкой в мес (M+n) / cohort_size * 100.
+// Месяц 0 = 100% по определению. Источник — stock_outcome (status='approved').
+// so.price хранится в UZS-эквиваленте (см. существующие abc/pricing-эндпоинты),
+// поэтому выручка = SUM(quantity*price) без пересчёта по exchange_rate.
+// Кэш cohort_cache, compute-on-read, TTL 24ч. Менеджер — свой филиал; владелец — компания/?branch_id.
+const COHORT_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Месяцы между двумя датами (по первому числу месяца).
+function cohortMonthDiff(fromMonth, toMonth) {
+  return (toMonth.getFullYear() - fromMonth.getFullYear()) * 12
+       + (toMonth.getMonth() - fromMonth.getMonth());
+}
+
+// Пересчёт когорт компании/филиала из stock_outcome. branchId: int|null.
+async function cohortRecompute(companyId, branchId) {
+  const params = [companyId];
+  let branchSQL = '';
+  if (branchId) { params.push(branchId); branchSQL = `AND so.branch_id = $${params.length}`; }
+
+  const { rows } = await pool.query(`
+    WITH purchases AS (
+      SELECT so.customer_id,
+             date_trunc('month', so.created_at)::date AS pm,
+             so.quantity * so.price AS amount
+      FROM stock_outcome so
+      JOIN customers c ON c.id = so.customer_id AND c.deleted_at IS NULL
+      WHERE c.company_id = $1
+        AND so.status = 'approved'
+        AND so.customer_id IS NOT NULL
+        ${branchSQL}
+    ),
+    first_buy AS (
+      SELECT customer_id, MIN(pm) AS cohort_month
+      FROM purchases GROUP BY customer_id
+    ),
+    monthly AS (
+      SELECT p.customer_id, fb.cohort_month, p.pm,
+             SUM(p.amount) AS amount
+      FROM purchases p
+      JOIN first_buy fb ON fb.customer_id = p.customer_id
+      GROUP BY p.customer_id, fb.cohort_month, p.pm
+    )
+    SELECT cohort_month, pm, customer_id, amount FROM monthly
+    ORDER BY cohort_month, pm
+  `, params);
+
+  // Свернуть в когорты: размер + по месяцу-смещению (n) число активных и выручка.
+  const cohorts = {}; // key = ISO month -> { size:Set, act:{n:Set}, rev:{n:number} }
+  for (const r of rows) {
+    const cm = new Date(r.cohort_month);
+    const pm = new Date(r.pm);
+    const key = cm.toISOString().slice(0, 10);
+    const n = cohortMonthDiff(cm, pm);
+    if (n < 0) continue;
+    const c = cohorts[key] || (cohorts[key] = { size: new Set(), act: {}, rev: {} });
+    c.size.add(r.customer_id);
+    (c.act[n] || (c.act[n] = new Set())).add(r.customer_id);
+    c.rev[n] = (c.rev[n] || 0) + (parseFloat(r.amount) || 0);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Чистим старый снапшот этого скоупа.
+    if (branchId) {
+      await client.query('DELETE FROM cohort_cache WHERE company_id=$1 AND branch_id=$2', [companyId, branchId]);
+    } else {
+      await client.query('DELETE FROM cohort_cache WHERE company_id=$1 AND branch_id IS NULL', [companyId]);
+    }
+    for (const key of Object.keys(cohorts)) {
+      const c = cohorts[key];
+      const size = c.size.size;
+      if (size === 0) continue;
+      const retention = {};
+      const revenue = {};
+      const maxN = Math.max(...Object.keys(c.act).map(Number));
+      for (let n = 0; n <= maxN; n++) {
+        const active = c.act[n] ? c.act[n].size : 0;
+        retention[n] = Math.round((active / size) * 1000) / 10; // % с 1 знаком
+        revenue[n] = Math.round(c.rev[n] || 0);
+      }
+      await client.query(
+        `INSERT INTO cohort_cache (company_id, branch_id, cohort_month, cohort_size, retention, revenue, calculated_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,NOW())`,
+        [companyId, branchId, key, size, JSON.stringify(retention), JSON.stringify(revenue)]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK'); throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Гарантия свежести когорт для скоупа (compute-on-read, TTL 24ч).
+async function cohortEnsureFresh(companyId, branchId) {
+  try {
+    const sql = `SELECT MAX(calculated_at) m, COUNT(*) c FROM cohort_cache
+      WHERE company_id=$1 AND ${branchId ? 'branch_id=$2' : 'branch_id IS NULL'}`;
+    const q = await pool.query(sql, branchId ? [companyId, branchId] : [companyId]);
+    const last = q.rows[0]?.m ? new Date(q.rows[0].m).getTime() : 0;
+    const count = parseInt(q.rows[0]?.c) || 0;
+    if (count > 0 && (Date.now() - last) < COHORT_TTL_MS) return;
+  } catch {}
+  await cohortRecompute(companyId, branchId);
+}
+
+// GET /api/analytics/cohorts?branch_id&months — таблица когорт, кривая, сводка.
+app.get('/api/analytics/cohorts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const months = Math.min(12, Math.max(1, parseInt(req.query.months, 10) || 6)); // глубина кривой (n)
+
+    await cohortEnsureFresh(companyId, branchId);
+
+    const { rows } = await pool.query(
+      `SELECT cohort_month, cohort_size, retention, revenue
+       FROM cohort_cache
+       WHERE company_id=$1 AND ${branchId ? 'branch_id=$2' : 'branch_id IS NULL'}
+       ORDER BY cohort_month ASC`,
+      branchId ? [companyId, branchId] : [companyId]
+    );
+
+    const cohorts = rows.map(r => {
+      const ret = r.retention || {};
+      const rev = r.revenue || {};
+      let ltv = 0;
+      for (const k of Object.keys(rev)) ltv += parseFloat(rev[k]) || 0;
+      return {
+        cohort_month: r.cohort_month,
+        cohort_size: r.cohort_size,
+        retention: ret,                 // {"0":100,"1":68,...}
+        revenue: rev,
+        ltv: Math.round(ltv),
+      };
+    });
+
+    // Сводка по когортам, у которых нужный месяц уже «созрел».
+    const valAt = (c, n) => (c.retention[n] != null ? parseFloat(c.retention[n]) : null);
+    const avgAt = (n) => {
+      const vals = cohorts.map(c => valAt(c, n)).filter(v => v != null);
+      return vals.length ? Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10 : null;
+    };
+
+    // best_cohort — максимальный retention_6m.
+    let best_cohort = null;
+    for (const c of cohorts) {
+      const v6 = valAt(c, 6);
+      if (v6 == null) continue;
+      if (!best_cohort || v6 > best_cohort.retention_6m) {
+        best_cohort = { cohort_month: c.cohort_month, retention_6m: v6, cohort_size: c.cohort_size };
+      }
+    }
+
+    // critical_dropoff — месяц с максимальным падением усреднённой кривой.
+    const curve = [];
+    for (let n = 0; n <= months; n++) curve.push({ month: n, retention: avgAt(n) });
+    let critical_dropoff = null;
+    for (let n = 1; n < curve.length; n++) {
+      const prev = curve[n - 1].retention, cur = curve[n].retention;
+      if (prev == null || cur == null) continue;
+      const drop = Math.round((prev - cur) * 10) / 10;
+      if (drop > 0 && (!critical_dropoff || drop > critical_dropoff.drop)) {
+        critical_dropoff = { from_month: n - 1, to_month: n, from: prev, to: cur, drop };
+      }
+    }
+
+    const summary = {
+      ret_1m: avgAt(1),
+      ret_3m: avgAt(3),
+      ret_6m: avgAt(6),
+      best_cohort,
+      critical_dropoff,
+      cohort_count: cohorts.length,
+      total_customers: cohorts.reduce((s, c) => s + (c.cohort_size || 0), 0),
+    };
+
+    res.json({ summary, cohorts, curve, months, scope: branchId ? 'branch' : 'company' });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('cohorts err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// === ДАШБОРД УЧРЕДИТЕЛЯ (founder-board) ====================================
+// Композитный экран для собственника: сводка компании (выручка/прибыль + YoY,
+// клиенты + новые, штат), таблица по филиалам (выручка, прибыль, маржа, клиенты,
+// штат, BHI[company-level], главная проблема), панель алертов учредителя
+// (реюз alerts) и помесячный тренд прибыли по филиалам.
+//
+// Источники РЕАЛЬНЫЕ (как /api/company/dashboard и /api/analytics/branches/compare):
+//   выручка/себестоимость/прибыль — stock_outcome(approved) + products.price_buy;
+//   клиенты — DISTINCT stock_outcome.customer_id; новые — customers.created_at;
+//   штат — users(branch_id); BHI — bhiGetToday (единый по компании, помечаем);
+//   алерты — alertSync/alerts (долги/склад/жалобы).
+// Спека упоминает pos_transactions/employees/payables/attendance — в монолите этого нет,
+//   адаптировано на stock_outcome/users/stock_outcome(просрочка); attendance — данных нет → не выдумываем.
+// Только founder/gen_dir/admin (кросс-филиальный экран; менеджер не допускается).
+// Всё compute-on-read, без cron.
+
+// Порог красной маржи (из спеки): margin < 20% → critical.
+const FBD_MARGIN_RED = 20;
+
+// Классификация «главной проблемы» филиала по детерминированным правилам
+// (без выдумывания данных). Возвращает короткий ярлык или null.
+function fbdTopIssue({ margin, revenue, deadStockCost, overdueDebt, oosCount, staff }) {
+  if (revenue <= 0) return 'Нет продаж за период';
+  if (margin > 0 && margin < FBD_MARGIN_RED) return `Низкая маржа (${margin}%)`;
+  if (oosCount > 0) return `Нет в наличии: ${oosCount} SKU`;
+  if (overdueDebt > 0) return `Просрочка долгов: ${Math.round(overdueDebt || 0).toLocaleString('ru-RU')}`;
+  if (deadStockCost > revenue) return 'Мёртвый сток (склад > выручки)';
+  if (staff === 0) return 'Не назначен персонал';
+  return null;
+}
+
+app.get('/api/analytics/founder-dashboard', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const now = new Date();
+    // Текущий период = последние 30 дней (скользящее окно); YoY — те же 30 дней год назад.
+    const curTo = new Date(now);
+    const curFrom = new Date(now); curFrom.setDate(curFrom.getDate() - 30); curFrom.setHours(0, 0, 0, 0);
+    const yoyTo = new Date(now); yoyTo.setFullYear(yoyTo.getFullYear() - 1);
+    const yoyFrom = new Date(curFrom); yoyFrom.setFullYear(yoyFrom.getFullYear() - 1);
+    const curFromIso = curFrom.toISOString(), curToIso = curTo.toISOString();
+    const yoyFromIso = yoyFrom.toISOString(), yoyToIso = yoyTo.toISOString();
+
+    // Все филиалы компании (учредитель — кросс-филиально).
+    const bq = await pool.query('SELECT id, name FROM branches WHERE company_id=$1 ORDER BY id', [companyId]);
+    const branches = bq.rows;
+    const ids = branches.map(b => b.id);
+    if (!ids.length) {
+      return res.json({
+        period: { from: curFromIso, to: curToIso },
+        company_totals: { revenue: 0, profit: 0, margin: 0, revenue_yoy: null, profit_yoy: null, customers: 0, new_customers: 0, employees: 0 },
+        branches: [], alerts: [], alerts_summary: { critical: 0, warning: 0, total: 0 },
+        profit_trend: { months: [], series: [] }, bhi_company: null,
+      });
+    }
+
+    // Пересчёт алертов (compute-on-read) по всей компании, затем читаем open-список.
+    await alertSync(companyId, null, req.user.id).catch(e => console.error('fbd alertSync', e.message));
+
+    const [
+      salesCur, salesYoy, clientsCur, newCustQ, staffAgg,
+      stockAgg, overdueAgg, oosAgg, bhi, alertsQ,
+    ] = await Promise.all([
+      // Per-branch продажи текущего периода.
+      pool.query(`
+        SELECT so.branch_id,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost
+        FROM stock_outcome so JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3
+        GROUP BY so.branch_id`, [ids, curFromIso, curToIso]),
+      // Компания целиком за тот же месяц год назад (для YoY).
+      pool.query(`
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost
+        FROM stock_outcome so JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
+        [ids, yoyFromIso, yoyToIso]),
+      // Уникальные клиенты периода по продажам филиала.
+      pool.query(`SELECT branch_id, COUNT(DISTINCT customer_id) AS c FROM stock_outcome
+                  WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND customer_id IS NOT NULL
+                  GROUP BY branch_id`, [ids, curFromIso, curToIso]),
+      // Новые клиенты компании за период (customers.created_at) — company-wide.
+      pool.query(`SELECT COUNT(*) AS c FROM customers
+                  WHERE company_id=$1 AND deleted_at IS NULL AND created_at >= $2 AND created_at < $3`,
+        [companyId, curFromIso, curToIso]),
+      // Штат по филиалам.
+      pool.query(`SELECT branch_id, COUNT(*) AS c FROM users WHERE branch_id = ANY($1::int[]) GROUP BY branch_id`, [ids]),
+      // Себестоимость склада (для «мёртвого стока»).
+      pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity * COALESCE(p.price_buy,0)),0) AS cost_value
+                  FROM product_stock ps JOIN products p ON p.id = ps.product_id
+                  WHERE ps.branch_id = ANY($1::int[]) GROUP BY ps.branch_id`, [ids]),
+      // Просроченные долги клиентов (остаток) по филиалам.
+      pool.query(`SELECT so.branch_id,
+                         COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) AS overdue
+                  FROM stock_outcome so JOIN products p ON p.id = so.product_id
+                  WHERE p.company_id=$1 AND so.branch_id = ANY($2::int[]) AND so.status='approved'
+                    AND so.payment_status <> 'paid'
+                    AND so.due_date IS NOT NULL AND so.due_date < CURRENT_DATE
+                  GROUP BY so.branch_id`, [companyId, ids]),
+      // Out-of-stock SKU с НЕДАВНИМ спросом В ЭТОМ ЖЕ ФИЛИАЛЕ (14 дней).
+      pool.query(`SELECT ps.branch_id, COUNT(*) AS c
+                  FROM product_stock ps JOIN products p ON p.id = ps.product_id
+                  WHERE p.company_id=$1 AND ps.quantity=0 AND ps.branch_id = ANY($2::int[])
+                    AND EXISTS (SELECT 1 FROM stock_outcome so
+                                WHERE so.product_id=p.id AND so.branch_id=ps.branch_id
+                                  AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+                  GROUP BY ps.branch_id`, [companyId, ids]),
+      bhiGetToday(companyId).catch(() => null),
+      // Открытые алерты учредителя (реюз таблицы alerts).
+      pool.query(`SELECT id, branch_id, module, severity, title, description, action
+                  FROM alerts WHERE company_id=$1 AND status='open'
+                  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, created_at DESC
+                  LIMIT 50`, [companyId]),
+    ]);
+
+    const numIdx = (rows, k = 'c') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[k]) || 0]));
+    const salesByB = Object.fromEntries(salesCur.rows.map(r => [r.branch_id, {
+      revenue: parseFloat(r.revenue) || 0, cost: parseFloat(r.cost) || 0,
+    }]));
+    const clients = numIdx(clientsCur.rows), staff = numIdx(staffAgg.rows);
+    const stockCost = numIdx(stockAgg.rows, 'cost_value');
+    const overdue = numIdx(overdueAgg.rows, 'overdue'), oos = numIdx(oosAgg.rows, 'c');
+    const bhiVal = bhi && typeof bhi.bhi === 'number' ? Math.round(bhi.bhi) : null;
+    const branchNameById = Object.fromEntries(branches.map(b => [b.id, b.name]));
+
+    // Per-branch строки таблицы.
+    const branchRows = branches.map(b => {
+      const s = salesByB[b.id] || { revenue: 0, cost: 0 };
+      const profit = s.revenue - s.cost;
+      const margin = s.revenue > 0 ? Math.round((profit / s.revenue) * 1000) / 10 : 0;
+      const st = staff[b.id] || 0;
+      return {
+        id: b.id,
+        name: b.name,
+        bhi: bhiVal,                                   // company-level — одинаков для всех (помечаем на фронте)
+        revenue: s.revenue,
+        profit,
+        margin,
+        margin_red: s.revenue > 0 && margin < FBD_MARGIN_RED, // порог из спеки
+        customers: clients[b.id] || 0,
+        employees: st,
+        top_issue: fbdTopIssue({
+          margin, revenue: s.revenue, deadStockCost: stockCost[b.id] || 0,
+          overdueDebt: overdue[b.id] || 0, oosCount: oos[b.id] || 0, staff: st,
+        }),
+      };
+    });
+
+    // Сводка по компании.
+    const curRevenue = branchRows.reduce((a, b) => a + b.revenue, 0);
+    const curCost = Object.values(salesByB).reduce((a, s) => a + s.cost, 0);
+    const curProfit = curRevenue - curCost;
+    const margin = curRevenue > 0 ? Math.round((curProfit / curRevenue) * 1000) / 10 : 0;
+    const yoyRev = parseFloat(salesYoy.rows[0]?.revenue) || 0;
+    const yoyCost = parseFloat(salesYoy.rows[0]?.cost) || 0;
+    const yoyProfit = yoyRev - yoyCost;
+    // YoY-дельта в %: null, если базы прошлого года нет.
+    const revenueYoy = yoyRev > 0 ? Math.round(((curRevenue - yoyRev) / yoyRev) * 1000) / 10 : null;
+    const profitYoy = yoyProfit !== 0 ? Math.round(((curProfit - yoyProfit) / Math.abs(yoyProfit)) * 1000) / 10 : null;
+    const totalCustomers = branchRows.reduce((a, b) => a + b.customers, 0);
+
+    const company_totals = {
+      revenue: curRevenue,
+      profit: curProfit,
+      margin,
+      revenue_yoy: revenueYoy,
+      profit_yoy: profitYoy,
+      customers: totalCustomers,
+      new_customers: parseInt(newCustQ.rows[0]?.c || 0, 10),
+      employees: branchRows.reduce((a, b) => a + b.employees, 0),
+    };
+
+    // Алерты учредителя + сводка по severity.
+    const alerts = alertsQ.rows.map(r => ({
+      id: r.id,
+      severity: r.severity,
+      module: r.module,
+      branch_id: r.branch_id,
+      branch_name: r.branch_id ? (branchNameById[r.branch_id] || null) : null,
+      title: r.title,
+      description: r.description,
+      action: r.action,
+    }));
+    const alerts_summary = {
+      critical: alerts.filter(a => a.severity === 'critical').length,
+      warning: alerts.filter(a => a.severity === 'warning').length,
+      total: alerts.length,
+    };
+
+    // Помесячный тренд ПРИБЫЛИ по филиалам (6 месяцев). Прибыль = revenue - cost(price_buy).
+    const trendFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const trendQ = await pool.query(`
+      SELECT so.branch_id, to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS m,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy,0)), 0) AS cost
+      FROM stock_outcome so JOIN products p ON p.id = so.product_id
+      WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+      GROUP BY so.branch_id, m`, [ids, trendFrom.toISOString()]);
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+    const profitMap = new Map(); // `${branch}|${month}` → profit
+    for (const r of trendQ.rows) profitMap.set(`${r.branch_id}|${r.m}`, (parseFloat(r.revenue) || 0) - (parseFloat(r.cost) || 0));
+    const series = branches.map(b => ({
+      branch_id: b.id,
+      branch_name: b.name,
+      points: months.map(m => ({ month: m, profit: profitMap.get(`${b.id}|${m}`) || 0 })),
+    }));
+
+    res.json({
+      period: { from: curFromIso, to: curToIso },
+      company_totals,
+      branches: branchRows,
+      alerts,
+      alerts_summary,
+      profit_trend: { months, series },
+      bhi_company: bhiVal,
+    });
+  } catch (e) {
+    console.error('founder-dashboard error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===================== ВОРОНКА БИЗНЕСА (business-funnel) =====================
+// 6 ступеней: показы рекламы → посетители → первая покупка → повторные → лояльные → VIP.
+// Ступени 1-2 — ручной ввод (funnel_inputs). Ступени 3-4 — из stock_outcome по customer_id
+// (1 approved-заказ / 2+ approved-заказов за период, скоуп по branch_id). Ступени 5-6 —
+// из customer_rfm (loyal: loyal+potential_loyal / vip: champions) — company-level (у customers
+// нет branch_id), поэтому 5-6 всегда по компании. Конверсия = next/prev*100; потеря = max(prev-next,0).
+// Слабейшая ступень = мин. конверсия среди пар с prev>0 → рекомендация. Менеджер скоупится филиалом.
+
+// Диапазон периода для stock_outcome + period DATE (начало текущего месяца) для funnel_inputs.
+function funnelPeriodRange(period) {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate(), wd = now.getDay();
+  let start;
+  if (period === 'day') start = new Date(y, m, d);
+  else if (period === 'week') { const diff = (wd === 0 ? 6 : wd - 1); start = new Date(y, m, d - diff); }
+  else if (period === 'year') start = new Date(y, 0, 1);
+  else start = new Date(y, m, 1); // month (default)
+  const end = new Date(y, m, d + 1); // эксклюзивная верхняя граница «завтра»
+  // Ручной ввод всегда привязан к началу ТЕКУЩЕГО месяца.
+  const inputPeriod = new Date(y, m, 1).toISOString().slice(0, 10);
+  return { startIso: start.toISOString(), endIso: end.toISOString(), inputPeriod };
+}
+
+const FUNNEL_PERIODS = new Set(['day', 'week', 'month', 'year']);
+
+// Рекомендация по слабейшему переходу (индекс ступени-приёмника i → берётся FUNNEL_RECO[i-1]).
+const FUNNEL_RECO = {
+  0: 'Низкая отдача рекламы: пересмотрите креативы, гео и каналы — мало показов превращается в визиты.',
+  1: 'Мало визитов превращается в покупку: обучите продавцов допродажам, проверьте выкладку и цены.',
+  2: 'Слабое удержание после первой покупки: запустите welcome-серию и бонус на повторный заказ.',
+  3: 'Мало повторных клиентов доходит до лояльных: программа лояльности, персональные офферы.',
+  4: 'Мало лояльных становятся VIP: премиальный сервис, эксклюзивы, личный менеджер.',
+};
+
+// GET /api/analytics/funnel?branch_id&period=day|week|month|year
+app.get('/api/analytics/funnel', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (branchId) await assertBranchInCompany(req.user, branchId);
+
+    let period = String(req.query.period || 'month');
+    if (!FUNNEL_PERIODS.has(period)) period = 'month';
+    const { startIso, endIso, inputPeriod } = funnelPeriodRange(period);
+
+    // RFM свежий (ступени 5-6) — реюз существующего compute-on-read хелпера.
+    await rfmEnsureFresh(companyId);
+
+    // Ступени 3-4: клиенты с 1 / 2+ approved-заказами за период (скоуп по филиалу).
+    const buyersQ = await pool.query(
+      `SELECT cnt, COUNT(*)::int AS clients FROM (
+         SELECT so.customer_id, COUNT(*) AS cnt
+         FROM stock_outcome so
+         JOIN customers c ON c.id = so.customer_id AND c.deleted_at IS NULL
+         WHERE c.company_id = $1 AND so.status = 'approved' AND so.customer_id IS NOT NULL
+           AND so.created_at >= $2 AND so.created_at < $3
+           AND ($4::int IS NULL OR so.branch_id = $4)
+         GROUP BY so.customer_id
+       ) t GROUP BY cnt`,
+      [companyId, startIso, endIso, branchId]);
+    let firstBuyers = 0, repeatBuyers = 0;
+    for (const r of buyersQ.rows) {
+      const cnt = parseInt(r.cnt, 10) || 0;
+      const clients = parseInt(r.clients, 10) || 0;
+      if (cnt === 1) firstBuyers += clients;
+      else if (cnt >= 2) repeatBuyers += clients;
+    }
+
+    // Ступени 5-6: из customer_rfm (company-level).
+    const rfmQ = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE segment IN ('loyal','potential_loyal'))::int AS loyal,
+         COUNT(*) FILTER (WHERE segment = 'champions')::int AS vip
+       FROM customer_rfm WHERE company_id = $1`,
+      [companyId]);
+    const loyal = rfmQ.rows[0]?.loyal || 0;
+    const vip = rfmQ.rows[0]?.vip || 0;
+
+    // Ступени 1-2: ручной ввод за текущий месяц (для выбранного филиала; иначе — слот компании).
+    const inQ = await pool.query(
+      `SELECT ad_views, visitors FROM funnel_inputs
+       WHERE company_id = $1 AND period = $2 AND COALESCE(branch_id, 0) = COALESCE($3::int, 0)`,
+      [companyId, inputPeriod, branchId]);
+    const adViews = parseInt(inQ.rows[0]?.ad_views, 10) || 0;
+    const visitors = parseInt(inQ.rows[0]?.visitors, 10) || 0;
+    const inputsMissing = inQ.rows.length === 0;
+
+    const stages = [
+      { name: 'ad_views',   label: '📢 Просмотры рекламы', icon: '📢', count: adViews,      source: 'manual', manual: true },
+      { name: 'visitors',   label: '🚶 Посетители',        icon: '🚶', count: visitors,     source: 'manual', manual: true },
+      { name: 'first_buy',  label: '🛒 Первая покупка',    icon: '🛒', count: firstBuyers,  source: 'stock_outcome' },
+      { name: 'repeat',     label: '🔄 Повторные покупки', icon: '🔄', count: repeatBuyers, source: 'stock_outcome' },
+      { name: 'loyal',      label: '💎 Лояльные',          icon: '💎', count: loyal,        source: 'customer_rfm', cumulative: true },
+      { name: 'vip',        label: '🏆 VIP',               icon: '🏆', count: vip,          source: 'customer_rfm', cumulative: true },
+    ];
+
+    // Конверсии и потери между соседними ступенями.
+    // ВАЖНО: loyal/vip — накопительное состояние RFM (не поток за период), ad_views/visitors —
+    // месячный ручной ввод. Конверсии показываем для всех ступеней, но в выбор «слабейшего перехода»
+    // берём только переходы внутри согласованного по периоду потока (иначе поток vs накопление = ложь).
+    let weakestIdx = -1, weakestPct = null;
+    for (let i = 0; i < stages.length; i++) {
+      if (i === 0) { stages[i].conversion_pct = null; stages[i].loss = null; continue; }
+      const prev = stages[i - 1].count, cur = stages[i].count;
+      const pct = prev > 0 ? Math.round((cur / prev) * 1000) / 10 : null;
+      stages[i].conversion_pct = pct;
+      stages[i].loss = prev > 0 ? Math.max(prev - cur, 0) : null;
+      const consistent = !stages[i].cumulative && !stages[i - 1].cumulative
+        && (period === 'month' || (!stages[i].manual && !stages[i - 1].manual));
+      if (pct != null && consistent && (weakestPct == null || pct < weakestPct)) { weakestPct = pct; weakestIdx = i; }
+    }
+
+    const weakest = weakestIdx >= 0 ? {
+      stage: stages[weakestIdx].name,
+      label: stages[weakestIdx].label,
+      conversion_pct: weakestPct,
+      recommendation: FUNNEL_RECO[weakestIdx - 1] || 'Сфокусируйтесь на самом слабом этапе — это даёт максимальный эффект.',
+    } : null;
+
+    res.json({
+      period,
+      branch_id: branchId,
+      inputs_missing: inputsMissing,
+      input_period: inputPeriod,
+      stages,
+      weakest_stage: weakest?.stage || null,
+      weakest,
+    });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// POST /api/analytics/funnel/inputs  { branch_id?, ad_views, visitors }
+// Ручной ввод показов/посетителей за ТЕКУЩИЙ месяц. Upsert по (company, COALESCE(branch,0), period).
+app.post('/api/analytics/funnel/inputs', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.body.branch_id ? parseInt(req.body.branch_id, 10) : null);
+    if (branchId) await assertBranchInCompany(req.user, branchId);
+
+    const adViews = Math.max(0, parseInt(req.body.ad_views, 10) || 0);
+    const visitors = Math.max(0, parseInt(req.body.visitors, 10) || 0);
+    const now = new Date();
+    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+
+    const old = await pool.query(
+      `SELECT id, ad_views, visitors FROM funnel_inputs
+       WHERE company_id = $1 AND period = $2 AND COALESCE(branch_id, 0) = COALESCE($3::int, 0)`,
+      [companyId, inputPeriod, branchId]);
+
+    const { rows } = await pool.query(
+      `INSERT INTO funnel_inputs (company_id, branch_id, period, ad_views, visitors, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (company_id, COALESCE(branch_id, 0), period)
+       DO UPDATE SET ad_views = EXCLUDED.ad_views, visitors = EXCLUDED.visitors, updated_at = NOW()
+       RETURNING id, ad_views, visitors`,
+      [companyId, branchId, inputPeriod, adViews, visitors]);
+
+    audit(req, old.rows[0] ? 'update' : 'create', 'funnel_inputs', rows[0].id,
+      old.rows[0] || null, { branch_id: branchId, period: inputPeriod, ad_views: adViews, visitors });
+
+    res.json({ ok: true, input: rows[0] });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// СВОДНЫЙ ОТЧЁТ ЗА ПЕРИОД (period-report)
+// GET /api/analytics/report?branch_id&period=day|week|month|year (default month)
+// One-click отчёт: headline KPI + «что улучшилось/ухудшилось» (порог ±5%) +
+// таблица текущий vs прошлый период с дельтами + авто-рекомендации.
+// Реюз агрегатов /api/company/dashboard (stock_outcome/cash_expense) + bhiGetToday.
+// PDF/email — follow-up (нет почтового сервиса). Менеджер скоупится филиалом.
+// Данных NPS нет → null. Чистый compute-on-read GET (без записи, без cron, без audit).
+// ----------------------------------------------------------------------------
+
+// Границы периода: [from, to) для текущего и [prevFrom, from) для прошлого.
+// Длина прошлого периода = длине текущего (как prev_totals в dashboard).
+function prRange(period) {
+  // Единый канон: 'month' = календарный месяц, прошлый период — предыдущий календарный месяц.
+  const r = periodRangeUnified(period);
+  return { from: r.from, to: r.to, prevFrom: r.prevFrom, prevTo: r.prevTo };
+}
+
+// Дельта в % с защитой от деления на ноль. prev=0,cur>0 → +100; оба 0 → 0.
+function prDeltaPct(cur, prev) {
+  cur = Number(cur) || 0; prev = Number(prev) || 0;
+  if (prev === 0) return cur === 0 ? 0 : 100;
+  return Math.round(((cur - prev) / Math.abs(prev)) * 1000) / 10;
+}
+
+app.get('/api/analytics/report', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const r = prRange(period);
+
+    // Список филиалов в скоупе (с проверкой принадлежности компании).
+    let bq;
+    if (isManager) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [req.user.branch_id, companyId]);
+    else if (branchId) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [branchId, companyId]);
+    else bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    const ids = bq.rows.map(x => x.id);
+    if (!ids.length) {
+      return res.json({
+        period, range: { from: r.from, to: r.to, prev_from: r.prevFrom, prev_to: r.prevTo },
+        headline: {}, current: {}, previous: {}, metrics: [], improved: [], worsened: [],
+        recommendations: [], export: { pdf: false, email: false },
+      });
+    }
+
+    // --- агрегаты продаж за период: выручка, себестоимость, чеки, активные дни ---
+    const salesAgg = async (f, t) => {
+      const q = await pool.query(
+        `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+                COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
+                COUNT(*) AS deals,
+                COUNT(DISTINCT so.created_at::date) AS active_days
+         FROM stock_outcome so JOIN products p ON p.id=so.product_id
+         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+           AND so.created_at >= $2 AND so.created_at < $3`,
+        [ids, f, t]);
+      const row = q.rows[0] || {};
+      const revenue = parseFloat(row.revenue) || 0;
+      const cost = parseFloat(row.cost) || 0;
+      const deals = parseInt(row.deals, 10) || 0;
+      const activeDays = parseInt(row.active_days, 10) || 0;
+      return {
+        revenue,
+        profit: revenue - cost,
+        margin_pct: revenue > 0 ? Math.round(((revenue - cost) / revenue) * 1000) / 10 : 0,
+        deals,
+        avg_check: deals > 0 ? Math.round(revenue / deals) : 0,
+        checks_per_day: activeDays > 0 ? Math.round((deals / activeDays) * 10) / 10 : 0,
+      };
+    };
+
+    // Новые клиенты за период (customers — company-level, без branch_id).
+    const newCust = async (f, t) => {
+      const q = await pool.query(
+        `SELECT COUNT(*) AS c FROM customers
+         WHERE company_id=$1 AND deleted_at IS NULL AND created_at >= $2 AND created_at < $3`,
+        [companyId, f, t]);
+      return parseInt(q.rows[0]?.c, 10) || 0;
+    };
+
+    // Расходы кассы за период (метрика «Расходы», down_is_good).
+    const cashExp = async (f, t) => {
+      const q = await pool.query(
+        `SELECT COALESCE(SUM(amount),0) AS v FROM cash_expense
+         WHERE branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3`,
+        [ids, f, t]);
+      return parseFloat(q.rows[0]?.v) || 0;
+    };
+
+    const [cur, prev, curNew, prevNew, curExp, prevExp, bhi] = await Promise.all([
+      salesAgg(r.from, r.to),
+      salesAgg(r.prevFrom, r.prevTo),
+      newCust(r.from, r.to),
+      newCust(r.prevFrom, r.prevTo),
+      cashExp(r.from, r.to),
+      cashExp(r.prevFrom, r.prevTo),
+      bhiGetToday(companyId).catch(() => null),
+    ]);
+    cur.new_customers = curNew; prev.new_customers = prevNew;
+    cur.expense = curExp; prev.expense = prevExp;
+
+    // --- Deadstock (прибл.): себестоимость остатков товаров БЕЗ продаж за период ---
+    // Оценка «замороженных» денег по текущим остаткам product_stock, не точная история.
+    let deadstock = 0;
+    try {
+      const dsQ = await pool.query(
+        `SELECT COALESCE(SUM(ps.quantity*COALESCE(p.price_buy,0)),0) AS v
+         FROM product_stock ps JOIN products p ON p.id=ps.product_id
+         WHERE ps.branch_id = ANY($1::int[]) AND ps.quantity > 0
+           AND ps.product_id NOT IN (
+             SELECT DISTINCT so.product_id FROM stock_outcome so
+             WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+               AND so.created_at >= $2 AND so.created_at < $3)`,
+        [ids, r.from, r.to]);
+      deadstock = parseFloat(dsQ.rows[0]?.v) || 0;
+    } catch (e) { console.error('period-report deadstock', e.message); }
+
+    // --- Headline KPI ---
+    const headline = {
+      revenue: cur.revenue,
+      profit: cur.profit,
+      avg_check: cur.avg_check,
+      checks_per_day: cur.checks_per_day,
+      new_customers: cur.new_customers,
+      bhi: bhi ? bhi.bhi : null,
+      bhi_zone: bhi ? bhi.zone : null, // 'normal' | 'attention' | 'critical'
+      deadstock,
+    };
+
+    // --- Таблица метрик: current vs previous + delta% ---
+    // direction: up_is_good (рост = хорошо) / down_is_good (снижение = хорошо).
+    // NPS — данных нет → null (UI показывает «—»).
+    const M = (name, label, unit, c, p, direction = 'up_is_good') => ({
+      name, label, unit, direction,
+      current: c, previous: p, delta_pct: prDeltaPct(c, p),
+    });
+    const metrics = [
+      M('revenue',        'Выручка',        'сум', cur.revenue,        prev.revenue),
+      M('profit',         'Прибыль',        'сум', cur.profit,         prev.profit),
+      M('margin_pct',     'Маржа',          '%',   cur.margin_pct,     prev.margin_pct),
+      M('avg_check',      'Средний чек',    'сум', cur.avg_check,      prev.avg_check),
+      M('checks_per_day', 'Чеков/день',     'шт',  cur.checks_per_day, prev.checks_per_day),
+      M('deals',          'Сделок',         'шт',  cur.deals,          prev.deals),
+      M('new_customers',  'Новых клиентов', 'чел', cur.new_customers,  prev.new_customers),
+      M('expense',        'Расходы кассы',  'сум', cur.expense,        prev.expense, 'down_is_good'),
+      { name: 'nps', label: 'NPS', unit: 'pts', direction: 'up_is_good', current: null, previous: null, delta_pct: null },
+    ];
+
+    // --- «Что улучшилось» / «Что ухудшилось» (порог ±5% с учётом направления) ---
+    const TH = 5;
+    const improved = [], worsened = [];
+    for (const m of metrics) {
+      if (m.delta_pct == null) continue; // NPS — нет данных
+      const good = m.direction === 'down_is_good' ? -m.delta_pct : m.delta_pct;
+      if (good > TH) {
+        improved.push({ name: m.name, label: m.label, delta_pct: m.delta_pct,
+          text: `${m.label} ${m.delta_pct > 0 ? '+' : ''}${m.delta_pct}% к прошлому периоду` });
+      } else if (good < -TH) {
+        worsened.push({ name: m.name, label: m.label, delta_pct: m.delta_pct,
+          text: `${m.label} ${m.delta_pct > 0 ? '+' : ''}${m.delta_pct}% к прошлому периоду` });
+      }
+    }
+    improved.sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct));
+    worsened.sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct));
+
+    // BHI-сигнал в «ухудшилось», если индекс в критической зоне (<50, согласовано с bhiAlerts).
+    if (bhi && bhi.bhi != null && bhi.bhi < 50) {
+      worsened.unshift({ name: 'bhi', label: 'BHI', delta_pct: null,
+        text: `Индекс здоровья бизнеса в красной зоне (${bhi.bhi}/100)` });
+    }
+
+    // --- Авто-рекомендации (правила на данных, без выдумывания) ---
+    const recommendations = [];
+    const find = (n) => metrics.find(m => m.name === n);
+    const rev = find('revenue'), mgn = find('margin_pct'),
+          ac = find('avg_check'), nc = find('new_customers'), exp = find('expense');
+    if (rev.delta_pct < -TH) recommendations.push('Выручка падает — проверьте топ-товары и активность продавцов в дашборде.');
+    if (mgn.delta_pct < -TH) recommendations.push('Маржа снижается — пересмотрите закупочные цены и ценообразование.');
+    if (exp.delta_pct > TH) recommendations.push('Расходы кассы выросли — проверьте статьи затрат за период.');
+    if (nc.delta_pct < -TH) recommendations.push('Приток новых клиентов упал — усильте каналы привлечения и реактивацию.');
+    if (ac.delta_pct < -TH) recommendations.push('Средний чек падает — добавьте допродажи и бандлы.');
+    if (deadstock > 0 && cur.revenue > 0 && deadstock > cur.revenue * 0.5) {
+      recommendations.push('Много товара без продаж за период — рассмотрите распродажу неликвида (заморожены деньги в складе).');
+    }
+    if (bhi && bhi.weakest_pillar) {
+      const PILLAR_RU = { fin: 'финансы', ops: 'операции', people: 'команда', market: 'рынок' };
+      recommendations.push(`Самый слабый блок здоровья бизнеса — «${PILLAR_RU[bhi.weakest_pillar] || bhi.weakest_pillar}»: уделите ему внимание.`);
+    }
+    if (!recommendations.length && improved.length) {
+      recommendations.push('Показатели стабильны или растут — удерживайте темп и масштабируйте то, что работает.');
+    }
+
+    res.json({
+      period,
+      range: { from: r.from, to: r.to, prev_from: r.prevFrom, prev_to: r.prevTo },
+      headline,
+      current: cur,
+      previous: prev,
+      metrics,
+      improved: improved.slice(0, 5),
+      worsened: worsened.slice(0, 5),
+      recommendations,
+      // follow-up: экспорт PDF / отправка на email не реализованы (нет почтового сервиса).
+      export: { pdf: false, email: false },
+    });
+  } catch (e) {
+    console.error('period-report error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+// АНАЛИЗ КОРЗИНЫ (Market Basket Analysis) — пары совместно покупаемых товаров.
+// Кэш basket_pairs, compute-on-read, TTL 24ч. Менеджер — свой филиал.
+//
+// ⚠️ ПРИБЛИЖЕНИЕ: у stock_outcome НЕТ order_id. «Корзина» определяется как
+// группа строк продаж одного продавца одному клиенту в одну минуту:
+//   GROUP BY (created_by, customer_id, date_trunc('minute', created_at)).
+// Это аппроксимация настоящего чека; см. NOTES.
+//
+// Пороги (из спеки): support ≥ 1%, confidence ≥ 30%, together_count ≥ 5, lift > 1.5.
+// =====================================================================
+const BASKET_TTL_MS = 24 * 60 * 60 * 1000;
+const BASKET_MIN_SUPPORT = 1.0;     // % от всех корзин
+const BASKET_MIN_CONFIDENCE = 30.0; // %
+const BASKET_MIN_TOGETHER = 5;      // минимум совпадений
+const BASKET_MIN_LIFT = 1.5;        // строго больше
+
+// Пересчёт пар для скоупа из stock_outcome. branchId: int|null.
+async function basketRecompute(companyId, branchId) {
+  const params = [companyId];
+  let branchSQL = '';
+  if (branchId) { params.push(branchId); branchSQL = `AND so.branch_id = $${params.length}`; }
+
+  // 1) Собираем корзины (приближение) → товар + сумма по корзине.
+  //    Только одобренные продажи с привязанным клиентом и продавцом.
+  //    products.company_id — единственная связь продажи с компанией (у stock_outcome нет company_id).
+  const { rows } = await pool.query(`
+    WITH basket_lines AS (
+      SELECT
+        (so.created_by::text || '|' || so.customer_id::text || '|' ||
+         date_trunc('minute', so.created_at)::text) AS basket_key,
+        so.product_id,
+        so.quantity * so.price AS line_amount
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id AND p.company_id = $1
+      WHERE so.status = 'approved'
+        AND so.customer_id IS NOT NULL
+        AND so.created_by IS NOT NULL
+        AND so.product_id IS NOT NULL
+        ${branchSQL}
+    ),
+    basket_products AS (
+      -- уникальные товары внутри корзины + сумма корзины (window поверх агрегата)
+      SELECT basket_key, product_id,
+             SUM(SUM(line_amount)) OVER (PARTITION BY basket_key) AS basket_amount
+      FROM basket_lines
+      GROUP BY basket_key, product_id
+    )
+    SELECT basket_key, product_id, basket_amount FROM basket_products
+  `, params);
+
+  // Свернуть в память: корзины → набор товаров + сумма.
+  const baskets = new Map(); // key -> { products:Set, amount:number }
+  for (const r of rows) {
+    let b = baskets.get(r.basket_key);
+    if (!b) { b = { products: new Set(), amount: parseFloat(r.basket_amount) || 0 }; baskets.set(r.basket_key, b); }
+    b.products.add(r.product_id);
+  }
+
+  // Только многотоварные корзины участвуют в support/total.
+  const multiBaskets = [];
+  for (const b of baskets.values()) if (b.products.size >= 2) multiBaskets.push(b);
+  const total = multiBaskets.length;
+
+  // Частоты одиночных товаров (по многотоварным корзинам — для confidence/lift).
+  const itemCount = new Map();        // productId -> кол-во корзин
+  const pairCount = new Map();        // "a|b" (a<b) -> кол-во корзин
+  const pairAmount = new Map();       // "a|b" -> сумма по корзинам (для avg)
+  for (const b of multiBaskets) {
+    const items = Array.from(b.products).sort((x, y) => x - y);
+    for (const it of items) itemCount.set(it, (itemCount.get(it) || 0) + 1);
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const k = items[i] + '|' + items[j];
+        pairCount.set(k, (pairCount.get(k) || 0) + 1);
+        pairAmount.set(k, (pairAmount.get(k) || 0) + b.amount);
+      }
+    }
+  }
+
+  // Считаем метрики и фильтруем по порогам.
+  const out = [];
+  if (total > 0) {
+    for (const [k, together] of pairCount.entries()) {
+      if (together < BASKET_MIN_TOGETHER) continue;
+      const [aStr, bStr] = k.split('|');
+      const a = parseInt(aStr, 10), b = parseInt(bStr, 10);
+      const cA = itemCount.get(a) || 0;
+      const cB = itemCount.get(b) || 0;
+      if (cA === 0 || cB === 0) continue;
+      const support = (together / total) * 100;
+      if (support < BASKET_MIN_SUPPORT) continue;
+      const confAB = (together / cA) * 100;
+      const confBA = (together / cB) * 100;
+      // lift = confidence(A→B) / support(B); support(B) = cB/total
+      const lift = confAB / ((cB / total) * 100);
+      // Хотя бы одно направление уверенности ≥ порога, и lift строго > порога.
+      if (Math.max(confAB, confBA) < BASKET_MIN_CONFIDENCE) continue;
+      if (!(lift > BASKET_MIN_LIFT)) continue;
+      const avg = together > 0 ? (pairAmount.get(k) || 0) / together : 0;
+      out.push({
+        a, b, together,
+        count_a: cA, count_b: cB,
+        support: Math.round(support * 1000) / 1000,
+        confAB: Math.round(confAB * 100) / 100,
+        confBA: Math.round(confBA * 100) / 100,
+        lift: Math.round(lift * 1000) / 1000,
+        avg: Math.round(avg * 100) / 100,
+      });
+    }
+  }
+
+  // Запись снапшота (транзакция: чистим скоуп → bulk insert).
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (branchId) {
+      await client.query('DELETE FROM basket_pairs WHERE company_id=$1 AND branch_id=$2', [companyId, branchId]);
+    } else {
+      await client.query('DELETE FROM basket_pairs WHERE company_id=$1 AND branch_id IS NULL', [companyId]);
+    }
+    if (out.length) {
+      // bulk insert через unnest (без per-row цикла). 11 массивов ↔ 11 cast ↔ 11 имён.
+      const cols = {
+        a: [], b: [], together: [], ca: [], cb: [], total: [],
+        sup: [], cab: [], cba: [], lift: [], avg: [],
+      };
+      for (const o of out) {
+        cols.a.push(o.a); cols.b.push(o.b); cols.together.push(o.together);
+        cols.ca.push(o.count_a); cols.cb.push(o.count_b); cols.total.push(total);
+        cols.sup.push(o.support); cols.cab.push(o.confAB); cols.cba.push(o.confBA);
+        cols.lift.push(o.lift); cols.avg.push(o.avg);
+      }
+      await client.query(
+        `INSERT INTO basket_pairs
+           (company_id, branch_id, product_a_id, product_b_id, together_count,
+            count_a, count_b, baskets_total, support_pct, confidence_a_b, confidence_b_a, lift, avg_basket_uzs, calculated_at)
+         SELECT $1, $2, a, b, t, ca, cb, tot, sup, cab, cba, lf, av, NOW()
+         FROM unnest(
+           $3::int[], $4::int[], $5::int[], $6::int[], $7::int[], $8::int[],
+           $9::numeric[], $10::numeric[], $11::numeric[], $12::numeric[], $13::numeric[]
+         ) AS u(a, b, t, ca, cb, tot, sup, cab, cba, lf, av)`,
+        [companyId, branchId,
+         cols.a, cols.b, cols.together, cols.ca, cols.cb, cols.total,
+         cols.sup, cols.cab, cols.cba, cols.lift, cols.avg]
+      );
+    } else {
+      // Пустой результат всё равно фиксируем «маркер свежести», чтобы не пересчитывать каждый GET.
+      await client.query(
+        `INSERT INTO basket_pairs
+           (company_id, branch_id, product_a_id, product_b_id, together_count, baskets_total, calculated_at)
+         VALUES ($1, $2, 0, 0, 0, $3, NOW())`,
+        [companyId, branchId, total]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK'); throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Гарантия свежести пар для скоупа (compute-on-read, TTL 24ч).
+async function basketEnsureFresh(companyId, branchId) {
+  try {
+    const sql = `SELECT MAX(calculated_at) m, COUNT(*) c FROM basket_pairs
+      WHERE company_id=$1 AND ${branchId ? 'branch_id=$2' : 'branch_id IS NULL'}`;
+    const q = await pool.query(sql, branchId ? [companyId, branchId] : [companyId]);
+    const last = q.rows[0]?.m ? new Date(q.rows[0].m).getTime() : 0;
+    const count = parseInt(q.rows[0]?.c) || 0;
+    if (count > 0 && (Date.now() - last) < BASKET_TTL_MS) return;
+  } catch {}
+  await basketRecompute(companyId, branchId);
+}
+
+// GET /api/analytics/basket/pairs?branch_id — топ пар + имена товаров.
+app.get('/api/analytics/basket/pairs', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    await basketEnsureFresh(companyId, branchId);
+
+    const { rows } = await pool.query(
+      `SELECT bp.product_a_id, bp.product_b_id, bp.together_count,
+              bp.count_a, bp.count_b, bp.baskets_total,
+              bp.support_pct, bp.confidence_a_b, bp.confidence_b_a, bp.lift, bp.avg_basket_uzs,
+              pa.name_ru AS name_a, pb.name_ru AS name_b
+       FROM basket_pairs bp
+       JOIN products pa ON pa.id = bp.product_a_id
+       JOIN products pb ON pb.id = bp.product_b_id
+       WHERE bp.company_id=$1 AND ${branchId ? 'bp.branch_id=$2' : 'bp.branch_id IS NULL'}
+         AND bp.together_count > 0
+       ORDER BY bp.lift DESC, bp.together_count DESC
+       LIMIT 200`,
+      branchId ? [companyId, branchId] : [companyId]
+    );
+
+    // baskets_total из любой строки (одинаков для скоупа); если пар нет — добираем из маркера.
+    let basketsTotal = rows[0]?.baskets_total || 0;
+    if (!rows.length) {
+      const m = await pool.query(
+        `SELECT MAX(baskets_total) t FROM basket_pairs
+         WHERE company_id=$1 AND ${branchId ? 'branch_id=$2' : 'branch_id IS NULL'}`,
+        branchId ? [companyId, branchId] : [companyId]
+      );
+      basketsTotal = m.rows[0]?.t || 0;
+    }
+
+    const pairs = rows.map(r => ({
+      product_a_id: r.product_a_id,
+      product_b_id: r.product_b_id,
+      name_a: r.name_a,
+      name_b: r.name_b,
+      together_count: r.together_count,
+      count_a: r.count_a,
+      count_b: r.count_b,
+      support: parseFloat(r.support_pct),
+      confidence_a_b: parseFloat(r.confidence_a_b),
+      confidence_b_a: parseFloat(r.confidence_b_a),
+      lift: parseFloat(r.lift),
+      avg_basket_uzs: Math.round(parseFloat(r.avg_basket_uzs) || 0),
+    }));
+
+    const summary = {
+      pair_count: pairs.length,
+      baskets_total: basketsTotal,
+      strong_pairs: pairs.filter(p => p.lift >= 3).length,
+      top_lift: pairs[0]?.lift || null,
+      avg_pair_check: pairs.length
+        ? Math.round(pairs.reduce((s, p) => s + p.avg_basket_uzs, 0) / pairs.length)
+        : 0,
+      thresholds: {
+        support_min: BASKET_MIN_SUPPORT,
+        confidence_min: BASKET_MIN_CONFIDENCE,
+        together_min: BASKET_MIN_TOGETHER,
+        lift_min: BASKET_MIN_LIFT,
+      },
+    };
+
+    res.json({ summary, pairs, scope: branchId ? 'branch' : 'company' });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('basket/pairs err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/analytics/basket/recommend?product_id=&branch_id — что докупают к товару.
+app.get('/api/analytics/basket/recommend', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const productId = parseInt(req.query.product_id, 10);
+    if (!productId) return res.status(400).json({ error: 'product_id обязателен' });
+
+    await basketEnsureFresh(companyId, branchId);
+
+    // Товар может стоять в паре как A или B — нормализуем направление под него.
+    const { rows } = await pool.query(
+      `SELECT
+         CASE WHEN bp.product_a_id=$3 THEN bp.product_b_id ELSE bp.product_a_id END AS other_id,
+         CASE WHEN bp.product_a_id=$3 THEN bp.confidence_a_b ELSE bp.confidence_b_a END AS confidence,
+         bp.together_count, bp.lift, bp.support_pct, bp.avg_basket_uzs,
+         po.name_ru AS other_name, po.price_sell
+       FROM basket_pairs bp
+       JOIN products po
+         ON po.id = CASE WHEN bp.product_a_id=$3 THEN bp.product_b_id ELSE bp.product_a_id END
+       WHERE bp.company_id=$1
+         AND ${branchId ? 'bp.branch_id=$2' : 'bp.branch_id IS NULL'}
+         AND (bp.product_a_id=$3 OR bp.product_b_id=$3)
+         AND bp.together_count > 0
+       ORDER BY confidence DESC, bp.lift DESC
+       LIMIT 20`,
+      branchId ? [companyId, branchId, productId] : [companyId, productId]
+    );
+
+    const prod = await pool.query('SELECT id, name_ru FROM products WHERE id=$1 AND company_id=$2', [productId, companyId]);
+
+    const recommendations = rows.map(r => ({
+      product_id: r.other_id,
+      name: r.other_name,
+      price_sell: Math.round(parseFloat(r.price_sell) || 0),
+      confidence: parseFloat(r.confidence),
+      lift: parseFloat(r.lift),
+      support: parseFloat(r.support_pct),
+      together_count: r.together_count,
+      avg_basket_uzs: Math.round(parseFloat(r.avg_basket_uzs) || 0),
+    }));
+
+    res.json({
+      product: prod.rows[0] ? { id: prod.rows[0].id, name: prod.rows[0].name_ru } : { id: productId, name: '—' },
+      recommendations,
+      scope: branchId ? 'branch' : 'company',
+    });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('basket/recommend err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// ЮНИТ-ЭКОНОМИКА — прибыльность на единицу из РЕАЛЬНЫХ данных.
+// Уровни: клиент (LTV/CAC/payback), сделка (чек/COGS/маржа), товар (ROI/мёртвый сток),
+//         м² (выручка/прибыль/аренда на м²), реклама (ROAS/Net ROAS).
+// Источники: stock_outcome(approved)+products.price_buy, customers.source, channel_spend,
+//            branches.area_sqm/rent_monthly_uzs (ручной ввод). LTV — customer_rfm.
+// НЕТ данных: рабочие часы (Level «час» из спеки) — НЕ выдумываем, отдаём null/прочерк.
+// Менеджер жёстко скоупится своим филиалом; владелец — опционально branch_id.
+// Бенчмарки (из спеки): CAC<50k, LTV>100k, LTV/CAC>3x, payback<6мес, чек>20k,
+//   маржа>40%, выручка/м²>50k, прибыль/м²>10k, аренда/м²<15k, ROAS>5x, NetROAS>2x.
+// Реюз: CHANNEL_LABELS (уже объявлена выше), rfmEnsureFresh, assertBranchInCompany, audit.
+// ============================================================================
+const UE_PERIODS = { day: 1, week: 7, month: 30, year: 365 }; // окно в днях
+const UE_BENCH = {
+  cac: 50000, ltv: 100000, ltv_cac: 3, payback_months: 6,
+  avg_check: 20000, margin_pct: 40,
+  revenue_per_sqm: 50000, profit_per_sqm: 10000, rent_per_sqm: 15000,
+  roas: 5, net_roas: 2,
+};
+// «Рекламные» каналы (для ROAS) — те, что обычно требуют денег.
+const UE_AD_CHANNELS = new Set(['instagram', 'telegram', 'ads', 'marketplace']);
+
+// status по бенчмарку. higher=true → больше лучше. Возвращает 'good'|'warn'|'bad'|'na'.
+function ueStatus(value, bench, higher = true) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'na';
+  if (higher) {
+    if (value >= bench) return 'good';
+    if (value >= bench * 0.6) return 'warn';
+    return 'bad';
+  } else {
+    if (value <= bench) return 'good';
+    if (value <= bench * 1.5) return 'warn';
+    return 'bad';
+  }
+}
+
+app.get('/api/analytics/unit-economics', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const period = UE_PERIODS[req.query.period] ? req.query.period : 'month';
+    // Единый канон периода: 'month' = календарный месяц (как founder/trends). days — фактич. дни окна.
+    const pr = periodRangeUnified(period);
+    const fromIso = pr.from;
+    const periodDays = pr.days;
+    // Первое число месяца начала окна — для фильтра channel_spend.month (monthly DATE).
+    const spendFromMonth = (() => {
+      const d = new Date(pr.from);
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    })();
+    // Верхняя граница — первое число месяца ПОСЛЕ текущего. Без неё в CAC/ROAS попадал расход
+    // за весь месяц (и любые будущие месяцы) при period=day/week → CAC завышался кратно.
+    const spendToMonth = (() => {
+      const d = new Date();
+      const y = d.getUTCFullYear(), m = d.getUTCMonth();
+      return m === 11 ? `${y + 1}-01-01` : `${y}-${String(m + 2).padStart(2, '0')}-01`;
+    })();
+
+    await rfmEnsureFresh(companyId);
+
+    // Параметры для скоупа продаж филиалом.
+    const soParams = [companyId, fromIso];
+    let soBranch = '';
+    if (branchId) { soParams.push(branchId); soBranch = `AND so.branch_id = $${soParams.length}`; }
+
+    const [salesAgg, newCustAgg, prodAgg, branchRows, ltvAgg, channelAgg, spendAgg] = await Promise.all([
+      // Сделки за период: выручка, COGS, число чеков.
+      pool.query(`
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cogs,
+               COUNT(*) AS deals
+        FROM stock_outcome so JOIN products p ON p.id = so.product_id
+        JOIN branches b ON b.id = so.branch_id
+        WHERE b.company_id = $1 AND so.status='approved' AND so.created_at >= $2 ${soBranch}`, soParams),
+      // Новые клиенты за период (для CAC). По customers.created_at. Прим.: атрибуции
+      // клиента к филиалу в данных нет → счёт всегда компанийный (документировано в NOTES).
+      pool.query(`
+        SELECT COALESCE(NULLIF(TRIM(c.source),''),'unknown') AS source, COUNT(*) AS cnt
+        FROM customers c
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL AND c.created_at >= $2
+        GROUP BY 1`, [companyId, fromIso]),
+      // Экономика на товар (за период, по скоупу филиала).
+      pool.query(`
+        SELECT p.id, p.name_ru AS name,
+               COALESCE(p.price_buy, 0) AS cost, COALESCE(p.price_sell, 0) AS price,
+               COALESCE(SUM(so.quantity), 0) AS qty,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * (so.price - COALESCE(p.price_buy, 0))), 0) AS profit
+        FROM products p
+        LEFT JOIN stock_outcome so ON so.product_id = p.id AND so.status='approved'
+             AND so.created_at >= $2 ${branchId ? 'AND so.branch_id = $3' : ''}
+        WHERE p.company_id = $1
+        GROUP BY p.id, p.name_ru, p.price_buy, p.price_sell`,
+        branchId ? [companyId, fromIso, branchId] : [companyId, fromIso]),
+      // Филиалы: площадь, аренда + выручка/прибыль за период.
+      pool.query(`
+        SELECT b.id, b.name, b.area_sqm, b.rent_monthly_uzs,
+               COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * (so.price - COALESCE(p.price_buy, 0))), 0) AS profit
+        FROM branches b
+        LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND so.created_at >= $2
+        LEFT JOIN products p ON p.id = so.product_id
+        WHERE b.company_id = $1 ${branchId ? 'AND b.id = $3' : ''}
+        GROUP BY b.id, b.name, b.area_sqm, b.rent_monthly_uzs
+        ORDER BY b.id`,
+        branchId ? [companyId, fromIso, branchId] : [companyId, fromIso]),
+      // LTV: средний total_spent по «живым» клиентам компании из RFM.
+      pool.query(`
+        SELECT COALESCE(AVG(total_spent_uzs), 0) AS avg_ltv, COUNT(*) AS buyers
+        FROM customer_rfm WHERE company_id = $1 AND total_spent_uzs > 0`, [companyId]),
+      // Канал: купившие клиенты + выручка по источнику (за период, скоуп филиала).
+      pool.query(`
+        WITH agg AS (
+          SELECT c.id, COALESCE(NULLIF(TRIM(c.source),''),'unknown') AS source,
+                 COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
+                 COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'),0) AS revenue
+          FROM customers c
+          LEFT JOIN stock_outcome so ON so.customer_id = c.id
+               AND so.created_at >= $2 ${branchId ? 'AND so.branch_id = $3' : ''}
+          WHERE c.company_id = $1 AND c.deleted_at IS NULL
+          GROUP BY c.id, c.source
+        )
+        SELECT source, COUNT(*) FILTER (WHERE orders > 0) AS buyers,
+               COALESCE(SUM(revenue),0) AS revenue
+        FROM agg GROUP BY source`,
+        branchId ? [companyId, fromIso, branchId] : [companyId, fromIso]),
+      // Расход по каналам за месяцы, ПЕРЕСЕКАЮЩИЕ окно периода (month — DATE первого числа месяца).
+      // Возвращаем помесячно (с верхней границей) — пропорциональная аллокация на окно ниже в JS.
+      pool.query(`
+        SELECT channel, to_char(month,'YYYY-MM-DD') AS month, COALESCE(amount,0) AS amount
+        FROM channel_spend WHERE company_id = $1 AND month >= $2::date AND month < $3::date`,
+        [companyId, spendFromMonth, spendToMonth]),
+    ]);
+
+    const num = (v) => parseFloat(v) || 0;
+    const money = (v) => Math.round(num(v));
+
+    // --- Сделка (transaction) ---
+    const sRev = num(salesAgg.rows[0]?.revenue);
+    const sCogs = num(salesAgg.rows[0]?.cogs);
+    const sDeals = parseInt(salesAgg.rows[0]?.deals, 10) || 0;
+    const avgCheck = sDeals ? Math.round(sRev / sDeals) : 0;
+    const avgCogs = sDeals ? Math.round(sCogs / sDeals) : 0;
+    const grossMarginPct = sRev > 0 ? Math.round(((sRev - sCogs) / sRev) * 1000) / 10 : 0;
+    const netProfitPerCheck = avgCheck - avgCogs; // валовая на чек (без аллокации расходов — данных нет)
+    const transaction = {
+      avg_check: avgCheck, avg_cogs: avgCogs,
+      gross_margin_pct: grossMarginPct, net_profit_per_check: netProfitPerCheck,
+      deals: sDeals,
+      status: {
+        avg_check: ueStatus(avgCheck, UE_BENCH.avg_check, true),
+        margin: ueStatus(grossMarginPct, UE_BENCH.margin_pct, true),
+      },
+    };
+
+    // --- Канал + расход (CAC по каналу, ROAS) ---
+    // Помесячный расход аллоцируем пропорционально пересечению месяца с окном периода
+    // (для day/week — доля месяца, а не весь месяц; для year — сумма всех месяцев окна).
+    const spendPeriod = {};
+    {
+      const wStart = new Date(pr.from).getTime();
+      const wEnd = Date.now();
+      for (const r of spendAgg.rows) {
+        const [my, mm] = String(r.month).slice(0, 7).split('-').map(Number);
+        const mStart = Date.UTC(my, mm - 1, 1);
+        const mEnd = Date.UTC(my, mm, 1);
+        const daysInMonth = (mEnd - mStart) / 86400000;
+        const ovDays = Math.max(0, (Math.min(wEnd, mEnd) - Math.max(wStart, mStart)) / 86400000);
+        const prorated = num(r.amount) * (daysInMonth > 0 ? ovDays / daysInMonth : 0);
+        spendPeriod[r.channel] = (spendPeriod[r.channel] || 0) + prorated;
+      }
+    }
+    const newByChannel = {};
+    for (const r of newCustAgg.rows) newByChannel[r.source] = parseInt(r.cnt, 10) || 0;
+    const buyersByChannel = {};
+    const revByChannel = {};
+    for (const r of channelAgg.rows) {
+      buyersByChannel[r.source] = parseInt(r.buyers, 10) || 0;
+      revByChannel[r.source] = num(r.revenue);
+    }
+    const allChannels = new Set([
+      ...Object.keys(spendPeriod), ...Object.keys(newByChannel), ...Object.keys(buyersByChannel),
+    ]);
+    let totalSpendPeriod = 0, totalNew = 0, totalAdRevenue = 0, totalAdSpendPeriod = 0;
+    const byChannel = [...allChannels].map(src => {
+      const spend = Math.round(spendPeriod[src] || 0);
+      const newC = newByChannel[src] || 0;
+      const buyers = buyersByChannel[src] || 0;
+      const revenue = money(revByChannel[src]);
+      totalSpendPeriod += spend;
+      totalNew += newC;
+      const isAd = UE_AD_CHANNELS.has(src) && spend > 0;
+      if (isAd) { totalAdRevenue += revenue; totalAdSpendPeriod += spend; }
+      const cac = spend > 0 && newC > 0 ? Math.round(spend / newC) : (spend === 0 ? 0 : null);
+      let efficiency = 'Бесплатно';
+      if (spend > 0) efficiency = cac !== null && cac < UE_BENCH.cac ? 'Дёшево' : 'Дорого';
+      return {
+        channel: src, label: CHANNEL_LABELS[src] || src,
+        spend, new_customers: newC, buyers, revenue, cac, efficiency,
+      };
+    }).sort((a, b) => b.revenue - a.revenue);
+    // Отметим самый дешёвый платный канал.
+    const paid = byChannel.filter(c => c.spend > 0 && c.cac !== null && c.cac > 0);
+    if (paid.length) {
+      const cheapest = paid.reduce((m, c) => (c.cac < m.cac ? c : m), paid[0]);
+      cheapest.efficiency = 'Самый дёшевый';
+    }
+
+    // --- Клиент (CAC / LTV / payback) ---
+    const cac = totalSpendPeriod > 0 && totalNew > 0 ? Math.round(totalSpendPeriod / totalNew) : null;
+    const ltv = Math.round(num(ltvAgg.rows[0]?.avg_ltv));
+    const ltvCacRatio = cac && cac > 0 ? Math.round((ltv / cac) * 10) / 10 : null;
+    // payback ≈ CAC / (средняя месячная валовая маржа с клиента). Частоты/срока жизни в явном
+    // виде нет → грубая оценка: 1 покупка/мес × средний чек × маржа. Документировано в NOTES.
+    const monthlyMarginPerCustomer = avgCheck * (grossMarginPct / 100);
+    const paybackMonths = cac && monthlyMarginPerCustomer > 0
+      ? Math.round((cac / monthlyMarginPerCustomer) * 10) / 10 : null;
+    const customer = {
+      cac, ltv, ltv_cac_ratio: ltvCacRatio, payback_months: paybackMonths,
+      new_customers: totalNew, total_spend: totalSpendPeriod,
+      by_channel: byChannel,
+      status: {
+        cac: ueStatus(cac, UE_BENCH.cac, false),
+        ltv: ueStatus(ltv, UE_BENCH.ltv, true),
+        ltv_cac: ueStatus(ltvCacRatio, UE_BENCH.ltv_cac, true),
+        payback: ueStatus(paybackMonths, UE_BENCH.payback_months, false),
+      },
+    };
+
+    // --- Товар (ROI = (цена−себест)/себест; мёртвый сток = 0 продаж за период) ---
+    const product = prodAgg.rows.map(r => {
+      const cost = money(r.cost), price = money(r.price);
+      const qty = parseInt(r.qty, 10) || 0;
+      const profit = money(r.profit);
+      const revenue = money(r.revenue);
+      // Маржа/ROI из ФАКТИЧЕСКИХ продаж (revenue/profit) → согласованы с общей gross_margin_pct
+      // того же экрана. Если продаж за период не было — падаем на каталожные price/cost.
+      const actualCogs = revenue - profit;
+      const marginPct = revenue > 0
+        ? Math.round((profit / revenue) * 1000) / 10
+        : (price > 0 ? Math.round(((price - cost) / price) * 1000) / 10 : 0);
+      const roi = revenue > 0
+        ? (actualCogs > 0 ? Math.round((profit / actualCogs) * 1000) / 10 : null)
+        : (cost > 0 ? Math.round(((price - cost) / cost) * 1000) / 10 : null);
+      return {
+        id: r.id, name: r.name, cost, price, margin_pct: marginPct, roi,
+        monthly_qty: qty, monthly_profit: profit,
+        dead_stock: qty === 0,
+      };
+    }).sort((a, b) => b.monthly_profit - a.monthly_profit);
+
+    // --- м² ---
+    const sqm = branchRows.rows.map(b => {
+      const area = num(b.area_sqm);
+      const rentMonthly = num(b.rent_monthly_uzs);
+      const revenue = money(b.revenue), profit = money(b.profit);
+      const has = area > 0;
+      const revPerSqm = has ? Math.round(revenue / area) : null;
+      const profPerSqm = has ? Math.round(profit / area) : null;
+      const rentPerSqm = has && rentMonthly > 0 ? Math.round(rentMonthly / area) : null;
+      return {
+        branch_id: b.id, name: b.name,
+        area: area || null,
+        rent_monthly: rentMonthly || null,
+        revenue, profit,
+        revenue_per_sqm: revPerSqm,
+        profit_per_sqm: profPerSqm,
+        rent_per_sqm: rentPerSqm,
+        status: {
+          revenue: ueStatus(revPerSqm, UE_BENCH.revenue_per_sqm, true),
+          profit: ueStatus(profPerSqm, UE_BENCH.profit_per_sqm, true),
+          rent: ueStatus(rentPerSqm, UE_BENCH.rent_per_sqm, false),
+        },
+      };
+    });
+
+    // --- Реклама (ROAS / Net ROAS) ---
+    const adGrossProfit = totalAdRevenue * (grossMarginPct / 100);
+    const roas = totalAdSpendPeriod > 0 ? Math.round((totalAdRevenue / totalAdSpendPeriod) * 100) / 100 : null;
+    const netRoas = totalAdSpendPeriod > 0 ? Math.round((adGrossProfit / totalAdSpendPeriod) * 100) / 100 : null;
+    const paybackDays = adGrossProfit > 0
+      ? Math.round((totalAdSpendPeriod / (adGrossProfit / periodDays)) * 10) / 10 : null;
+    const ads = {
+      total_spend: totalAdSpendPeriod, ad_revenue: Math.round(totalAdRevenue),
+      roas, net_roas: netRoas, payback_days: paybackDays,
+      status: {
+        roas: ueStatus(roas, UE_BENCH.roas, true),
+        net_roas: ueStatus(netRoas, UE_BENCH.net_roas, true),
+      },
+    };
+
+    // --- час (нет данных о рабочих часах) → прочерк ---
+    const hour = { revenue_per_hour: null, expenses_per_hour: null, profit_per_hour: null, breakeven_hours: null, no_data: true };
+
+    res.json({
+      period, benchmarks: UE_BENCH,
+      customer, transaction, product, sqm, hour, ads,
+      meta: { branch_id: branchId || null, period_days: periodDays },
+    });
+  } catch (e) {
+    console.error('unit-economics error', e);
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+// Ручной ввод площади/аренды филиала для экономики на м² (данных нет в системе).
+app.patch('/api/branches/:id/area', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const bid = parseInt(req.params.id, 10);
+    if (!Number.isFinite(bid)) return res.status(400).json({ error: 'bad branch id' });
+    await assertBranchInCompany(req.user, bid);
+    const { area_sqm, rent_monthly_uzs } = req.body || {};
+    const area = area_sqm === '' || area_sqm === null || area_sqm === undefined ? null : parseFloat(area_sqm);
+    const rent = rent_monthly_uzs === '' || rent_monthly_uzs === null || rent_monthly_uzs === undefined ? null : parseFloat(rent_monthly_uzs);
+    if (area !== null && (!Number.isFinite(area) || area < 0)) return res.status(400).json({ error: 'area_sqm >= 0' });
+    if (rent !== null && (!Number.isFinite(rent) || rent < 0)) return res.status(400).json({ error: 'rent_monthly_uzs >= 0' });
+    const old = await pool.query('SELECT area_sqm, rent_monthly_uzs FROM branches WHERE id=$1 AND company_id=$2', [bid, req.user.company_id]);
+    if (!old.rows[0]) return res.status(404).json({ error: 'Branch not found' });
+    const { rows } = await pool.query(
+      `UPDATE branches SET area_sqm = COALESCE($1, area_sqm), rent_monthly_uzs = COALESCE($2, rent_monthly_uzs)
+       WHERE id=$3 AND company_id=$4 RETURNING id, name, area_sqm, rent_monthly_uzs`,
+      [area, rent, bid, req.user.company_id]);
+    audit(req, 'update', 'branch_area', bid, old.rows[0], { area_sqm: area, rent_monthly_uzs: rent });
+    res.json(rows[0]);
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
+});
+
+// ================== ССП (Balanced Scorecard) ==================
+// Конвенции: /api/ (без v1), роли admin/founder=CRUD, admin/gen_dir/founder/manager=view.
+// completion% = SUM(fact в году) / plan_year * 100. Отдел = взвешенная средняя его метрик.
+// Прогноз — линейная экстраполяция текущего темпа на 3 года (compute-on-read, без cron).
+
+// Активная стратегия компании (последняя созданная). null если нет.
+async function bscActiveStrategy(companyId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM bsc_strategies WHERE company_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [companyId]
+  );
+  return rows[0] || null;
+}
+
+// Грузит отделы + метрики + агрегаты по фактам для стратегии.
+// Возвращает { strategy, departments:[{...,completion,metrics:[{...,fact_y1..,pct_y1..}]}], curYear, monthsElapsed, totalScore }.
+async function bscLoadFull(strategy) {
+  if (!strategy) return null;
+  const sId = strategy.id;
+  const start = new Date(strategy.start_date);
+  // Границы 3 лет от start_date
+  const yb = (n) => {
+    const d = new Date(start); d.setFullYear(d.getFullYear() + n); return d.toISOString().slice(0, 10);
+  };
+  const y0 = yb(0), y1 = yb(1), y2 = yb(2), y3 = yb(3);
+
+  const depRes = await pool.query(
+    `SELECT * FROM bsc_departments WHERE strategy_id = $1 ORDER BY display_order, id`, [sId]
+  );
+  const departments = depRes.rows;
+
+  // Текущий год стратегии (1..3) от start_date — нужно даже если отделов нет
+  const now = new Date();
+  const monthsElapsed = Math.max(0, (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth()));
+  const curYear = Math.min(3, Math.floor(monthsElapsed / 12) + 1);
+
+  if (!departments.length) {
+    return { strategy, departments: [], curYear, monthsElapsed, totalScore: null, bounds: { y0, y1, y2, y3 } };
+  }
+
+  const metRes = await pool.query(
+    `SELECT m.* FROM bsc_metrics m
+       JOIN bsc_departments d ON d.id = m.department_id
+      WHERE d.strategy_id = $1 ORDER BY m.department_id, m.display_order, m.id`, [sId]
+  );
+  const metrics = metRes.rows;
+  const metricIds = metrics.map(m => m.id);
+
+  // Сумма фактов по метрике в каждом из 3 годовых окон
+  let factMap = {};
+  if (metricIds.length) {
+    const fRes = await pool.query(
+      `SELECT metric_id,
+              COALESCE(SUM(fact_value) FILTER (WHERE fact_date >= $2 AND fact_date < $3),0) AS y1,
+              COALESCE(SUM(fact_value) FILTER (WHERE fact_date >= $3 AND fact_date < $4),0) AS y2,
+              COALESCE(SUM(fact_value) FILTER (WHERE fact_date >= $4 AND fact_date < $5),0) AS y3,
+              COALESCE(SUM(fact_value),0) AS total,
+              MAX(fact_date) AS last_date
+         FROM bsc_fact_values
+        WHERE metric_id = ANY($1::int[])
+        GROUP BY metric_id`,
+      [metricIds, y0, y1, y2, y3]
+    );
+    fRes.rows.forEach(r => { factMap[r.metric_id] = r; });
+  }
+
+  // === Авто-источники: для не-manual метрик факт берётся из ЖИВЫХ данных (compute-on-read),
+  // т.к. в bsc_fact_values авто-факты не пишутся. Окна — годовые [y0,y1)/[y1,y2)/[y2,y3).
+  // auto_pos → выручка (POS), auto_crm → новые клиенты (CRM), auto_inventory → стоимость склада (снапшот).
+  const companyId = strategy.company_id;
+  const autoTypes = new Set(metrics.filter(m => m.source_type && m.source_type !== 'manual').map(m => m.source_type));
+  if (companyId && autoTypes.size) {
+    const winSel = (dateExpr, valExpr, fromWhere, extra = '') => `
+      SELECT COALESCE(SUM(val) FILTER (WHERE d >= $2 AND d < $3),0) AS y1,
+             COALESCE(SUM(val) FILTER (WHERE d >= $3 AND d < $4),0) AS y2,
+             COALESCE(SUM(val) FILTER (WHERE d >= $4 AND d < $5),0) AS y3,
+             COALESCE(SUM(val),0) AS total
+      FROM (SELECT ${dateExpr} d, ${valExpr} val FROM ${fromWhere} ${extra}) t`;
+    const autoFact = {};
+    const params = [companyId, y0, y1, y2, y3];
+    if (autoTypes.has('auto_pos')) {
+      try {
+        const r = await pool.query(winSel('so.created_at::date', 'so.quantity*so.price',
+          'stock_outcome so JOIN products p ON p.id=so.product_id',
+          `WHERE p.company_id=$1 AND so.status='approved' AND so.created_at >= $2 AND so.created_at < $5`), params);
+        autoFact.auto_pos = r.rows[0];
+      } catch (e) { console.error('bsc auto_pos', e.message); }
+    }
+    if (autoTypes.has('auto_crm')) {
+      try {
+        const r = await pool.query(winSel('created_at::date', '1',
+          'customers', `WHERE company_id=$1 AND deleted_at IS NULL AND created_at >= $2 AND created_at < $5`), params);
+        autoFact.auto_crm = r.rows[0];
+      } catch (e) { console.error('bsc auto_crm', e.message); }
+    }
+    if (autoTypes.has('auto_inventory')) {
+      try {
+        const r = await pool.query(
+          `SELECT COALESCE(SUM(ps.quantity*COALESCE(p.price_sell,0)),0) AS cur
+             FROM product_stock ps JOIN products p ON p.id=ps.product_id
+             JOIN branches b ON b.id=ps.branch_id WHERE b.company_id=$1`, [companyId]);
+        const cur = parseFloat(r.rows[0].cur) || 0;
+        // Склад — снапшот «сейчас»: присваиваем текущему году стратегии.
+        autoFact.auto_inventory = { y1: curYear === 1 ? cur : 0, y2: curYear === 2 ? cur : 0, y3: curYear === 3 ? cur : 0, total: cur };
+      } catch (e) { console.error('bsc auto_inventory', e.message); }
+    }
+    metrics.forEach(m => {
+      if (m.source_type && m.source_type !== 'manual' && autoFact[m.source_type]) {
+        const a = autoFact[m.source_type];
+        factMap[m.id] = { metric_id: m.id, y1: a.y1, y2: a.y2, y3: a.y3, total: a.total, last_date: null };
+      }
+    });
+  }
+
+  const pct = (fact, plan) => {
+    const p = parseFloat(plan) || 0; if (p <= 0) return null;
+    return Math.round((parseFloat(fact) || 0) / p * 1000) / 10;
+  };
+
+  const byDept = {};
+  departments.forEach(d => { byDept[d.id] = { ...d, weight_pct: parseFloat(d.weight_pct) || 0, metrics: [] }; });
+  metrics.forEach(m => {
+    const f = factMap[m.id] || { y1: 0, y2: 0, y3: 0, total: 0, last_date: null };
+    byDept[m.department_id]?.metrics.push({
+      ...m,
+      plan_year_1: parseFloat(m.plan_year_1) || 0,
+      plan_year_2: parseFloat(m.plan_year_2) || 0,
+      plan_year_3: parseFloat(m.plan_year_3) || 0,
+      fact_y1: parseFloat(f.y1) || 0,
+      fact_y2: parseFloat(f.y2) || 0,
+      fact_y3: parseFloat(f.y3) || 0,
+      fact_total: parseFloat(f.total) || 0,
+      last_date: f.last_date,
+      pct_y1: pct(f.y1, m.plan_year_1),
+      pct_y2: pct(f.y2, m.plan_year_2),
+      pct_y3: pct(f.y3, m.plan_year_3),
+    });
+  });
+
+  const depList = departments.map(d => {
+    const dd = byDept[d.id];
+    // completion% отдела по текущему году = средняя по метрикам (план>0)
+    const yKey = curYear === 1 ? 'pct_y1' : curYear === 2 ? 'pct_y2' : 'pct_y3';
+    const valid = dd.metrics.map(m => m[yKey]).filter(v => v != null);
+    const completion = valid.length ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length * 10) / 10 : null;
+    return { ...dd, completion };
+  });
+
+  // Взвешенный общий итог (только отделы с completion != null)
+  let totalScore = null;
+  const weighted = depList.filter(d => d.completion != null);
+  if (weighted.length) {
+    const wSum = weighted.reduce((a, d) => a + d.weight_pct, 0) || 1;
+    totalScore = Math.round(weighted.reduce((a, d) => a + d.completion * d.weight_pct, 0) / wSum * 10) / 10;
+  }
+
+  return { strategy, departments: depList, curYear, monthsElapsed, totalScore, bounds: { y0, y1, y2, y3 } };
+}
+
+// POST /api/bsc/strategies — создать стратегию + отделы + метрики (admin/founder).
+// body: { name, start_date, end_date, departments:[{ name, weight_pct, color?, metrics:[{ name, unit?, source_type?, plan_year_1, plan_year_2, plan_year_3 }] }] }
+app.post('/api/bsc/strategies', auth(['admin', 'founder']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { name, start_date, end_date, departments } = req.body || {};
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Название стратегии обязательно' });
+    if (!start_date || !end_date) return res.status(400).json({ error: 'Укажите даты начала и окончания' });
+    if (!Array.isArray(departments) || !departments.length) return res.status(400).json({ error: 'Добавьте хотя бы один отдел' });
+    const sumW = departments.reduce((a, d) => a + (parseFloat(d.weight_pct) || 0), 0);
+    if (Math.round(sumW) !== 100) return res.status(400).json({ error: `Сумма весов отделов должна быть = 100% (сейчас ${Math.round(sumW)}%)` });
+
+    await client.query('BEGIN');
+    const { rows: [strat] } = await client.query(
+      `INSERT INTO bsc_strategies (company_id, name, start_date, end_date, created_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.user.company_id, name.trim(), start_date, end_date, req.user.id]
+    );
+    const VALID_SRC = new Set(['manual', 'auto_pos', 'auto_crm', 'auto_inventory']);
+    let di = 0;
+    for (const d of departments) {
+      if (!d.name || !d.name.trim()) throw new Error('У отдела не указано название');
+      const { rows: [dep] } = await client.query(
+        `INSERT INTO bsc_departments (strategy_id, name, weight_pct, color, display_order)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [strat.id, d.name.trim(), parseFloat(d.weight_pct) || 0, d.color || null, di++]
+      );
+      const mets = Array.isArray(d.metrics) ? d.metrics : [];
+      let mi = 0;
+      for (const m of mets) {
+        if (!m.name || !m.name.trim()) continue;
+        const src = VALID_SRC.has(m.source_type) ? m.source_type : 'manual';
+        await client.query(
+          `INSERT INTO bsc_metrics (department_id, name, unit, source_type, plan_year_1, plan_year_2, plan_year_3, display_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [dep.id, m.name.trim(), m.unit || null, src,
+           parseFloat(m.plan_year_1) || 0, parseFloat(m.plan_year_2) || 0, parseFloat(m.plan_year_3) || 0, mi++]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    audit(req, 'bsc_strategy_create', 'bsc_strategy', strat.id, null, { name: strat.name });
+    res.json({ id: strat.id, ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+// GET /api/bsc/dashboard — общий итог, прогресс по времени, отделы с completion%. (view)
+app.get('/api/bsc/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const strat = await bscActiveStrategy(req.user.company_id);
+    if (!strat) return res.json({ strategy: null, departments: [] });
+    const full = await bscLoadFull(strat);
+    const totalMonths = Math.max(1, Math.round(
+      (new Date(strat.end_date) - new Date(strat.start_date)) / (1000 * 60 * 60 * 24 * 30.4)
+    ));
+    const progressPct = Math.min(100, Math.round(full.monthsElapsed / totalMonths * 100));
+    res.json({
+      strategy: { id: strat.id, name: strat.name, start_date: strat.start_date, end_date: strat.end_date },
+      total_score: full.totalScore,
+      current_year: full.curYear,
+      months_elapsed: full.monthsElapsed,
+      total_months: totalMonths,
+      progress_pct: progressPct,
+      departments: full.departments.map(d => ({
+        id: d.id, name: d.name, color: d.color, weight_pct: d.weight_pct,
+        completion: d.completion, metric_count: d.metrics.length,
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/bsc/table — метрики × годы (план/факт/%). (view)
+app.get('/api/bsc/table', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const strat = await bscActiveStrategy(req.user.company_id);
+    if (!strat) return res.json({ strategy: null, departments: [] });
+    const full = await bscLoadFull(strat);
+    res.json({
+      strategy: { id: strat.id, name: strat.name, start_date: strat.start_date, end_date: strat.end_date },
+      current_year: full.curYear,
+      departments: full.departments.map(d => ({
+        id: d.id, name: d.name, color: d.color, weight_pct: d.weight_pct, completion: d.completion,
+        metrics: d.metrics.map(m => ({
+          id: m.id, name: m.name, unit: m.unit, source_type: m.source_type,
+          plan_year_1: m.plan_year_1, plan_year_2: m.plan_year_2, plan_year_3: m.plan_year_3,
+          fact_y1: m.fact_y1, fact_y2: m.fact_y2, fact_y3: m.fact_y3,
+          pct_y1: m.pct_y1, pct_y2: m.pct_y2, pct_y3: m.pct_y3,
+          last_date: m.last_date,
+        })),
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/bsc/fact — внести факт по метрике. (admin/founder/gen_dir/manager)
+// body: { metric_id, fact_date, fact_value }
+app.post('/api/bsc/fact', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const { metric_id, fact_date, fact_value } = req.body || {};
+    if (!metric_id) return res.status(400).json({ error: 'metric_id обязателен' });
+    if (!fact_date) return res.status(400).json({ error: 'Укажите дату' });
+    const val = parseFloat(fact_value);
+    if (!isFinite(val)) return res.status(400).json({ error: 'Некорректное значение' });
+    // Проверка принадлежности метрики компании пользователя + что это ручная метрика
+    const own = await pool.query(
+      `SELECT m.id, m.source_type FROM bsc_metrics m
+         JOIN bsc_departments d ON d.id = m.department_id
+         JOIN bsc_strategies s ON s.id = d.strategy_id
+        WHERE m.id = $1 AND s.company_id = $2`,
+      [metric_id, req.user.company_id]
+    );
+    if (!own.rows[0]) return res.status(404).json({ error: 'Метрика не найдена' });
+    if (own.rows[0].source_type !== 'manual') return res.status(400).json({ error: 'Факты вносятся только по метрикам с ручным вводом' });
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO bsc_fact_values (metric_id, fact_date, fact_value, created_by)
+       VALUES ($1,$2,$3,$4) RETURNING id`,
+      [metric_id, fact_date, val, req.user.id]
+    );
+    audit(req, 'bsc_fact_add', 'bsc_metric', metric_id, null, { fact_date, fact_value: val });
+    res.json({ id: row.id, ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/bsc/forecast — линейный прогноз: при текущем темпе какой % будет к концу года 3. (view)
+app.get('/api/bsc/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const strat = await bscActiveStrategy(req.user.company_id);
+    if (!strat) return res.json({ strategy: null, departments: [], recommendations: [] });
+    const full = await bscLoadFull(strat);
+    const monthsElapsed = Math.max(1, full.monthsElapsed);
+    const planTotal3 = (m) => m.plan_year_1 + m.plan_year_2 + m.plan_year_3;
+
+    const depForecasts = full.departments.map(d => {
+      const metricForecasts = d.metrics.map(m => {
+        const factSoFar = m.fact_total;
+        const monthlyRate = factSoFar / monthsElapsed;          // текущий темп/мес
+        const projected36 = monthlyRate * 36;                    // экстраполяция на 36 мес
+        const target = planTotal3(m);
+        const forecastPct = target > 0 ? Math.round(projected36 / target * 1000) / 10 : null;
+        // Сколько месяцев до достижения цели при текущем темпе
+        let monthsToGoal = null;
+        if (target > 0 && factSoFar >= target) monthsToGoal = 0;
+        else if (monthlyRate > 0 && target > factSoFar) monthsToGoal = Math.ceil((target - factSoFar) / monthlyRate);
+        return { id: m.id, name: m.name, unit: m.unit, forecast_pct: forecastPct, months_to_goal: monthsToGoal };
+      });
+      const valid = metricForecasts.map(m => m.forecast_pct).filter(v => v != null);
+      const deptForecast = valid.length ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length * 10) / 10 : null;
+      return { id: d.id, name: d.name, color: d.color, weight_pct: d.weight_pct, forecast_pct: deptForecast, metrics: metricForecasts };
+    });
+
+    const wValid = depForecasts.filter(d => d.forecast_pct != null);
+    let overallForecast = null;
+    if (wValid.length) {
+      const wSum = wValid.reduce((a, d) => a + d.weight_pct, 0) || 1;
+      overallForecast = Math.round(wValid.reduce((a, d) => a + d.forecast_pct * d.weight_pct, 0) / wSum * 10) / 10;
+    }
+
+    // Рекомендации по отстающим отделам
+    const recommendations = depForecasts
+      .filter(d => d.forecast_pct != null && d.forecast_pct < 90)
+      .sort((a, b) => a.forecast_pct - b.forecast_pct)
+      .map(d => ({ department: d.name, forecast_pct: d.forecast_pct,
+        message: `«${d.name}» при текущем темпе выйдет на ${d.forecast_pct}% — нужно усилить.` }));
+
+    res.json({
+      strategy: { id: strat.id, name: strat.name, end_date: strat.end_date },
+      months_elapsed: full.monthsElapsed,
+      overall_forecast_pct: overallForecast,
+      departments: depForecasts,
+      recommendations,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/bsc/check-realism — оценка реалистичности плана по темпу. (admin/founder — помогает в редакторе)
+// body: { metric_id?, plan_year_1 }
+app.post('/api/bsc/check-realism', auth(['admin', 'founder']), async (req, res) => {
+  try {
+    const { metric_id, plan_year_1 } = req.body || {};
+    const plan = parseFloat(plan_year_1) || 0;
+    if (plan <= 0) return res.json({ realism: 'weak', message: 'План не задан или ≤ 0', current_pace: null, required_pace: null });
+    const requiredPace = Math.round(plan / 12 * 100) / 100; // нужно/мес чтобы выполнить год
+    let currentPace = null, realism = 'realistic', message = 'План выглядит достижимым.';
+
+    if (metric_id) {
+      const own = await pool.query(
+        `SELECT m.id FROM bsc_metrics m
+           JOIN bsc_departments d ON d.id = m.department_id
+           JOIN bsc_strategies s ON s.id = d.strategy_id
+          WHERE m.id = $1 AND s.company_id = $2`, [metric_id, req.user.company_id]);
+      if (own.rows[0]) {
+        const f = await pool.query(
+          `SELECT COALESCE(SUM(fact_value),0) AS total,
+                  COUNT(DISTINCT date_trunc('month', fact_date)) AS months
+             FROM bsc_fact_values WHERE metric_id = $1`, [metric_id]);
+        const total = parseFloat(f.rows[0].total) || 0;
+        const months = Math.max(1, parseInt(f.rows[0].months, 10) || 0);
+        currentPace = Math.round(total / months * 100) / 100;
+      }
+    }
+
+    if (currentPace != null && currentPace > 0) {
+      const ratio = currentPace / requiredPace;
+      if (ratio >= 1.1) { realism = 'realistic'; message = 'Текущий темп уже опережает план — реалистично.'; }
+      else if (ratio >= 0.7) { realism = 'realistic'; message = 'Амбициозно, но достижимо при текущем темпе.'; }
+      else if (ratio >= 0.4) { realism = 'aggressive'; message = `Агрессивно: нужно ускориться в ~${Math.round(1 / ratio * 10) / 10}× раз.`; }
+      else { realism = 'weak'; message = 'Цель слабо реалистична при текущем темпе.'; }
+    }
+    res.json({ realism, message, current_pace: currentPace, required_pace: requiredPace });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
+// === Задачи / Поручения (tasks) — Kanban + список + из алерта ========
+// =====================================================================
+// Конвенции монолита: префикс /api/, getBranchFilter скоупит менеджера,
+// company_id из req.user. Просрочка — compute-on-read. audit() переиспользуем.
+
+const TASK_STATUSES   = ['todo', 'in_progress', 'done', 'cancelled'];
+const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'];
+const TASK_PERIODS    = { day: 1, week: 7, month: 30, year: 365 }; // окно в днях для метрики completion
+
+// Признак просрочки (вычисляется на чтении, не хранится).
+const TASK_OVERDUE_SQL = `(t.status NOT IN ('done','cancelled') AND t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE)`;
+
+// SELECT-выражение задачи + имена исполнителя/автора/филиала + флаг overdue.
+const TASK_SELECT = `
+  SELECT t.id, t.company_id, t.branch_id, t.title, t.description, t.assignee_id, t.created_by,
+         t.priority, t.due_date, t.due_time, t.status, t.started_at, t.completed_at,
+         t.source, t.source_alert_id, t.source_template_id, t.tags, t.created_at, t.updated_at,
+         ${TASK_OVERDUE_SQL} AS overdue,
+         b.name AS branch_name,
+         TRIM(COALESCE(ua.first_name,'') || ' ' || COALESCE(ua.last_name,'')) AS assignee_name,
+         ua.username AS assignee_username,
+         TRIM(COALESCE(uc.first_name,'') || ' ' || COALESCE(uc.last_name,'')) AS creator_name
+  FROM tasks t
+  LEFT JOIN branches b ON b.id = t.branch_id
+  LEFT JOIN users ua ON ua.id = t.assignee_id
+  LEFT JOIN users uc ON uc.id = t.created_by
+`;
+
+// GET /api/tasks?branch_id&view=kanban|list&status&period
+// kanban → { columns:{todo:[],in_progress:[],done:[]}, metrics }
+// list   → { items:[], metrics }
+app.get('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    try { if (typeof generateTasksFromTemplates === 'function') await generateTasksFromTemplates(companyId); } catch (e) { console.error('gen tasks from templates', e.message); }
+    const branchId = getBranchFilter(req.user, req.query); // менеджер пинится своим филиалом
+    const view = req.query.view === 'list' ? 'list' : 'kanban';
+    const statusFilter = TASK_STATUSES.includes(req.query.status) ? req.query.status : null;
+    const period = TASK_PERIODS[req.query.period] ? req.query.period : 'week';
+    const windowDays = TASK_PERIODS[period];
+
+    const baseParams = [companyId];
+    let where = ' WHERE t.company_id = $1';
+    if (branchId) { baseParams.push(branchId); where += ` AND t.branch_id = $${baseParams.length}`; }
+
+    // --- метрики (всегда по полному скоупу, без statusFilter) ---
+    const mParams = baseParams.slice();
+    const mq = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE t.status IN ('todo','in_progress')) AS active,
+        COUNT(*) FILTER (WHERE t.status = 'done' AND t.completed_at >= CURRENT_DATE) AS done_today,
+        COUNT(*) FILTER (WHERE ${TASK_OVERDUE_SQL}) AS overdue,
+        COUNT(*) FILTER (WHERE t.created_at >= CURRENT_DATE - ($${mParams.length + 1}::int - 1)) AS assigned_period,
+        COUNT(*) FILTER (WHERE t.status = 'done' AND t.completed_at >= CURRENT_DATE - ($${mParams.length + 1}::int - 1)) AS done_period
+      FROM tasks t ${where}
+    `, [...mParams, windowDays]);
+    const m = mq.rows[0] || {};
+    const assignedPeriod = parseInt(m.assigned_period || 0);
+    const donePeriod = parseInt(m.done_period || 0);
+    const metrics = {
+      active: parseInt(m.active || 0),
+      done_today: parseInt(m.done_today || 0),
+      overdue: parseInt(m.overdue || 0),
+      assigned_period: assignedPeriod,
+      done_period: donePeriod,
+      // completion % = done / assigned за период; нет назначенных → null
+      completion_pct: assignedPeriod > 0 ? Math.round((donePeriod / assignedPeriod) * 100) : null,
+      period,
+    };
+
+    // --- items ---
+    const itemParams = baseParams.slice();
+    let itemWhere = where;
+    if (statusFilter) { itemParams.push(statusFilter); itemWhere += ` AND t.status = $${itemParams.length}`; }
+    const itemsQ = await pool.query(`
+      ${TASK_SELECT} ${itemWhere}
+      ORDER BY
+        CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+        t.due_date ASC NULLS LAST, t.created_at DESC
+      LIMIT 500
+    `, itemParams);
+    const items = itemsQ.rows;
+
+    if (view === 'list') return res.json({ metrics, items });
+
+    // kanban: группировка по статусу (cancelled не показываем на доске)
+    const columns = { todo: [], in_progress: [], done: [] };
+    for (const t of items) { if (columns[t.status]) columns[t.status].push(t); }
+    res.json({ metrics, columns });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('tasks list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tasks — создать ручную задачу
+app.post('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const { title, description, assignee_id, priority, due_date, due_time, tags } = req.body;
+    if (!title || !String(title).trim()) return res.status(400).json({ error: 'Укажите название задачи' });
+
+    // branch: менеджер — только свой; владелец может задать или оставить null (company-level)
+    let branchId = isManager ? req.user.branch_id : (req.body.branch_id ? parseInt(req.body.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const prio = TASK_PRIORITIES.includes(priority) ? priority : 'medium';
+    const tagsArr = Array.isArray(tags) ? tags.filter(x => typeof x === 'string' && x.trim()).slice(0, 20) : null;
+
+    // assignee должен принадлежать той же компании (и филиалу — у менеджера)
+    let assigneeId = assignee_id ? parseInt(assignee_id, 10) : null;
+    if (assigneeId) {
+      const u = await pool.query('SELECT id, company_id, branch_id FROM users WHERE id = $1', [assigneeId]);
+      const row = u.rows[0];
+      if (!row || row.company_id !== companyId) return res.status(400).json({ error: 'Исполнитель не из вашей компании' });
+      if (isManager && row.branch_id !== req.user.branch_id) return res.status(403).json({ error: 'Исполнитель вне вашего филиала' });
+    }
+
+    const ins = await pool.query(`
+      INSERT INTO tasks (company_id, branch_id, title, description, assignee_id, created_by, priority, due_date, due_time, status, source, tags)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'todo','manual',$10)
+      RETURNING *
+    `, [companyId, branchId, String(title).trim(), description || null, assigneeId, req.user.id, prio,
+        due_date || null, due_time || null, tagsArr]);
+    audit(req, 'create', 'task', ins.rows[0].id, null, { title: ins.rows[0].title, source: 'manual' });
+    res.json({ ok: true, task: ins.rows[0] });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('task create err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/tasks/:id/status — перевод статуса (todo→in_progress→done/cancelled)
+// проставляет started_at (при первом in_progress) и completed_at (при done)
+app.patch('/api/tasks/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const next = req.body.status;
+    if (!TASK_STATUSES.includes(next)) return res.status(400).json({ error: 'Недопустимый статус' });
+
+    const cur = await pool.query('SELECT * FROM tasks WHERE id=$1 AND company_id=$2', [id, companyId]);
+    const row = cur.rows[0];
+    if (!row) return res.status(404).json({ error: 'Задача не найдена' });
+    // менеджер — только задачи своего филиала
+    if (req.user.role === 'manager' && row.branch_id && row.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Out of branch scope' });
+    }
+
+    const setStarted = (next === 'in_progress' && !row.started_at);
+    const setCompleted = (next === 'done');
+    const clearCompleted = (next !== 'done' && row.completed_at); // вернули из done → снять completed_at
+
+    const upd = await pool.query(`
+      UPDATE tasks SET
+        status = $2,
+        started_at = CASE WHEN $3 THEN NOW() ELSE started_at END,
+        completed_at = CASE WHEN $4 THEN NOW() WHEN $5 THEN NULL ELSE completed_at END,
+        updated_at = NOW()
+      WHERE id = $1 RETURNING *
+    `, [id, next, setStarted, setCompleted, !!clearCompleted]);
+    audit(req, 'status', 'task', id, { status: row.status }, { status: next });
+    res.json({ ok: true, task: upd.rows[0] });
+  } catch (e) {
+    console.error('task status err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tasks/from-alert { alert_id, assignee_id? } — создать задачу из алерта
+// source=system, source_alert_id; приоритет наследуется от severity алерта (critical|warning|info)
+app.post('/api/tasks/from-alert', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const alertId = parseInt(req.body.alert_id, 10);
+    if (!alertId) return res.status(400).json({ error: 'Укажите alert_id' });
+
+    const aq = await pool.query('SELECT * FROM alerts WHERE id=$1 AND company_id=$2', [alertId, companyId]);
+    const alert = aq.rows[0];
+    if (!alert) return res.status(404).json({ error: 'Алерт не найден' });
+    if (req.user.role === 'manager' && alert.branch_id && alert.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Out of branch scope' });
+    }
+
+    // защита от дублей: одна system-задача на алерт в активном статусе
+    const dup = await pool.query(
+      `SELECT id FROM tasks WHERE company_id=$1 AND source_alert_id=$2 AND status IN ('todo','in_progress') LIMIT 1`,
+      [companyId, alertId]);
+    if (dup.rows[0]) return res.status(409).json({ error: 'Задача по этому алерту уже создана', task_id: dup.rows[0].id });
+
+    const prio = alert.severity === 'critical' ? 'critical' : (alert.severity === 'warning' ? 'high' : 'medium');
+    const branchId = req.user.role === 'manager' ? req.user.branch_id : (alert.branch_id || null);
+    let assigneeId = req.body.assignee_id ? parseInt(req.body.assignee_id, 10) : null;
+    if (assigneeId) {
+      const u = await pool.query('SELECT id, company_id FROM users WHERE id=$1', [assigneeId]);
+      if (!u.rows[0] || u.rows[0].company_id !== companyId) assigneeId = null;
+    }
+
+    // Срок по серьёзности: critical — сегодня, warning(high) — +1 день, иначе +3 дня.
+    // Без due_date задачи из алертов выпадали из on-time/overdue аналитики (task-analytics).
+    const dueDays = prio === 'critical' ? 0 : (prio === 'high' ? 1 : 3);
+    const ins = await pool.query(`
+      INSERT INTO tasks (company_id, branch_id, title, description, assignee_id, created_by, priority, status, source, source_alert_id, due_date)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'todo','system',$8, CURRENT_DATE + $9::int)
+      RETURNING *
+    `, [companyId, branchId, alert.title, alert.description || null, assigneeId, req.user.id, prio, alertId, dueDays]);
+    audit(req, 'create', 'task', ins.rows[0].id, null, { source: 'system', source_alert_id: alertId });
+    res.json({ ok: true, task: ins.rows[0] });
+  } catch (e) {
+    console.error('task from-alert err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// Чеклисты открытия/закрытия (checklists)
+// Роли: founder создаёт шаблоны; manager/сотрудники выполняют. Менеджер — свой филиал.
+// compute-on-read: дневную completion + строки результатов досоздаём на GET /today.
+// Префикс /api/ (без /api/v1 — конвенция монолита). Уникальный префикс хелперов: cl* / CL_*.
+//   GET   /api/checklists/today?branch_id          — шаблоны + статус за сегодня
+//   PATCH /api/checklists/items/:item_id/check     — отметить пункт (result_id, is_done, note)
+//   POST  /api/checklists/templates                — создать шаблон (founder/admin/gen_dir)
+//   GET   /api/checklists/history?branch_id&days   — история выполнения
+// ============================================================================
+const CL_TYPES = ['morning', 'evening', 'weekly', 'custom'];
+const CL_TYPE_LABEL = { morning: 'Открытие (утро)', evening: 'Закрытие (вечер)', weekly: 'Еженедельный', custom: 'Произвольный' };
+
+// Получить (или досоздать) дневную completion для шаблона в филиале на дату.
+// Вызывается ВНУТРИ транзакции переданного client. Возвращает строку completion.
+async function clEnsureCompletion(client, templateId, branchId, dateStr) {
+  // 1) Пытаемся взять существующую запись.
+  let { rows } = await client.query(
+    `SELECT * FROM checklist_completions WHERE template_id = $1 AND branch_id = $2 AND date = $3`,
+    [templateId, branchId, dateStr]
+  );
+  if (!rows[0]) {
+    // 2) Считаем число пунктов шаблона.
+    const cnt = await client.query(
+      `SELECT COUNT(*)::int AS n FROM checklist_template_items WHERE template_id = $1`, [templateId]
+    );
+    const total = cnt.rows[0].n;
+
+    // 3) Idempotent-вставка (UNIQUE: на гонке берём существующую).
+    const ins = await client.query(
+      `INSERT INTO checklist_completions (template_id, branch_id, date, items_total, items_done)
+       VALUES ($1,$2,$3,$4,0)
+       ON CONFLICT (template_id, branch_id, date) DO NOTHING
+       RETURNING *`,
+      [templateId, branchId, dateStr, total]
+    );
+    if (ins.rows[0]) {
+      rows = ins.rows;
+    } else {
+      const re = await client.query(
+        `SELECT * FROM checklist_completions WHERE template_id = $1 AND branch_id = $2 AND date = $3`,
+        [templateId, branchId, dateStr]
+      );
+      rows = re.rows;
+    }
+  }
+  const completion = rows[0];
+
+  // 4) Досоздаём строки результатов для всех пунктов (bulk через unnest, не цикл).
+  const items = await client.query(
+    `SELECT id FROM checklist_template_items WHERE template_id = $1`, [templateId]
+  );
+  if (items.rows.length) {
+    const ids = items.rows.map(r => r.id);
+    await client.query(
+      `INSERT INTO checklist_item_results (completion_id, template_item_id, is_done)
+       SELECT $1, x, FALSE FROM unnest($2::int[]) AS x
+       ON CONFLICT (completion_id, template_item_id) DO NOTHING`,
+      [completion.id, ids]
+    );
+  }
+  return completion;
+}
+
+// GET /api/checklists/today?branch_id — шаблоны компании + статус выполнения за сегодня.
+app.get('/api/checklists/today', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  let inTx = false;
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+
+    // Без выбранного филиала (владелец, «вся компания») вернуть только шаблоны без статуса.
+    if (!branchId) {
+      const tpls = await client.query(
+        `SELECT t.id, t.name, t.type, t.is_active,
+                (SELECT COUNT(*)::int FROM checklist_template_items i WHERE i.template_id = t.id) AS items_count
+         FROM checklist_templates t
+         WHERE t.company_id = $1 AND t.is_active = TRUE
+         ORDER BY array_position(ARRAY['morning','evening','weekly','custom']::text[], t.type), t.id`,
+        [companyId]
+      );
+      return res.json({
+        branch_scoped: false,
+        date: dateStr,
+        templates: tpls.rows.map(t => ({ ...t, items: [], completion: null })),
+        summary: { morning_pct: null, evening_pct: null, avg_duration_min: null },
+      });
+    }
+
+    const tpls = await client.query(
+      `SELECT id, name, type FROM checklist_templates
+       WHERE company_id = $1 AND is_active = TRUE
+       ORDER BY array_position(ARRAY['morning','evening','weekly','custom']::text[], type), id`,
+      [companyId]
+    );
+
+    await client.query('BEGIN'); inTx = true;
+    const out = [];
+    for (const t of tpls.rows) {
+      const completion = await clEnsureCompletion(client, t.id, branchId, dateStr);
+      const items = await client.query(
+        `SELECT i.id, i.order_index, i.title, i.description, i.is_required, i.requires_photo,
+                r.id AS result_id, COALESCE(r.is_done, FALSE) AS is_done, r.done_at, r.note
+         FROM checklist_template_items i
+         LEFT JOIN checklist_item_results r
+           ON r.template_item_id = i.id AND r.completion_id = $2
+         WHERE i.template_id = $1
+         ORDER BY i.order_index, i.id`,
+        [t.id, completion.id]
+      );
+      const total = items.rows.length;
+      const done = items.rows.filter(r => r.is_done).length;
+      out.push({
+        id: t.id, name: t.name, type: t.type, items_count: total,
+        completion: {
+          id: completion.id,
+          started_at: completion.started_at,
+          completed_at: completion.completed_at,
+          items_total: total, items_done: done,
+          pct: total ? Math.round((done / total) * 100) : 0,
+        },
+        items: items.rows.map(r => ({
+          id: r.result_id, order_index: r.order_index, title: r.title, description: r.description,
+          is_required: r.is_required, requires_photo: r.requires_photo,
+          is_done: r.is_done, done_at: r.done_at, note: r.note,
+        })),
+      });
+    }
+    await client.query('COMMIT'); inTx = false;
+
+    // Метрики: % утро / % вечер + средняя длительность завершённых чеклистов за сегодня.
+    const byType = (tp) => out.filter(o => o.type === tp);
+    const pctOf = (arr) => {
+      const tot = arr.reduce((s, o) => s + o.completion.items_total, 0);
+      const dn = arr.reduce((s, o) => s + o.completion.items_done, 0);
+      return tot ? Math.round((dn / tot) * 100) : null;
+    };
+    const durations = out
+      .filter(o => o.completion.started_at && o.completion.completed_at)
+      .map(o => (new Date(o.completion.completed_at) - new Date(o.completion.started_at)) / 60000);
+    const avgDur = durations.length
+      ? Math.round(durations.reduce((s, d) => s + d, 0) / durations.length) : null;
+
+    res.json({
+      branch_scoped: true,
+      date: dateStr,
+      templates: out,
+      summary: {
+        morning_pct: pctOf(byType('morning')),
+        evening_pct: pctOf(byType('evening')),
+        avg_duration_min: avgDur,
+      },
+    });
+  } catch (e) {
+    if (inTx) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('checklists today err', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/checklists/items/:item_id/check — отметить пункт (is_done, note).
+// :item_id = id строки результата (checklist_item_results.id) из /today (items[].id).
+app.patch('/api/checklists/items/:item_id/check', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  let inTx = false;
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const resultId = parseInt(req.params.item_id, 10);
+    if (!resultId) return res.status(400).json({ error: 'Некорректный id пункта' });
+    const isDone = req.body.is_done === undefined ? true : !!req.body.is_done;
+    const note = req.body.note != null ? (String(req.body.note).trim().slice(0, 1000) || null) : null;
+
+    // Проверяем принадлежность результата компании и (для менеджера) его филиалу.
+    const own = await client.query(
+      `SELECT r.id, c.id AS completion_id, c.branch_id, t.company_id
+       FROM checklist_item_results r
+       JOIN checklist_completions c ON c.id = r.completion_id
+       JOIN checklist_templates t   ON t.id = c.template_id
+       WHERE r.id = $1`,
+      [resultId]
+    );
+    if (!own.rows[0]) return res.status(404).json({ error: 'Пункт не найден' });
+    const row = own.rows[0];
+    if (row.company_id !== companyId) return res.status(403).json({ error: 'Нет доступа' });
+    if (isManager && row.branch_id !== req.user.branch_id) {
+      return res.status(403).json({ error: 'Нет доступа к этому филиалу' });
+    }
+
+    await client.query('BEGIN'); inTx = true;
+    await client.query(
+      `UPDATE checklist_item_results
+       SET is_done = $2, done_at = CASE WHEN $2 THEN NOW() ELSE NULL END,
+           note = COALESCE($3, note)
+       WHERE id = $1`,
+      [resultId, isDone, note]
+    );
+
+    // Пересчёт счётчиков completion + старт/финиш чеклиста.
+    const agg = await client.query(
+      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_done)::int AS done
+       FROM checklist_item_results WHERE completion_id = $1`,
+      [row.completion_id]
+    );
+    const total = agg.rows[0].total, done = agg.rows[0].done;
+    await client.query(
+      `UPDATE checklist_completions
+       SET items_total = $2, items_done = $3,
+           completed_by = COALESCE(completed_by, $4),
+           started_at   = COALESCE(started_at, NOW()),
+           completed_at = CASE WHEN $3 >= $2 AND $2 > 0 THEN NOW() ELSE NULL END
+       WHERE id = $1`,
+      [row.completion_id, total, done, req.user.id]
+    );
+    await client.query('COMMIT'); inTx = false;
+
+    audit(req, 'check', 'checklist_item', resultId, null, { is_done: isDone, note });
+    res.json({ ok: true, items_total: total, items_done: done, pct: total ? Math.round((done / total) * 100) : 0 });
+  } catch (e) {
+    if (inTx) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    console.error('checklist check err', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/checklists/templates — создать шаблон с пунктами. Только founder/admin/gen_dir.
+app.post('/api/checklists/templates', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  const client = await pool.connect();
+  let inTx = false;
+  try {
+    const companyId = req.user.company_id;
+    const body = req.body || {};
+    const name = (body.name || '').toString().trim().slice(0, 100);
+    if (!name) return res.status(400).json({ error: 'Укажите название чеклиста' });
+    const type = CL_TYPES.includes(body.type) ? body.type : 'custom';
+    const rawItems = Array.isArray(body.items) ? body.items : [];
+    const items = rawItems
+      .map((it, i) => ({
+        order_index: i,
+        title: (typeof it === 'string' ? it : (it && it.title) || '').toString().trim().slice(0, 255),
+        description: (it && it.description ? String(it.description).trim() : null) || null,
+        is_required: !(it && it.is_required === false),
+        requires_photo: !!(it && it.requires_photo),
+      }))
+      .filter(it => it.title);
+    if (!items.length) return res.status(400).json({ error: 'Добавьте хотя бы один пункт' });
+
+    await client.query('BEGIN'); inTx = true;
+    const tpl = await client.query(
+      `INSERT INTO checklist_templates (company_id, name, type, is_active, created_by)
+       VALUES ($1,$2,$3,TRUE,$4) RETURNING id`,
+      [companyId, name, type, req.user.id]
+    );
+    const tplId = tpl.rows[0].id;
+
+    // Bulk-вставка пунктов через unnest (не цикл per-row).
+    await client.query(
+      `INSERT INTO checklist_template_items (template_id, order_index, title, description, is_required, requires_photo)
+       SELECT $1, oi, ti, de, rq, ph
+       FROM unnest($2::int[], $3::text[], $4::text[], $5::bool[], $6::bool[]) AS u(oi, ti, de, rq, ph)`,
+      [tplId,
+       items.map(i => i.order_index),
+       items.map(i => i.title),
+       items.map(i => i.description),
+       items.map(i => i.is_required),
+       items.map(i => i.requires_photo)]
+    );
+    await client.query('COMMIT'); inTx = false;
+
+    audit(req, 'create', 'checklist_template', tplId, null, { name, type, items: items.length });
+    res.json({ ok: true, id: tplId });
+  } catch (e) {
+    if (inTx) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    console.error('checklist template create err', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/checklists/history?branch_id&days — история начатых/завершённых чеклистов.
+app.get('/api/checklists/history', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 30));
+
+    const params = [companyId, days];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND c.branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT c.id, c.date, c.started_at, c.completed_at, c.items_total, c.items_done,
+              t.name AS template_name, t.type,
+              b.name AS branch_name,
+              (u.first_name || ' ' || u.last_name) AS completed_by_name
+       FROM checklist_completions c
+       JOIN checklist_templates t ON t.id = c.template_id
+       LEFT JOIN branches b ON b.id = c.branch_id
+       LEFT JOIN users u    ON u.id = c.completed_by
+       WHERE t.company_id = $1
+         AND c.date >= (CURRENT_DATE - ($2::int || ' days')::interval)
+         ${branchSQL}
+       ORDER BY c.date DESC, t.type, c.id DESC
+       LIMIT 500`,
+      params
+    );
+
+    const items = rows.map(r => {
+      const total = r.items_total || 0, done = r.items_done || 0;
+      const dur = (r.started_at && r.completed_at)
+        ? Math.round((new Date(r.completed_at) - new Date(r.started_at)) / 60000) : null;
+      return {
+        id: r.id, date: r.date, type: r.type, template_name: r.template_name,
+        branch_name: r.branch_name, completed_by_name: r.completed_by_name,
+        started_at: r.started_at, completed_at: r.completed_at,
+        items_total: total, items_done: done,
+        pct: total ? Math.round((done / total) * 100) : 0,
+        duration_min: dur,
+      };
+    });
+    res.json({ items });
+  } catch (e) {
+    if (e.statusCode === 403) return res.status(403).json({ error: e.message });
+    console.error('checklists history err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =================================================================
+// === АНАЛИТИКА ВЫПОЛНЕНИЯ ЗАДАЧ (task-analytics) =================
+// Читает каноническую таблицу tasks (её создаёт инструмент 'tasks').
+// НЕ создаёт/не мигрирует tasks. Скоуп филиалов — через getUserBranchIds.
+// =================================================================
+
+// Рейтинг по on-time %: Отлично≥85 / Хорошо≥70 / Средне≥50 / Плохо
+function taSaRating(onTimePct) {
+  const p = Number(onTimePct) || 0;
+  if (p >= 85) return { key: 'excellent', label: 'Отлично', icon: '🏆', tone: 'green' };
+  if (p >= 70) return { key: 'good',      label: 'Хорошо',  icon: '✅', tone: 'blue'  };
+  if (p >= 50) return { key: 'fair',      label: 'Средне',  icon: '⚠️', tone: 'amber' };
+  return            { key: 'poor',      label: 'Плохо',   icon: '🔴', tone: 'red'   };
+}
+
+// Кол-во дней в периоде (для границы выборки по created_at).
+function taSaPeriodDays(period) {
+  if (period === 'week')    return 7;
+  if (period === 'quarter') return 90;
+  if (period === 'year')    return 365;
+  return 30; // month по умолчанию
+}
+
+// GET /api/tasks/analytics?branch_id&period=week|month|quarter|year
+// Спека: эндпоинт /api/v1/tasks/analytics — в монолите префикс v1 запрещён → /api/tasks/analytics.
+app.get('/api/tasks/analytics', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    // Скоуп филиалов внутри компании (менеджер пинится своим филиалом, чужой branch_id → 403).
+    let scope;
+    try { scope = await getUserBranchIds(req.user, req.query); }
+    catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+
+    const period = ['week', 'month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const days = taSaPeriodDays(period);
+
+    const empty = {
+      period,
+      summary: { total: 0, on_time: 0, on_time_pct: 0, overdue: 0, overdue_pct: 0, avg_hours: 0 },
+      by_employee: [],
+      trend: [],
+      overdue_now: [],
+    };
+
+    const companyId = req.user.company_id;
+    // restrictive=false бывает только у admin без branch_id (кросс-тенант) — для аналитики
+    // всё равно ограничиваем компанией токена через company_id в WHERE.
+    const ids = scope.ids; // массив id или null (admin без скоупа)
+    if (Array.isArray(ids) && ids.length === 0) return res.json(empty);
+
+    // Универсальный фильтр филиала: если ids=null (admin), скоупим только по company_id.
+    const branchClause = Array.isArray(ids) ? 't.branch_id = ANY($2::int[])' : 'TRUE';
+    const baseParams = Array.isArray(ids) ? [companyId, ids] : [companyId];
+    const p3 = baseParams.length + 1; // индекс параметра days
+
+    // on-time = completed_at <= (due_date + COALESCE(due_time,'23:59:59'))
+    const onTimeExpr = `(t.completed_at <= (t.due_date + COALESCE(t.due_time,'23:59:59'::time)))`;
+
+    // 1) Сводка по периоду (задачи, СОЗДАННЫЕ за период).
+    const sumQ = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL AND t.due_date IS NOT NULL AND ${onTimeExpr})::int AS on_time,
+         COUNT(*) FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL AND t.due_date IS NOT NULL AND NOT (${onTimeExpr}))::int AS overdue_done,
+         COALESCE(AVG(EXTRACT(EPOCH FROM (t.completed_at - t.created_at)) / 3600.0)
+                  FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL), 0) AS avg_hours
+       FROM tasks t
+       WHERE t.company_id=$1 AND ${branchClause}
+         AND t.status <> 'cancelled'
+         AND t.created_at >= NOW() - make_interval(days => $${p3})`,
+      [...baseParams, days]
+    );
+    const s = sumQ.rows[0] || {};
+    const total = Number(s.total) || 0;
+    const onTime = Number(s.on_time) || 0;
+    const overdueDone = Number(s.overdue_done) || 0;
+    const avgHours = Math.round((Number(s.avg_hours) || 0) * 10) / 10;
+    const onTimePct = total ? Math.round((onTime * 1000) / total) / 10 : 0;
+    const overduePct = total ? Math.round((overdueDone * 1000) / total) / 10 : 0;
+
+    // 2) По сотрудникам (assignee). Задачи, созданные за период.
+    const empQ = await pool.query(
+      `SELECT t.assignee_id,
+              TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS full_name,
+              u.username,
+              COUNT(*)::int AS assigned,
+              COUNT(*) FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL AND t.due_date IS NOT NULL AND ${onTimeExpr})::int AS on_time,
+              COUNT(*) FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL)::int AS completed_cnt,
+              COUNT(*) FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL AND t.due_date IS NOT NULL AND NOT (${onTimeExpr}))::int AS overdue,
+              COALESCE(AVG(EXTRACT(EPOCH FROM (t.completed_at - t.created_at)) / 3600.0)
+                       FILTER (WHERE t.status='done' AND t.completed_at IS NOT NULL), 0) AS avg_hours
+       FROM tasks t
+       LEFT JOIN users u ON u.id = t.assignee_id
+       WHERE t.company_id=$1 AND ${branchClause}
+         AND t.status <> 'cancelled' AND t.assignee_id IS NOT NULL
+         AND t.created_at >= NOW() - make_interval(days => $${p3})
+       GROUP BY t.assignee_id, u.first_name, u.last_name, u.username
+       ORDER BY assigned DESC`,
+      [...baseParams, days]
+    );
+    const byEmployee = empQ.rows.map(r => {
+      const completed = Number(r.completed_cnt) || 0;
+      const ot = Number(r.on_time) || 0;
+      const pct = completed ? Math.round((ot * 1000) / completed) / 10 : 0;
+      const rt = taSaRating(pct);
+      const name = (r.full_name && r.full_name.length) ? r.full_name : (r.username || `#${r.assignee_id}`);
+      return {
+        employee_id: r.assignee_id,
+        name,
+        assigned: Number(r.assigned) || 0,
+        completed,
+        on_time: ot,
+        on_time_pct: pct,
+        overdue: Number(r.overdue) || 0,
+        avg_hours: Math.round((Number(r.avg_hours) || 0) * 10) / 10,
+        rating: rt.label,
+        rating_key: rt.key,
+        rating_icon: rt.icon,
+        rating_tone: rt.tone,
+      };
+    });
+
+    // 3) Тренд on-time % по 6 неделям (по completed_at завершённых задач).
+    const trendQ = await pool.query(
+      `WITH weeks AS (
+         SELECT generate_series(0,5) AS w
+       )
+       SELECT w.w AS week_idx,
+              to_char(date_trunc('week', NOW()) - make_interval(weeks => w.w), 'DD.MM') AS label,
+              COALESCE(td.total,0)::int AS total,
+              COALESCE(td.on_time,0)::int AS on_time
+       FROM weeks w
+       LEFT JOIN (
+         SELECT (floor(EXTRACT(EPOCH FROM (date_trunc('week', NOW()) - date_trunc('week', t.completed_at))) / 604800.0))::int AS wi,
+                COUNT(*) FILTER (WHERE t.due_date IS NOT NULL)::int AS total,
+                COUNT(*) FILTER (WHERE t.due_date IS NOT NULL AND ${onTimeExpr})::int AS on_time
+         FROM tasks t
+         WHERE t.company_id=$1 AND ${branchClause}
+           AND t.status='done' AND t.completed_at IS NOT NULL
+           AND t.completed_at >= date_trunc('week', NOW()) - interval '5 weeks'
+         GROUP BY wi
+       ) td ON td.wi = w.w
+       ORDER BY w.w DESC`,
+      baseParams
+    );
+    // week_idx 0 = текущая неделя; разворачиваем от старой к новой для графика.
+    const trend = trendQ.rows
+      .slice()
+      .sort((a, b) => b.week_idx - a.week_idx)
+      .map(r => {
+        const t = Number(r.total) || 0;
+        const ot = Number(r.on_time) || 0;
+        return { label: r.label, total: t, on_time: ot, on_time_pct: t ? Math.round((ot * 1000) / t) / 10 : 0 };
+      });
+
+    // 4) Текущие просроченные (НЕ завершены, срок прошёл) — независимо от периода.
+    const overdueQ = await pool.query(
+      `SELECT t.id, t.title, t.priority, t.due_date, t.branch_id,
+              b.name AS branch_name,
+              t.assignee_id,
+              TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS full_name,
+              u.username,
+              (CURRENT_DATE - t.due_date)::int AS days_overdue
+       FROM tasks t
+       LEFT JOIN users u ON u.id = t.assignee_id
+       LEFT JOIN branches b ON b.id = t.branch_id
+       WHERE t.company_id=$1 AND ${branchClause}
+         AND t.status IN ('todo','in_progress')
+         AND t.completed_at IS NULL
+         AND t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE
+       ORDER BY days_overdue DESC, t.due_date ASC
+       LIMIT 50`,
+      baseParams
+    );
+    const overdueNow = overdueQ.rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      priority: r.priority,
+      due_date: r.due_date,
+      branch_id: r.branch_id,
+      branch_name: r.branch_name,
+      assignee_id: r.assignee_id,
+      assignee_name: (r.full_name && r.full_name.length) ? r.full_name : (r.username || (r.assignee_id ? `#${r.assignee_id}` : '—')),
+      days_overdue: Number(r.days_overdue) || 0,
+    }));
+
+    res.json({
+      period,
+      summary: {
+        total,
+        on_time: onTime,
+        on_time_pct: onTimePct,
+        overdue: overdueDone,
+        overdue_pct: overduePct,
+        avg_hours: avgHours,
+      },
+      by_employee: byEmployee,
+      trend,
+      overdue_now: overdueNow,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// ШАБЛОНЫ ПРОЦЕССОВ (task-templates) — авто-генерация повторяющихся задач
+// Префикс хелперов/констант: tt*/TT_* . Менеджер скоупится филиалом.
+// ============================================================================
+const TT_RECURRENCES = [
+  'daily', 'daily_except_sunday', 'weekly_mon', 'weekly_sat',
+  'biweekly_1_15', 'monthly_1', 'monthly_last',
+];
+const TT_ASSIGNEE_TYPES = ['specific_employee', 'role', 'first_on_shift', 'manager'];
+const TT_ASSIGNEE_ROLES = ['cashier', 'seller', 'warehouse', 'manager'];
+const TT_PRIORITIES = ['low', 'medium', 'high'];
+
+// Совпадает ли расписание шаблона с конкретной датой (локальное время сервера).
+// dow: 0=Вс ... 6=Сб. dom: число месяца. lastDom: последнее число месяца.
+function ttMatchesRecurrence(recurrence, date) {
+  const dow = date.getDay();
+  const dom = date.getDate();
+  const lastDom = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  switch (recurrence) {
+    case 'daily':               return true;
+    case 'daily_except_sunday': return dow !== 0;
+    case 'weekly_mon':          return dow === 1;
+    case 'weekly_sat':          return dow === 6;
+    case 'biweekly_1_15':       return dom === 1 || dom === 15;
+    case 'monthly_1':           return dom === 1;
+    case 'monthly_last':        return dom === lastDom;
+    default:                    return false;
+  }
+}
+
+// Разрешение исполнителя по типу шаблона. Возвращает assignee_id (INT) или null.
+// specific_employee → assignee_id; role → первый сотрудник этой роли в нужном филиале;
+// manager → первый менеджер; first_on_shift → данных о сменах НЕТ → fallback на менеджера филиала.
+async function ttResolveAssignee(tpl, companyId) {
+  if (tpl.assignee_type === 'specific_employee') return tpl.assignee_id || null;
+  let role = null;
+  if (tpl.assignee_type === 'role') role = TT_ASSIGNEE_ROLES.includes(tpl.assignee_role) ? tpl.assignee_role : null;
+  if (tpl.assignee_type === 'manager' || tpl.assignee_type === 'first_on_shift') role = 'manager';
+  if (!role) return null;
+  const params = [companyId, role];
+  let branchSQL = '';
+  if (tpl.branch_id) { params.push(tpl.branch_id); branchSQL = `AND branch_id = $${params.length}`; }
+  const { rows } = await pool.query(
+    `SELECT id FROM users WHERE company_id = $1 AND role = $2 ${branchSQL} ORDER BY id LIMIT 1`,
+    params
+  );
+  return rows[0]?.id || null;
+}
+
+// Compute-on-read генерация: для активных шаблонов компании, чьё расписание совпадает с СЕГОДНЯ,
+// создаёт задачу в tasks (source='template'). Dedup по (source_template_id, due_date) через ON CONFLICT.
+// Идемпотентна. Вызывается из GET /api/task-templates (и из GET /api/tasks инструмента 'tasks', если он есть).
+async function generateTasksFromTemplates(companyId) {
+  const today = new Date();
+  const y = today.getFullYear(), m = today.getMonth(), d = today.getDate();
+  const dueDate = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const { rows: tpls } = await pool.query(
+    `SELECT * FROM task_templates WHERE company_id = $1 AND is_active = true`,
+    [companyId]
+  );
+  for (const tpl of tpls) {
+    if (!ttMatchesRecurrence(tpl.recurrence, today)) continue;
+    const assigneeId = await ttResolveAssignee(tpl, companyId);
+    await pool.query(
+      `INSERT INTO tasks
+         (company_id, branch_id, title, description, assignee_id, created_by,
+          priority, due_date, due_time, status, source, source_template_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,'todo','template',$10,NOW(),NOW())
+       ON CONFLICT (source_template_id, due_date) WHERE source_template_id IS NOT NULL DO NOTHING`,
+      [companyId, tpl.branch_id, tpl.title, tpl.description, assigneeId, tpl.created_by,
+       TT_PRIORITIES.includes(tpl.priority) ? tpl.priority : 'medium',
+       dueDate, tpl.recurrence_time || null, tpl.id]
+    );
+  }
+}
+
+// Следующая дата запуска шаблона (для колонки «Следующая задача»). Скан вперёд до 366 дней.
+function ttNextRun(recurrence) {
+  const base = new Date();
+  for (let i = 0; i <= 366; i++) {
+    const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+    if (ttMatchesRecurrence(recurrence, dt)) {
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    }
+  }
+  return null;
+}
+
+// GET /api/task-templates — список шаблонов + метрики. Менеджер видит свой филиал (+ общие branch_id IS NULL).
+app.get('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null
+
+    // Догенерация авто-задач за сегодня (compute-on-read).
+    try { await generateTasksFromTemplates(companyId); } catch (e) { console.error('generateTasksFromTemplates', e.message); }
+
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND (t.branch_id = $${params.length} OR t.branch_id IS NULL)`; }
+
+    const { rows } = await pool.query(`
+      SELECT t.*, b.name AS branch_name,
+             (u.first_name || ' ' || COALESCE(u.last_name,'')) AS assignee_name,
+             COALESCE(s.total, 0)     AS tasks_total,
+             COALESCE(s.completed, 0) AS tasks_completed
+      FROM task_templates t
+      LEFT JOIN branches b ON b.id = t.branch_id
+      LEFT JOIN users u ON u.id = t.assignee_id
+      LEFT JOIN (
+        SELECT source_template_id,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status = 'done') AS completed
+        FROM tasks WHERE company_id = $1 AND source = 'template'
+        GROUP BY source_template_id
+      ) s ON s.source_template_id = t.id
+      WHERE t.company_id = $1 ${branchSQL}
+      ORDER BY t.is_active DESC, t.created_at DESC
+    `, params);
+
+    const items = rows.map(r => {
+      const total = parseInt(r.tasks_total, 10) || 0;
+      const completed = parseInt(r.tasks_completed, 10) || 0;
+      return {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        branch_id: r.branch_id,
+        branch_name: r.branch_name || null,
+        assignee_type: r.assignee_type,
+        assignee_id: r.assignee_id,
+        assignee_role: r.assignee_role,
+        assignee_name: r.assignee_id ? (r.assignee_name || '').trim() || null : null,
+        recurrence: r.recurrence,
+        recurrence_time: r.recurrence_time,
+        priority: r.priority,
+        is_active: r.is_active,
+        completion_pct: total > 0 ? Math.round((completed / total) * 100) : null,
+        tasks_total: total,
+        tasks_completed: completed,
+        next_run: r.is_active ? ttNextRun(r.recurrence) : null,
+        created_at: r.created_at,
+      };
+    });
+
+    // Метрики дашборда — по tasks(source='template') за текущий месяц.
+    const mParams = [companyId];
+    let mBranchSQL = '';
+    if (branchId) { mParams.push(branchId); mBranchSQL = `AND branch_id = $${mParams.length}`; }
+    const { rows: [mt] } = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE source = 'template'
+          AND date_trunc('month', due_date) = date_trunc('month', CURRENT_DATE)) AS month_total,
+        COUNT(*) FILTER (WHERE source = 'template' AND status = 'done'
+          AND date_trunc('month', due_date) = date_trunc('month', CURRENT_DATE)) AS month_done
+      FROM tasks WHERE company_id = $1 ${mBranchSQL}
+    `, mParams);
+
+    const active = items.filter(i => i.is_active).length;
+    const monthTotal = parseInt(mt.month_total, 10) || 0;
+    const monthDone = parseInt(mt.month_done, 10) || 0;
+
+    res.json({
+      summary: {
+        active_templates: active,
+        total_templates: items.length,
+        month_tasks: monthTotal,
+        month_done: monthDone,
+        completion_pct: monthTotal > 0 ? Math.round((monthDone / monthTotal) * 100) : null,
+        // Ориентир экономии времени: ~7.5 мин/авто-задача (эвристика, не факт; реальных данных о ручном времени нет).
+        hours_saved: Math.round((monthTotal * 7.5) / 60 * 10) / 10,
+      },
+      items,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/task-templates — создать шаблон. Founder-уровень + менеджер (скоуп филиалом).
+app.post('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const body = req.body || {};
+
+    const title = (body.title || '').toString().trim();
+    if (!title) return res.status(400).json({ error: 'Укажите название задачи' });
+
+    const recurrence = TT_RECURRENCES.includes(body.recurrence) ? body.recurrence : null;
+    if (!recurrence) return res.status(400).json({ error: 'Некорректная периодичность' });
+
+    const assigneeType = TT_ASSIGNEE_TYPES.includes(body.assignee_type) ? body.assignee_type : 'manager';
+    const priority = TT_PRIORITIES.includes(body.priority) ? body.priority : 'medium';
+
+    // Менеджер фиксируется своим филиалом; владелец может указать branch_id (или null = все филиалы).
+    let branchId = isManager
+      ? req.user.branch_id
+      : (body.branch_id ? parseInt(body.branch_id, 10) : null);
+    if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
+
+    let assigneeId = assigneeType === 'specific_employee' && body.assignee_id
+      ? parseInt(body.assignee_id, 10) : null;
+    // Валидация принадлежности: нельзя назначить шаблон на сотрудника другой компании/филиала.
+    if (assigneeId) {
+      const au = await pool.query('SELECT company_id, branch_id FROM users WHERE id=$1', [assigneeId]);
+      const ok = au.rows[0] && au.rows[0].company_id === companyId && (!isManager || au.rows[0].branch_id === req.user.branch_id);
+      if (!ok) assigneeId = null;
+    }
+    const assigneeRole = assigneeType === 'role' && TT_ASSIGNEE_ROLES.includes(body.assignee_role)
+      ? body.assignee_role : null;
+    const recurrenceTime = (body.recurrence_time && /^\d{2}:\d{2}/.test(body.recurrence_time))
+      ? body.recurrence_time : null;
+    const description = (body.description || '').toString().trim() || null;
+
+    const { rows } = await pool.query(`
+      INSERT INTO task_templates
+        (company_id, branch_id, title, description, assignee_type, assignee_id, assignee_role,
+         recurrence, recurrence_time, priority, is_active, created_by, created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,NOW())
+      RETURNING id`,
+      [companyId, branchId, title, description, assigneeType, assigneeId, assigneeRole,
+       recurrence, recurrenceTime, priority, req.user.id]);
+
+    audit(req, 'create', 'task_template', rows[0].id, null, { title, recurrence, assignee_type: assigneeType });
+    res.json({ id: rows[0].id });
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
+});
+
+// PATCH /api/task-templates/:id — переключить is_active (вкл/выкл шаблона).
+app.patch('/api/task-templates/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'Некорректный id' });
+
+    // Менеджер управляет только шаблонами своего филиала (или общими branch_id IS NULL).
+    const params = [id, companyId];
+    let branchSQL = '';
+    if (isManager) {
+      params.push(req.user.branch_id);
+      branchSQL = `AND (branch_id = $3 OR branch_id IS NULL)`;
+    }
+    const { rows } = await pool.query(
+      `SELECT * FROM task_templates WHERE id = $1 AND company_id = $2 ${branchSQL}`, params);
+    if (!rows[0]) return res.status(404).json({ error: 'Шаблон не найден' });
+
+    const next = typeof req.body?.is_active === 'boolean' ? req.body.is_active : !rows[0].is_active;
+    await pool.query(`UPDATE task_templates SET is_active = $1 WHERE id = $2`, [next, id]);
+    audit(req, 'update', 'task_template', id, { is_active: rows[0].is_active }, { is_active: next });
+    res.json({ id, is_active: next });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === ЖУРНАЛ СОБЫТИЙ (event-journal) — company-scoped, иммутабельный, с фильтрами и сводкой ===
+// Менеджер скоупится своим филиалом. Founder/gen_dir видят всю компанию (можно сузить branch_id).
+// Не ломает существующий GET /api/audit-log.
+const EJ_PERIOD_DAYS = { day: 1, week: 7, month: 30, year: 365 };
+const EJ_MODULES = ['pos', 'inventory', 'finance', 'hr', 'crm', 'purchase', 'settings'];
+
+// Человекочитаемое описание, если description в строке пустой.
+function ejFallbackDescription(r) {
+  if (r.description) return r.description;
+  const act = r.action || '—';
+  const ent = r.entity_type ? ` ${r.entity_type}` : '';
+  const eid = r.entity_id ? ` #${r.entity_id}` : '';
+  return `${act}${ent}${eid}`;
+}
+
+// Сборка WHERE для журнала (company + branch-scope + фильтры). Возвращает { where, params }.
+function ejBuildWhere(req) {
+  const isManager = req.user.role === 'manager';
+  const companyId = req.user.company_id;
+  const params = [companyId];
+  const conds = ['al.company_id = $1'];
+
+  // branch-scope: менеджер всегда заперт в своём филиале; владелец может сузить через branch_id.
+  if (isManager) {
+    params.push(req.user.branch_id || -1);
+    conds.push(`al.branch_id = $${params.length}`);
+  } else if (req.query.branch_id) {
+    params.push(parseInt(req.query.branch_id, 10));
+    conds.push(`al.branch_id = $${params.length}`);
+  }
+
+  // период (int-параметр, кастуется в text внутри ||; паттерн уже используется в монолите)
+  const days = EJ_PERIOD_DAYS[req.query.period] ?? EJ_PERIOD_DAYS.month;
+  params.push(days);
+  conds.push(`al.created_at >= NOW() - ($${params.length} || ' days')::interval`);
+
+  // модуль
+  if (req.query.module && req.query.module !== 'all' && EJ_MODULES.includes(req.query.module)) {
+    params.push(req.query.module);
+    conds.push(`al.module = $${params.length}`);
+  }
+  // конкретный пользователь
+  if (req.query.user_id) {
+    params.push(parseInt(req.query.user_id, 10));
+    conds.push(`al.user_id = $${params.length}`);
+  }
+  // только подозрительные
+  if (req.query.suspicious === 'true' || req.query.suspicious === '1') {
+    conds.push('al.is_suspicious = true');
+  }
+  return { where: 'WHERE ' + conds.join(' AND '), params };
+}
+
+app.get('/api/audit-log/journal', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const { where, params } = ejBuildWhere(req);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    // Лог (страница)
+    const logQ = await pool.query(`
+      SELECT al.id, al.created_at, al.user_id, al.username, al.user_role,
+             al.module, al.action, al.entity_type, al.entity_id, al.description,
+             al.is_suspicious, al.suspicious_reason, al.branch_id, al.ip_address,
+             b.name AS branch_name,
+             COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), al.username) AS user_name
+      FROM audit_log al
+      LEFT JOIN users u    ON u.id = al.user_id
+      LEFT JOIN branches b ON b.id = al.branch_id
+      ${where}
+      ORDER BY al.created_at DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+    `, [...params, limit, offset]);
+
+    // Сводка по периоду (без пагинации)
+    const sumQ = await pool.query(`
+      SELECT COUNT(*)::int                                   AS total_events,
+             COUNT(DISTINCT al.user_id)::int                 AS unique_users,
+             COUNT(*) FILTER (WHERE al.is_suspicious)::int   AS suspicious
+      FROM audit_log al
+      ${where}
+    `, params);
+
+    // Самый активный пользователь
+    const topQ = await pool.query(`
+      SELECT al.user_id,
+             COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), al.username) AS user_name,
+             COUNT(*)::int AS cnt
+      FROM audit_log al
+      LEFT JOIN users u ON u.id = al.user_id
+      ${where}
+      GROUP BY al.user_id, user_name
+      ORDER BY cnt DESC
+      LIMIT 1
+    `, params);
+
+    const items = logQ.rows.map(r => ({ ...r, description: ejFallbackDescription(r) }));
+    const top = topQ.rows[0] || null;
+
+    res.json({
+      summary: {
+        total_events: sumQ.rows[0].total_events,
+        unique_users: sumQ.rows[0].unique_users,
+        suspicious: sumQ.rows[0].suspicious,
+        top_user: top ? { name: top.user_name || '—', count: top.cnt } : null,
+      },
+      items,
+      page: { limit, offset, returned: items.length, has_more: items.length === limit },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Только подозрительные (отдельная панель). Те же скоуп/период/фильтры.
+app.get('/api/audit-log/suspicious', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    req.query.suspicious = 'true';
+    const { where, params } = ejBuildWhere(req);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const { rows } = await pool.query(`
+      SELECT al.id, al.created_at, al.user_id, al.username, al.user_role,
+             al.module, al.action, al.entity_type, al.entity_id, al.description,
+             al.suspicious_reason, al.branch_id,
+             b.name AS branch_name,
+             COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), al.username) AS user_name
+      FROM audit_log al
+      LEFT JOIN users u    ON u.id = al.user_id
+      LEFT JOIN branches b ON b.id = al.branch_id
+      ${where}
+      ORDER BY al.created_at DESC
+      LIMIT $${params.length + 1}
+    `, [...params, limit]);
+    res.json({ items: rows.map(r => ({ ...r, description: ejFallbackDescription(r) })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // === AUTH ===
-// In-memory rate limiter for login attempts: 5 fails per 15 min per (IP+username)
+// In-memory rate limiter for login attempts: 5 fails → блокировка на 1 минуту (per IP+username)
 const loginAttempts = new Map(); // key → { count, firstAt }
 function loginRateCheck(ip, username) {
   const key = `${ip}|${(username || '').toLowerCase()}`;
   const now = Date.now();
-  const windowMs = 15 * 60 * 1000;
+  const windowMs = 60 * 1000; // 1 минута: после 5 неверных вводов — лок на 1 мин
   const rec = loginAttempts.get(key);
   if (rec && now - rec.firstAt > windowMs) loginAttempts.delete(key);
   const cur = loginAttempts.get(key);
@@ -1325,23 +7046,25 @@ setInterval(() => {
   for (const [k, v] of loginAttempts) if (v.firstAt < cutoff) loginAttempts.delete(k);
 }, 60 * 60 * 1000);
 
-app.post('/api/auth/login', authLimiter, async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-    const rl = loginRateCheck(ip, username);
-    if (rl.blocked) return res.status(429).json({ error: `Слишком много попыток. Попробуйте через ${rl.waitMin} мин.` });
+    // По просьбе владельца таймаут/блокировка при входе отключены (нет rate-limit на логине).
     const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-    if (!rows[0]) { loginRecordFail(ip, username); return res.status(401).json({ error: 'Пользователь не найден' }); }
+    // Единое сообщение для «нет юзера» и «неверный пароль» — не раскрываем, существует ли логин.
+    if (!rows[0]) { loginRecordFail(ip, username); return res.status(401).json({ error: 'Неверный логин или пароль', code: 'bad_credentials' }); }
     const valid = await bcrypt.compare(password, rows[0].password_hash);
-    if (!valid) { loginRecordFail(ip, username); return res.status(401).json({ error: 'Неверный пароль' }); }
+    if (!valid) { loginRecordFail(ip, username); return res.status(401).json({ error: 'Неверный логин или пароль', code: 'bad_credentials' }); }
     loginClearFails(ip, username);
     if (rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' });
     // Fetch company/branch names for display
-    let companyName = null, branchName = null;
+    let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [];
     if (rows[0].company_id) {
-      const c = await pool.query('SELECT name FROM companies WHERE id=$1', [rows[0].company_id]);
+      const c = await pool.query("SELECT name, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [rows[0].company_id]);
       companyName = c.rows[0]?.name || null;
+      companyDisabled = c.rows[0]?.disabled_tools || [];
+      companyDisabledWidgets = c.rows[0]?.disabled_widgets || [];
     }
     if (rows[0].branch_id) {
       const b = await pool.query('SELECT name FROM branches WHERE id=$1', [rows[0].branch_id]);
@@ -1354,6 +7077,8 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       first_name: rows[0].first_name || null,
       last_name: rows[0].last_name || null,
       company_name: companyName, branch_name: branchName,
+      company_disabled_tools: companyDisabled,
+      company_disabled_widgets: companyDisabledWidgets,
     };
     const token = jwt.sign({
       id: payload.id, username: payload.username, role: payload.role,
@@ -1369,8 +7094,29 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 // Verify token and return current user (used on page load)
 app.get('/api/auth/me', auth(), async (req, res) => {
   try {
+    // Режим «войти как» (WoW impersonation): доверяем role/company/branch из токена,
+    // имя берём от реального админа. Так impersonation переживает перезагрузку страницы.
+    if (req.user.act_as) {
+      const a = await pool.query('SELECT id, username, first_name, last_name, is_blocked FROM users WHERE id = $1', [req.user.imp_by || req.user.id]);
+      if (!a.rows[0] || a.rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован' });
+      let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [];
+      if (req.user.company_id) { const c = await pool.query("SELECT name, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]); companyName = c.rows[0]?.name || null; companyDisabled = c.rows[0]?.disabled_tools || []; companyDisabledWidgets = c.rows[0]?.disabled_widgets || []; }
+      if (req.user.branch_id)  { const b = await pool.query('SELECT name FROM branches  WHERE id=$1', [req.user.branch_id]);  branchName  = b.rows[0]?.name || null; }
+      return res.json({ user: {
+        id: req.user.id, username: req.user.username, role: req.user.role,
+        company_id: req.user.company_id || null, branch_id: req.user.branch_id || null,
+        first_name: a.rows[0].first_name, last_name: a.rows[0].last_name,
+        company_name: companyName, branch_name: branchName,
+        blocked_tools: [], ai_enabled: true, company_disabled_tools: companyDisabled,
+        company_disabled_widgets: companyDisabledWidgets,
+        act_as: true, impersonator_name: req.user.imp_name || a.rows[0].username,
+      }});
+    }
     const { rows } = await pool.query(
       `SELECT u.id, u.username, u.role, u.company_id, u.branch_id, u.first_name, u.last_name, u.is_blocked,
+              COALESCE(u.blocked_tools, '{}') AS blocked_tools, COALESCE(u.ai_enabled, true) AS ai_enabled,
+              COALESCE(c.disabled_tools, '{}') AS company_disabled_tools,
+              COALESCE(c.disabled_widgets, '{}') AS company_disabled_widgets,
               c.name AS company_name, b.name AS branch_name
        FROM users u
        LEFT JOIN companies c ON u.company_id = c.id
@@ -1388,7 +7134,9 @@ app.get('/api/auth/me', auth(), async (req, res) => {
 app.get('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   let query = `SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.company_id, u.branch_id,
     u.is_blocked, u.created_at, u.last_login_at, u.created_by,
-    cb.username as created_by_name, cb.role as created_by_role
+    cb.username as created_by_name, cb.role as created_by_role,
+    COALESCE(u.blocked_tools, '{}') AS blocked_tools, COALESCE(u.ai_enabled, true) AS ai_enabled,
+    u.photo, u.birth_date, u.education, u.experience, u.prev_jobs, u.phone, u.position, u.hired_at, u.profile_notes
     FROM users u LEFT JOIN users cb ON u.created_by = cb.id WHERE u.role != $1`;
   const params = ['admin'];
   if (isCompanyLevel(req.user.role)) { query += ' AND u.company_id = $2'; params.push(req.user.company_id); }
@@ -1398,10 +7146,33 @@ app.get('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
   res.json(rows);
 });
 
+// Гранулярные доступы пользователя: какие инструменты скрыты (blocked_tools) + доступ к AI (ai_enabled).
+// Только учредитель (своей компании) и админ. Менеджер доступы не выдаёт.
+app.put('/api/users/:id/permissions', auth(['admin', 'founder', 'gen_dir']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query('SELECT id, role, company_id, branch_id FROM users WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    const blocked = Array.isArray(req.body.blocked_tools)
+      ? [...new Set(req.body.blocked_tools.filter(t => typeof t === 'string' && t.length <= 60))].slice(0, 300)
+      : [];
+    const aiEnabled = req.body.ai_enabled !== false;
+    await pool.query('UPDATE users SET blocked_tools=$1, ai_enabled=$2 WHERE id=$3', [blocked, aiEnabled, id]);
+    audit(req, 'update', 'user_permissions', id, null, { blocked: blocked.length, ai_enabled: aiEnabled });
+    res.json({ ok: true, blocked_tools: blocked, ai_enabled: aiEnabled });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
   try {
     const { username, password, role, branch_id, company_id, first_name, last_name } = req.body;
+    // «Директор сети» (gen_dir) — активная роль: видит свои филиалы, без стратегических финансов.
     { const v = validatePassword(password); if (!v.ok) return res.status(400).json({ error: v.error }); }
+    // БЕЗОПАСНОСТЬ: назначать роль строго ниже своей (admin — любую). Защита от эскалации:
+    // учредитель клиента не выпишет admin, менеджер — учредителя и т.д.
+    if (!canAssignRole(req.user.role, role)) return res.status(403).json({ error: 'Недостаточно прав для назначения этой роли.' });
     const hash = await bcrypt.hash(password, 10);
     let companyId, branchId;
     if (req.user.role === 'admin') {
@@ -1442,6 +7213,16 @@ app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Матрица назначения ролей: кто какую роль может создать/выдать. Защита от эскалации
+// привилегий в мульти-тенанте (напр. учредитель клиента не выпишет себе admin,
+// а менеджер — учредителя). Назначать можно только роли СТРОГО НИЖЕ своей; admin — любые.
+const ROLE_RANK = { admin: 5, founder: 4, gen_dir: 3, manager: 2, cashier: 1, warehouse: 1, seller: 1 };
+function canAssignRole(actorRole, targetRole) {
+  if (actorRole === 'admin') return true;
+  if (targetRole === 'admin') return false;
+  return (ROLE_RANK[targetRole] || 0) < (ROLE_RANK[actorRole] || 0);
+}
+
 // Returns true if the calling user is allowed to mutate the target user.
 // Non-admin can only touch users in their own company; manager additionally restricted to own branch
 // and forbidden from touching admin/founder/gen_dir roles.
@@ -1456,6 +7237,9 @@ function canMutateUser(actor, target) {
   if (actor.role === 'gen_dir' || actor.role === 'founder') {
     if (target.role === 'admin') return false;
   }
+  // БЕЗОПАСНОСТЬ: нельзя мутировать пользователя с рангом >= своего (директор не может тронуть
+  // учредителя, равный — равного). Симметрично canAssignRole. Закрывает захват founder директором.
+  if ((ROLE_RANK[target.role] || 0) >= (ROLE_RANK[actor.role] || 0)) return false;
   return true;
 }
 
@@ -1467,6 +7251,8 @@ app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
     const { rows: [cur] } = await pool.query('SELECT id, role, username, company_id, branch_id FROM users WHERE id=$1', [id]);
     if (!cur) return res.status(404).json({ error: 'Not found' });
     if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    // БЕЗОПАСНОСТЬ: сменить роль можно только на роль строго ниже своей (защита от эскалации).
+    if (role && role !== cur.role && !canAssignRole(req.user.role, role)) return res.status(403).json({ error: 'Недостаточно прав для назначения этой роли.' });
     // Force tenant fields to caller's scope for non-admin to prevent escalation
     let effectiveCompany = company_id;
     let effectiveBranch = branch_id;
@@ -1505,6 +7291,29 @@ app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
       if (e.code === '23505') return res.status(409).json({ error: 'Логин уже занят' });
       throw e;
     }
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Профиль сотрудника: заполняют учредитель (своя компания) и менеджер (своя ветка, только
+// подчинённые роли — enforced через canMutateUser). Фото грузится через /api/upload/photo.
+app.put('/api/users/:id/profile', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+    const { rows: [cur] } = await pool.query('SELECT id, role, company_id, branch_id FROM users WHERE id=$1', [id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateUser(req.user, cur)) return res.status(403).json({ error: 'Out of scope' });
+    const b = req.body || {};
+    const str = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+    const dt = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+    await pool.query(
+      `UPDATE users SET photo=$1, birth_date=$2, education=$3, experience=$4, prev_jobs=$5,
+                        phone=$6, position=$7, hired_at=$8, profile_notes=$9 WHERE id=$10`,
+      [str(b.photo, 300), dt(b.birth_date), str(b.education, 400), str(b.experience, 1200),
+       str(b.prev_jobs, 2000), str(b.phone, 40), str(b.position, 120), dt(b.hired_at), str(b.profile_notes, 2000), id]
+    );
+    audit(req, 'update', 'user', id, null, { profile: true }, { module: 'hr', description: 'Обновлён профиль сотрудника' });
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -1942,7 +7751,11 @@ app.get('/api/sales/history', auth(['admin', 'founder', 'gen_dir', 'manager']), 
     if (pm)   { params.push(pm);   conds.push(`COALESCE(so.payment_method,'cash') = $${params.length}`); }
     if (type === 'b2b') conds.push(`so.customer_id IS NOT NULL`);
     if (type === 'b2c') conds.push(`so.customer_id IS NULL`);
-    if (search) { params.push('%' + search + '%'); conds.push(`(p.name_ru ILIKE $${params.length} OR c.name ILIKE $${params.length} OR CAST(so.id AS TEXT) = ${"'" + search.replace(/'/g, '') + "'"})`); }
+    if (search) {
+      params.push('%' + search + '%'); const likeIdx = params.length;
+      params.push(search); const exactIdx = params.length;
+      conds.push(`(p.name_ru ILIKE $${likeIdx} OR c.name ILIKE $${likeIdx} OR CAST(so.id AS TEXT) = $${exactIdx})`);
+    }
     const where = 'WHERE ' + conds.join(' AND ');
 
     const listQ = await pool.query(`
@@ -2120,8 +7933,10 @@ async function computeBreakEven(scope, fromIso, toIso) {
   const aboveBreakEven = breakEvenRevenue != null && revenue >= breakEvenRevenue;
   // Темп: дней прошло в месяце, дневная выручка, прогноз на конец месяца
   const daysInMonth = new Date(toD.getFullYear(), toD.getMonth() + 1, 0).getDate();
-  const dayOfMonth = Math.max(1, toD.getDate());
-  const dailyRevenue = revenue / dayOfMonth;
+  // Дневная выручка = по фактической длине окна (from..to), а не по дню месяца.
+  // Иначе при периоде «последние 30 дней» делили бы на день месяца (напр. 10) → завышение темпа ~в 3 раза.
+  const elapsedDays = Math.max(1, Math.round((toD - fromD) / 86400000));
+  const dailyRevenue = revenue / elapsedDays;
   const projectedMonthRevenue = dailyRevenue * daysInMonth;
   // На какой день месяца выходим в плюс (по текущему темпу)
   let breakEvenDay = null;
@@ -2146,7 +7961,7 @@ async function computeBreakEven(scope, fromIso, toIso) {
     avg_check: Math.round(avgCheck),
     break_even_day: breakEvenDay,
     days_in_month: daysInMonth,
-    day_of_month: dayOfMonth,
+    day_of_month: elapsedDays,
     daily_revenue: Math.round(dailyRevenue),
     projected_month_revenue: Math.round(projectedMonthRevenue),
     safety_margin_pct: safetyMarginPct,
@@ -2597,6 +8412,9 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
       }
     }
     await client.query('COMMIT');
+    // Аудит продажи — ядро финансовых операций (кто/когда/что/по какой цене продал) в Журнале событий.
+    audit(req, 'create', 'sale', rows[0].id, null,
+      { product_id: rows[0].product_id, quantity: rows[0].quantity, price: rows[0].price, payment_status: rows[0].payment_status });
     res.json(rows[0]);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -2895,6 +8713,9 @@ app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', '
       }
     }
     await client.query('COMMIT');
+    // Аудит подтверждения продажи складовщиком/менеджером — в Журнал событий.
+    audit(req, 'approve', 'sale', rows[0].id, null,
+      { quantity: rows[0].quantity, price: rows[0].price, payment_status: rows[0].payment_status });
     res.json(rows[0]);
   } catch (e) {
     await client.query('ROLLBACK');
@@ -3242,11 +9063,14 @@ app.get('/api/cash/report', auth(['cashier', 'manager', 'gen_dir', 'founder', 'a
        GROUP BY p.id
        ORDER BY revenue DESC
        LIMIT 10`, params);
-    // 9. Outstanding debts (sales with payment_status='debt' or 'partial')
-    const debtsConds = [...soConds.filter(c => !c.includes("created_at"))]; // ignore period for debt (they accumulate)
-    if (branchId) {} // already in conds
+    // 9. Outstanding debts (sales with payment_status='debt' or 'partial').
+    // Ignore the period (debts accumulate), keep the branch scope. Build a fresh
+    // param array so placeholders line up (the old code referenced an undefined
+    // `branchId`, which crashed the whole report with a 500).
+    const debtsParams = [];
+    const debtsConds = [];
+    if (scope.ids) { debtsParams.push(scope.ids); debtsConds.push(`so.branch_id = ANY($${debtsParams.length}::int[])`); }
     const debtsWhere = debtsConds.length ? 'WHERE ' + debtsConds.join(' AND ') : 'WHERE 1=1';
-    const debtsParams = branchId ? [branchId] : [];
     const debts = await pool.query(
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(so.quantity * so.price - COALESCE(so.paid_amount,0)),0) AS owed
@@ -3566,10 +9390,13 @@ app.get('/api/team/kpi', auth(['founder', 'gen_dir', 'manager']), async (req, re
     const params = [];
     // Exclude admin (not in this company) and manager (manager monitors others, not themselves)
     const userScopeConds = ["u.role NOT IN ('admin', 'manager')"];
-    if (req.user.role === 'manager' && req.user.branch_id) {
-      userScopeConds.push(`u.branch_id = $${params.length + 1}`); params.push(req.user.branch_id);
+    if (req.user.role === 'manager') {
+      // Менеджер — строго свой филиал; без branch_id → fail-closed (-1 → 0 строк), НЕ вся компания/все компании.
+      userScopeConds.push(`u.branch_id = $${params.length + 1}`); params.push(req.user.branch_id || -1);
     } else if (isCompanyLevel(req.user.role) && req.user.company_id) {
       userScopeConds.push(`u.company_id = $${params.length + 1}`); params.push(req.user.company_id);
+    } else {
+      userScopeConds.push('false'); // нет валидного скоупа — ничего не отдаём (защита от кросс-тенанта)
     }
     const userScope = userScopeConds.join(' AND ');
 
@@ -3659,7 +9486,7 @@ app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req,
 });
 
 // === UPLOAD ===
-app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse']), (req, res) => {
+app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse', 'founder', 'gen_dir', 'manager']), (req, res) => {
   upload.single('photo')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
     if (!req.file) return res.status(400).json({ error: 'Файл не найден' });
@@ -5030,14 +10857,27 @@ app.post('/api/shifts/:id/close', auth(['cashier', 'manager', 'admin']), async (
 app.get('/api/audit-log', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
   try {
     const { entity_type, action, limit } = req.query;
+    const isAdmin = req.user.role === 'admin';
     const params = [];
     const conds = [];
+    // Тенант-скоуп: владельцы (founder/gen_dir) видят журнал ТОЛЬКО своей компании.
+    // admin (SaaS-оператор) видит платформенно, но без финансовых деталей (ниже).
+    if (!isAdmin) {
+      params.push(req.user.company_id);
+      conds.push(`company_id = $${params.length}`);
+    }
     if (entity_type) { params.push(entity_type); conds.push(`entity_type = $${params.length}`); }
     if (action)      { params.push(action);      conds.push(`action      = $${params.length}`); }
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
     const lim = Math.min(parseInt(limit) || 200, 1000);
+    // Для admin отдаём только операционные поля (кто/что/когда/модуль/IP). Поля
+    // old_value/new_value/description/suspicious_reason могут содержать суммы и цены
+    // клиента — их НЕ шлём SaaS-оператору (видит «операции», но не финансы).
+    const cols = isAdmin
+      ? 'id, user_id, username, user_role, action, entity_type, entity_id, module, ip_address, created_at, is_suspicious'
+      : '*';
     const { rows } = await pool.query(`
-      SELECT * FROM audit_log ${where}
+      SELECT ${cols} FROM audit_log ${where}
       ORDER BY created_at DESC
       LIMIT ${lim}
     `, params);
@@ -5055,6 +10895,9 @@ app.get('/api/admin/dashboard', auth(['admin']), async (req, res) => {
     if (from) { periodParams.push(from); periodSQL += ` AND so.created_at >= $${periodParams.length}`; }
     if (to)   { periodParams.push(to);   periodSQL += ` AND so.created_at <  $${periodParams.length}`; }
 
+    // ВАЖНО: SaaS-оператор (admin) НЕ видит финансы клиентов — только операционку
+    // (компании, филиалы, юзеры, активность по логинам). Никаких выручки/прибыли/
+    // кассы здесь не считается и не возвращается — это коммерческая тайна клиента.
     const companiesQ = await pool.query(`
       SELECT c.id, c.name, c.created_at,
              (SELECT COUNT(*) FROM branches b WHERE b.company_id = c.id) AS branches_count,
@@ -5064,49 +10907,18 @@ app.get('/api/admin/dashboard', auth(['admin']), async (req, res) => {
       ORDER BY c.id
     `);
 
-    const enriched = await Promise.all(companiesQ.rows.map(async (c) => {
-      const branchIdsR = await pool.query('SELECT id FROM branches WHERE company_id = $1', [c.id]);
-      const branchIds = branchIdsR.rows.map(r => r.id);
-      if (branchIds.length === 0) {
-        return { ...c, sales_revenue: 0, gross_profit: 0, deals_count: 0, cash_balance: 0, health: scoreHealth(c.last_login_at, 0) };
-      }
-      const idList = `(${branchIds.join(',')})`;
-      const [salesQ, cashIQ, cashEQ] = await Promise.all([
-        pool.query(`
-          SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
-                 COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
-                 COUNT(*) AS deals
-          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-          WHERE so.status='approved' AND so.branch_id IN ${idList} ${periodSQL}`,
-          periodParams),
-        pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_income  WHERE branch_id IN ${idList} AND is_settled IS NOT FALSE`),
-        pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_expense WHERE branch_id IN ${idList}`),
-      ]);
-      const rev = parseFloat(salesQ.rows[0].revenue) || 0;
-      const cost = parseFloat(salesQ.rows[0].cost) || 0;
-      const deals = parseInt(salesQ.rows[0].deals) || 0;
-      const ci = parseFloat(cashIQ.rows[0].t) || 0;
-      const ce = parseFloat(cashEQ.rows[0].t) || 0;
-      return {
-        ...c,
-        sales_revenue: rev,
-        gross_profit: rev - cost,
-        margin_pct: rev > 0 ? Math.round(((rev - cost) / rev) * 1000) / 10 : 0,
-        deals_count: deals,
-        cash_balance: ci - ce,
-        health: scoreHealth(c.last_login_at, deals),
-      };
+    const enriched = companiesQ.rows.map((c) => ({
+      ...c,
+      branches_count: parseInt(c.branches_count || 0),
+      users_count: parseInt(c.users_count || 0),
+      health: scoreHealth(c.last_login_at),
     }));
 
-    // System-wide totals
+    // System-wide totals — только операционные (места/филиалы), без денег.
     const sysTotals = enriched.reduce((acc, c) => ({
-      sales_revenue: acc.sales_revenue + c.sales_revenue,
-      gross_profit:  acc.gross_profit + c.gross_profit,
-      deals_count:   acc.deals_count + c.deals_count,
-      cash_balance:  acc.cash_balance + c.cash_balance,
-      users_count:   acc.users_count + parseInt(c.users_count || 0),
-      branches_count: acc.branches_count + parseInt(c.branches_count || 0),
-    }), { sales_revenue: 0, gross_profit: 0, deals_count: 0, cash_balance: 0, users_count: 0, branches_count: 0 });
+      users_count:    acc.users_count + c.users_count,
+      branches_count: acc.branches_count + c.branches_count,
+    }), { users_count: 0, branches_count: 0 });
 
     const summary = {
       total_companies: enriched.length,
@@ -5150,37 +10962,160 @@ app.get('/api/admin/companies/:id', auth(['admin']), async (req, res) => {
         ORDER BY role, username
       `, [id]),
     ]);
-    const branchIds = branchesQ.rows.map(r => r.id);
-    let kpi = { sales_revenue: 0, deals_count: 0, cash_balance: 0, stock_value: 0 };
-    if (branchIds.length > 0) {
-      const list = `(${branchIds.join(',')})`;
-      const r1 = await pool.query(`
-        SELECT COALESCE(SUM(so.quantity*so.price),0) AS rev,
-               COUNT(*) AS deals
-        FROM stock_outcome so WHERE so.status='approved' AND so.branch_id IN ${list}`);
-      const r2 = await pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_income  WHERE branch_id IN ${list} AND is_settled IS NOT FALSE`);
-      const r3 = await pool.query(`SELECT COALESCE(SUM(amount),0) AS t FROM cash_expense WHERE branch_id IN ${list}`);
-      const r4 = await pool.query(`
-        SELECT COALESCE(SUM(ps.quantity * COALESCE(p.price_sell,0)),0) AS v
-        FROM product_stock ps JOIN products p ON p.id = ps.product_id
-        WHERE ps.branch_id IN ${list}`);
-      kpi = {
-        sales_revenue: parseFloat(r1.rows[0].rev) || 0,
-        deals_count: parseInt(r1.rows[0].deals) || 0,
-        cash_balance: (parseFloat(r2.rows[0].t) || 0) - (parseFloat(r3.rows[0].t) || 0),
-        stock_value: parseFloat(r4.rows[0].v) || 0,
-      };
-    }
+    // SaaS-оператор видит только операционку компании (филиалы/сотрудники/активность) —
+    // без выручки/кассы/склада. Никаких финансовых SQL здесь не выполняется.
+    const usage = {
+      branches_count: branchesQ.rows.length,
+      users_count: usersQ.rows.length,
+      active_users: usersQ.rows.filter(u => !u.is_blocked).length,
+      blocked_users: usersQ.rows.filter(u => u.is_blocked).length,
+    };
     res.json({
       company: cQ.rows[0],
       branches: branchesQ.rows,
       users: usersQ.rows,
-      kpi,
+      usage,
     });
   } catch (e) {
     console.error('admin/company err', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// === НАША КОМАНДА (WoW) — суперпользователи с доступом ко ВСЕМ компаниям (role=admin) ===
+// Внутренние аккаунты команды: мягкая валидация (логин уникален глобально, пароль ≥4).
+function validateTeamCreds(username, password) {
+  if (!username || !/^[a-zA-Z0-9._-]{3,40}$/.test(username)) return 'Логин: 3–40 символов (латиница/цифры/._-)';
+  if (typeof password !== 'string' || password.length < 4) return 'Пароль минимум 4 символа';
+  return null;
+}
+
+app.get('/api/admin/team', auth(['admin']), async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, username, first_name, last_name, last_login_at, is_blocked, created_at
+      FROM users WHERE role = 'admin'
+      ORDER BY created_at NULLS FIRST, id
+    `);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/team', auth(['admin']), async (req, res) => {
+  try {
+    const { username, password, first_name, last_name } = req.body;
+    const uname = (username || '').trim();
+    const err = validateTeamCreds(uname, password);
+    if (err) return res.status(400).json({ error: err });
+    const dup = await pool.query('SELECT id FROM users WHERE username = $1', [uname]);
+    if (dup.rows[0]) return res.status(409).json({ error: 'Логин уже занят' });
+    const hash = await bcrypt.hash(password, 10);
+    const { rows } = await pool.query(
+      `INSERT INTO users (username, password_hash, role, company_id, branch_id, first_name, last_name, created_by)
+       VALUES ($1,$2,'admin',NULL,NULL,$3,$4,$5)
+       RETURNING id, username, first_name, last_name, last_login_at, is_blocked, created_at`,
+      [uname, hash, first_name || null, last_name || null, req.user.id]
+    );
+    audit(req, 'create', 'user', rows[0].id, null, { role: 'admin', team: 'WoW' });
+    res.json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.put('/api/admin/team/:id/block', auth(['admin']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (id === req.user.id) return res.status(400).json({ error: 'Нельзя заблокировать самого себя' });
+    const { rows: [u] } = await pool.query("SELECT id, role, is_blocked FROM users WHERE id = $1", [id]);
+    if (!u || u.role !== 'admin') return res.status(404).json({ error: 'Сотрудник не найден' });
+    const next = !u.is_blocked;
+    await pool.query('UPDATE users SET is_blocked = $1 WHERE id = $2', [next, id]);
+    audit(req, next ? 'block' : 'unblock', 'user', id, null, { team: 'WoW' });
+    res.json({ ok: true, is_blocked: next });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.post('/api/admin/team/:id/reset-password', auth(['admin']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { password } = req.body;
+    if (typeof password !== 'string' || password.length < 4) return res.status(400).json({ error: 'Пароль минимум 4 символа' });
+    const { rows: [u] } = await pool.query("SELECT id, role FROM users WHERE id = $1", [id]);
+    if (!u || u.role !== 'admin') return res.status(404).json({ error: 'Сотрудник не найден' });
+    const hash = await bcrypt.hash(password, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, id]);
+    audit(req, 'reset_password', 'user', id, null, { team: 'WoW' });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/team/:id', auth(['admin']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (id === req.user.id) return res.status(400).json({ error: 'Нельзя удалить самого себя' });
+    const { rows: [u] } = await pool.query("SELECT id, role FROM users WHERE id = $1", [id]);
+    if (!u || u.role !== 'admin') return res.status(404).json({ error: 'Сотрудник не найден' });
+    const cnt = await pool.query("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND COALESCE(is_blocked, false) = false");
+    if (cnt.rows[0].n <= 1) return res.status(400).json({ error: 'Нельзя удалить последнего администратора' });
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    audit(req, 'delete', 'user', id, null, { team: 'WoW' });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// === «ВОЙТИ КАК» (impersonation) — WoW-команда заходит в любую компанию под любой ролью ===
+// Только реальный admin может выписать scoped-токен. Токен несёт выбранные role/company/branch
+// + act_as, поэтому все обычные эндпоинты скоупятся так, будто это реальный сотрудник компании.
+const IMPERSONATABLE_ROLES = new Set(['founder', 'gen_dir', 'manager', 'cashier', 'warehouse', 'seller']);
+
+app.get('/api/admin/impersonate/targets', auth(['admin']), async (req, res) => {
+  try {
+    const [companies, branches] = await Promise.all([
+      pool.query('SELECT id, name FROM companies ORDER BY name'),
+      pool.query('SELECT id, name, company_id FROM branches ORDER BY name'),
+    ]);
+    const byCo = {};
+    for (const c of companies.rows) byCo[c.id] = { id: c.id, name: c.name, branches: [] };
+    for (const b of branches.rows) if (byCo[b.company_id]) byCo[b.company_id].branches.push({ id: b.id, name: b.name });
+    res.json(Object.values(byCo));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
+  try {
+    const company_id = parseInt(req.body.company_id, 10);
+    const role = String(req.body.role || '');
+    const reqBranch = req.body.branch_id ? parseInt(req.body.branch_id, 10) : null;
+    if (!Number.isFinite(company_id)) return res.status(400).json({ error: 'Выберите компанию' });
+    if (!IMPERSONATABLE_ROLES.has(role)) return res.status(400).json({ error: 'Недопустимая роль' });
+    const co = await pool.query('SELECT id, name FROM companies WHERE id = $1', [company_id]);
+    if (!co.rows[0]) return res.status(404).json({ error: 'Компания не найдена' });
+    const isCoLevel = (role === 'founder' || role === 'gen_dir');
+    let branchName = null;
+    if (!isCoLevel && !reqBranch) return res.status(400).json({ error: 'Для этой роли нужно выбрать филиал' });
+    if (reqBranch) {
+      const b = await pool.query('SELECT id, name FROM branches WHERE id = $1 AND company_id = $2', [reqBranch, company_id]);
+      if (!b.rows[0]) return res.status(400).json({ error: 'Филиал не принадлежит выбранной компании' });
+      branchName = b.rows[0].name;
+    }
+    const effBranch = isCoLevel ? null : reqBranch;
+    const token = jwt.sign({
+      id: req.user.id, username: req.user.username, role,
+      company_id, branch_id: effBranch,
+      act_as: true, imp_by: req.user.id, imp_name: req.user.username,
+    }, JWT_SECRET, { expiresIn: '24h' });
+    audit(req, 'impersonate', 'company', company_id, null,
+      { as_role: role, branch_id: effBranch, company: co.rows[0].name }, { module: 'settings', description: `Вход как ${role} в «${co.rows[0].name}»` });
+    res.json({
+      token,
+      user: {
+        id: req.user.id, username: req.user.username, role,
+        company_id, branch_id: effBranch,
+        company_name: co.rows[0].name, branch_name: branchName,
+        blocked_tools: [], ai_enabled: true,
+        act_as: true, impersonator_name: req.user.username,
+      },
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // === FEATURE FLAGS ===
@@ -5245,6 +11180,36 @@ app.post('/api/admin/features/toggle', auth(['admin']), async (req, res) => {
 });
 
 // Get feature keys enabled for current user's company. Used by frontend FeaturesContext.
+// === Панель управления виджетами: учредитель включает/выключает инструменты для всей компании ===
+// Хранится в companies.disabled_tools[]. Читать может владелец-роль, менять — ТОЛЬКО учредитель.
+app.get('/api/company/tool-settings', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    if (!req.user.company_id) return res.json({ disabled_tools: [], disabled_widgets: [] });
+    const { rows } = await pool.query("SELECT COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]);
+    res.json({ disabled_tools: rows[0]?.disabled_tools || [], disabled_widgets: rows[0]?.disabled_widgets || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/company/tool-settings', auth(['founder']), async (req, res) => {
+  try {
+    if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
+    const clean = (arr) => Array.isArray(arr)
+      ? [...new Set(arr.filter(t => typeof t === 'string' && t.length <= 60))].slice(0, 400)
+      : null;
+    const list = clean(req.body.disabled_tools) || [];
+    // disabled_widgets — необязательное поле; если не передано, не трогаем.
+    const widgets = clean(req.body.disabled_widgets);
+    if (widgets != null) {
+      await pool.query('UPDATE companies SET disabled_tools=$1, disabled_widgets=$2 WHERE id=$3', [list, widgets, req.user.company_id]);
+    } else {
+      await pool.query('UPDATE companies SET disabled_tools=$1 WHERE id=$2', [list, req.user.company_id]);
+    }
+    audit(req, 'update', 'company', req.user.company_id, null, { disabled_count: list.length, widget_off: widgets ? widgets.length : undefined },
+      { module: 'settings', description: 'Изменён набор активных инструментов панели' });
+    res.json({ ok: true, disabled_tools: list, disabled_widgets: widgets != null ? widgets : undefined });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.get('/api/me/features', auth(), async (req, res) => {
   try {
     if (!req.user.company_id) return res.json({ keys: [] });
@@ -5590,17 +11555,23 @@ app.delete('/api/marketing/channel-spend/:id', auth(MKT_ROLES), async (req, res)
 //   AI_API_KEY=gsk_... ; AI_MODEL=llama-3.3-70b-versatile
 // Ключ читается только из env и никогда не уходит в браузер (backend = прокси).
 const AI_API_URL = process.env.AI_API_URL || 'https://api.deepseek.com/chat/completions';
-const AI_API_KEY = process.env.AI_API_KEY || AI_API_KEY || '';
+const AI_API_KEY = process.env.AI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
 const DEEPSEEK_URL = AI_API_URL; // алиас для существующих вызовов fetch
 const AI_ROLES = ['admin','founder','gen_dir'];
+// Гейт AI-доступа: учредитель/админ компании может отключить AI конкретному пользователю (users.ai_enabled).
+const aiGate = async (req, res, next) => {
+  try {
+    if (req.user.role === 'admin') return next();
+    const { rows } = await pool.query('SELECT ai_enabled FROM users WHERE id=$1', [req.user.id]);
+    if (rows[0] && rows[0].ai_enabled === false) return res.status(403).json({ error: 'AI-доступ отключён администратором' });
+    next();
+  } catch (e) { next(); }
+};
 
 function fmtUZS(v) {
-  const n = parseFloat(v) || 0;
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1).replace(/\.?0+$/, '') + 'K';
-  return Math.round(n).toString();
+  // Полное число с разделителями разрядов (без B/M/K) — по требованию.
+  return Math.round(parseFloat(v) || 0).toLocaleString('ru-RU');
 }
 
 // Fetch a snapshot of the user's company business state — gets injected into the AI's system prompt
@@ -5912,12 +11883,11 @@ async function buildSystemPrompt(user, lang) {
     'Отвечай кратко (2-6 предложений), по делу. ВСЕГДА приводи конкретные цифры из данных компании когда они уместны (выручка, маржа, сделки, имена филиалов и товаров).',
     'Для прогнозов используй помесячный тренд (он за 24 месяца внизу) — посчитай средний рост/спад и экстраполируй.',
     'Для сравнения "сейчас vs раньше" сопоставляй "Текущие 30 дней" и "Предыдущие 30 дней" — там уже посчитана дельта в %.',
-    'ВИЗУАЛИЗАЦИЯ: если пользователь явно просит график/диаграмму/визуализацию (слова: график, диаграмма, визуализируй, покажи график, нарисуй), заверши ответ ОТДЕЛЬНОЙ строкой:',
-    '  [[CHART:TYPE]]',
-    'где TYPE — один из: monthly_revenue (помесячная выручка), top_products (топ-товары), top_sellers (топ-продавцы), branches (филиалы), period_compare (текущие 30д vs предыдущие).',
-    'Можешь вставить НЕСКОЛЬКО тегов подряд (каждый на новой строке) если нужно несколько графиков.',
-    'НЕ рисуй ASCII-графики или текстовые палочки — система отрендерит настоящий график автоматически на основе тега.',
-    'НЕ объясняй что такое тег [[CHART:...]] — пользователь его не видит, он видит уже отрендеренный график.',
+    'ГРАФИКИ (ВАЖНО — активно помогай визуально): у тебя есть 5 готовых графиков по РЕАЛЬНЫМ данным компании. Вставляй подходящий тег ОТДЕЛЬНОЙ строкой в конце ответа — НЕ только когда просят слово «график», а ВСЕГДА когда вопрос касается динамики, роста/спада, сравнения, выручки, продаж, товаров, продавцов или филиалов. Так учредителю нагляднее.',
+    'Формат тега (пользователь его НЕ видит — видит уже отрисованный график): [[CHART:TYPE]]',
+    'TYPE выбирай по смыслу вопроса: monthly_revenue — динамика выручки по месяцам (рост, тренд, «как выручка», прогноз); top_products — топ-товары (ассортимент, что продаётся, хиты); top_sellers — топ-продавцы (сотрудники, кто лучше продаёт); branches — сравнение филиалов (какой филиал сильнее); period_compare — текущие 30 дней vs предыдущие («как сейчас vs раньше», стало лучше/хуже).',
+    'Максимум 2 графика на ответ, только релевантные. Если вопрос НЕ про данные (напр. «как поднять цену», «что делать с сотрудником») — график не нужен.',
+    'Можешь вставить несколько тегов подряд (каждый на новой строке). НЕ рисуй ASCII-графики/палочки — система сама отрендерит настоящий график по тегу. НЕ упоминай слово «тег» и сам синтаксис [[CHART:...]] в тексте ответа.',
     'Будь конкретен: ссылайся на разделы системы (Главная, Склад, Касса, Клиентский сервис, Финансы, HR, Маркетинг, Закупки, Операции).',
     'Если нужно действие — указывай куда нажать (например: «Склад → Остатки → выбери товар → подними цену в Sotish narxi»).',
     'Если данных не хватает (например пользователь спросил про что-то конкретное чего нет в блоке) — честно скажи «в текущих данных этого не вижу, проверь сам в разделе X».',
@@ -5939,7 +11909,7 @@ async function buildSystemPrompt(user, lang) {
   return lines.join(' ') + (context ? '\n' + context : '');
 }
 
-app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
+app.post('/api/ai/chat', auth(AI_ROLES), aiGate, async (req, res) => {
   const startedAt = Date.now();
   try {
     if (!AI_API_KEY) {
@@ -6003,7 +11973,7 @@ app.post('/api/ai/chat', auth(AI_ROLES), async (req, res) => {
 // the data already scoped to the user's company (or branch for manager). The AI itself never
 // returns chart pixels — it tags responses like [[CHART:monthly_revenue]] and the UI renders
 // the real chart next to the message using this endpoint.
-app.get('/api/ai/chart-data', auth(AI_ROLES), async (req, res) => {
+app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
   try {
     const type = (req.query.type || '').toString();
     if (!req.user.company_id) return res.json({ type, data: null });
@@ -6140,7 +12110,7 @@ const FIN_TOPICS = {
   model:       { name: 'Финансовая модель',          fn: computeFinModel },
   channels:    { name: 'Каналы привлечения и ROI',   fn: null },
 };
-app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
+app.post('/api/ai/analyze', auth(AI_ROLES), aiGate, async (req, res) => {
   try {
     const topic = req.body?.topic;
     const meta = FIN_TOPICS[topic];
@@ -6194,7 +12164,7 @@ app.post('/api/ai/analyze', auth(AI_ROLES), async (req, res) => {
   } catch (e) { console.error('ai/analyze err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
 
-app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
+app.post('/api/ai/suggest', auth(AI_ROLES), aiGate, async (req, res) => {
   try {
     if (!AI_API_KEY) return res.json({ questions: [] });
     const { last_reply, lang } = req.body || {};
@@ -6232,7 +12202,7 @@ app.post('/api/ai/suggest', auth(AI_ROLES), async (req, res) => {
 // Объяснение «состояния бизнеса» по графику. Доступно и менеджеру, НО:
 // менеджеру даём БЕЗ денежных сумм — только относительный idx и доли (он их и присылает),
 // и системный промпт СТРОГО запрещает называть суммы. Учредитель — полные цифры.
-app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), aiGate, async (req, res) => {
   try {
     if (!AI_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
     const { question, trend, biz_state, lang } = req.body || {};
@@ -6322,6 +12292,23 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }
 
 async function ensureSchema() {
   try {
+    try { // newtools_v2_schema_marker
+      await pool.query("CREATE TABLE IF NOT EXISTS competitors (\n  id SERIAL PRIMARY KEY,\n  company_id INT NOT NULL,\n  name TEXT NOT NULL,\n  sku INT DEFAULT 0,\n  avg_price NUMERIC DEFAULT 0,\n  rating NUMERIC DEFAULT 0,\n  service INT DEFAULT 0,\n  locations INT DEFAULT 0,\n  online INT DEFAULT 0,\n  source TEXT,\n  updated_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_competitors_company ON competitors (company_id);");
+      await pool.query("CREATE TABLE IF NOT EXISTS police_rules (\n  id        SERIAL PRIMARY KEY,\n  company_id INT,\n  code      VARCHAR(64),\n  title     VARCHAR(255),\n  threshold NUMERIC DEFAULT 0,\n  severity  VARCHAR(16) DEFAULT 'low',\n  enabled   BOOLEAN DEFAULT true\n);\nCREATE INDEX IF NOT EXISTS idx_police_rules_company ON police_rules(company_id);\n\nCREATE TABLE IF NOT EXISTS police_alerts (\n  id          SERIAL PRIMARY KEY,\n  company_id  INT,\n  branch_id   INT,\n  employee_id INT,\n  severity    VARCHAR(16) DEFAULT 'low',\n  title       VARCHAR(255),\n  description TEXT,\n  est_loss    NUMERIC DEFAULT 0,\n  rule_code   VARCHAR(120),\n  status      VARCHAR(16) DEFAULT 'new',\n  created_at  TIMESTAMP DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_police_alerts_company ON police_alerts(company_id, status);\nCREATE UNIQUE INDEX IF NOT EXISTS idx_police_alerts_key ON police_alerts(company_id, rule_code);");
+    } catch (e) { console.error("newtools v2 schema err", e.message); }
+    // Гранулярные доступы пользователя: скрытые инструменты + флаг доступа к AI.
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked_tools text[] DEFAULT '{}'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_enabled boolean DEFAULT true`);
+    // Профиль сотрудника (заполняют учредитель/менеджер): фото, ДР, образование, опыт и т.д.
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo text`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date date`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS education text`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS experience text`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS prev_jobs text`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone varchar(40)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS position varchar(120)`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS hired_at date`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_notes text`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS company_features (
         company_id  INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -6487,11 +12474,8018 @@ async function ensureSchema() {
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_payroll_liab_company ON payroll_liab(company_id)`);
 
+    // === Phase 1 — «Изменения дашборда» ===
+    // 1B — гарантируем колонки двухвалютной кассы (на старых базах могли отсутствовать).
+    await pool.query(`ALTER TABLE cash_income ADD COLUMN IF NOT EXISTS original_amount NUMERIC(16,2)`);
+    await pool.query(`ALTER TABLE cash_expense ADD COLUMN IF NOT EXISTS original_amount NUMERIC(16,2)`);
+
+    // 1C — дневные снапшоты метрик филиала (кэш для табов «Денежный поток» + Трендов).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS branch_daily_summary (
+        branch_id    INT NOT NULL,
+        date         DATE NOT NULL,
+        income_uzs   NUMERIC(16,2) NOT NULL DEFAULT 0,
+        expense_uzs  NUMERIC(16,2) NOT NULL DEFAULT 0,
+        gross_profit NUMERIC(16,2) NOT NULL DEFAULT 0,
+        stock_value  NUMERIC(16,2) NOT NULL DEFAULT 0,
+        margin_pct   NUMERIC(7,2)  NOT NULL DEFAULT 0,
+        calculated_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (branch_id, date)
+      )`);
+
+    // 1D — BHI: ежедневный снапшот индекса здоровья бизнеса (кэш + история).
+    // Адаптивные веса требуют возраст компании → колонки biz_type/started_at/goal_bhi.
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS biz_type VARCHAR(20)`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS started_at DATE`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS goal_bhi INT`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS disabled_tools text[] DEFAULT '{}'`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS disabled_widgets text[] DEFAULT '{}'`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS hr_criteria jsonb DEFAULT '{}'::jsonb`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bhi_daily (
+        company_id     INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        date           DATE NOT NULL,
+        days_active    INT NOT NULL DEFAULT 0,
+        bhi            NUMERIC(6,2) NOT NULL DEFAULT 0,
+        revenue_weight NUMERIC(5,2) NOT NULL DEFAULT 0,
+        blocks_active  INT NOT NULL DEFAULT 0,
+        fin_health     NUMERIC(6,2),
+        ops_health     NUMERIC(6,2),
+        people_health  NUMERIC(6,2),
+        market_health  NUMERIC(6,2),
+        blocks         JSONB NOT NULL DEFAULT '{}'::jsonb,
+        calculated_at  TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (company_id, date)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bhi_daily_co ON bhi_daily(company_id, date)`);
+
+    // === Phase 2 — Клиенты/CRM ===
+    // F1 — RFM-сегментация: постоянная таблица (кэш) с r/f/m баллами и 11 сегментами.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_rfm (
+        customer_id        INT PRIMARY KEY,
+        company_id         INT NOT NULL,
+        r_score            SMALLINT NOT NULL DEFAULT 1,
+        f_score            SMALLINT NOT NULL DEFAULT 1,
+        m_score            SMALLINT NOT NULL DEFAULT 1,
+        last_purchase_date DATE,
+        days_since_last    INT,
+        total_orders       INT NOT NULL DEFAULT 0,
+        total_spent_uzs    NUMERIC(16,2) NOT NULL DEFAULT 0,
+        segment            VARCHAR(30) NOT NULL,
+        segment_label      VARCHAR(60),
+        calculated_at      TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_rfm_company_segment ON customer_rfm(company_id, segment)`);
+
+    // === Жалобы и обращения (complaints) — единый тикетинг ===
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS complaints (
+        id                    SERIAL PRIMARY KEY,
+        company_id            INTEGER NOT NULL,
+        branch_id             INTEGER,
+        customer_id           INTEGER,
+        customer_name         TEXT,
+        customer_phone        TEXT,
+        category              TEXT NOT NULL DEFAULT 'other',
+        description           TEXT,
+        channel               TEXT NOT NULL DEFAULT 'in_store',
+        related_employee_id   INTEGER,
+        status                TEXT NOT NULL DEFAULT 'new',
+        urgency               TEXT NOT NULL DEFAULT 'normal',
+        assigned_to           INTEGER,
+        resolution            TEXT,
+        compensation_type     TEXT,
+        compensation_amount   NUMERIC(16,2) NOT NULL DEFAULT 0,
+        customer_satisfaction SMALLINT,
+        resolved_at           TIMESTAMP,
+        resolved_by           INTEGER,
+        created_at            TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at            TIMESTAMP NOT NULL DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comp_company_branch ON complaints(company_id, branch_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comp_company_created ON complaints(company_id, created_at)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS complaint_history (
+        id            SERIAL PRIMARY KEY,
+        complaint_id  INTEGER NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+        event_type    TEXT NOT NULL,
+        old_value     TEXT,
+        new_value     TEXT,
+        comment       TEXT,
+        created_by    INTEGER,
+        created_at    TIMESTAMP NOT NULL DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comp_hist_complaint ON complaint_history(complaint_id, created_at)`);
+    // === Phase 2 — Клиенты/CRM · Дни рождения и события (bday) ===========
+    // ДР клиента (год опционален) + лог поздравлений с промокодом. Триггеров/cron нет:
+    // ближайшие ДР вычисляются compute-on-read из customers.birth_date при запросе.
+    await pool.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS birth_date DATE`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_customers_birth ON customers(company_id) WHERE birth_date IS NOT NULL`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS event_greetings (
+        id           SERIAL PRIMARY KEY,
+        customer_id  INT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+        company_id   INT NOT NULL,
+        event_type   VARCHAR(40) NOT NULL DEFAULT 'birthday',
+        event_year   INT NOT NULL,
+        channel      VARCHAR(20) NOT NULL DEFAULT 'sms',
+        promo_code   VARCHAR(40),
+        discount_pct SMALLINT NOT NULL DEFAULT 15,
+        used         BOOLEAN NOT NULL DEFAULT FALSE,
+        sent_at      TIMESTAMP DEFAULT NOW(),
+        UNIQUE (customer_id, event_type, event_year)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_event_greet_co ON event_greetings(company_id, event_type, event_year)`);
+    // === Реферальная программа (referrals): «Приведи друга» ===
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS referral_codes (
+        id          SERIAL PRIMARY KEY,
+        customer_id INT NOT NULL UNIQUE,
+        company_id  INT NOT NULL,
+        code        VARCHAR(40) NOT NULL UNIQUE,
+        is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_refcodes_company ON referral_codes(company_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS referrals (
+        id                    SERIAL PRIMARY KEY,
+        company_id            INT NOT NULL,
+        referrer_id           INT NOT NULL,
+        referred_id           INT NOT NULL UNIQUE,
+        promo_code            VARCHAR(40),
+        status                VARCHAR(16) NOT NULL DEFAULT 'pending',
+        first_purchase_id     INT,
+        first_purchase_amount NUMERIC(16,2),
+        bonus_amount          NUMERIC(16,2),
+        discount_pct          NUMERIC(6,2),
+        activated_at          TIMESTAMP,
+        created_at            TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_referrals_company ON referrals(company_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_bonuses (
+        customer_id   INT PRIMARY KEY,
+        company_id    INT NOT NULL,
+        balance_uzs   NUMERIC(16,2) NOT NULL DEFAULT 0,
+        earned_total  NUMERIC(16,2) NOT NULL DEFAULT 0,
+        used_total    NUMERIC(16,2) NOT NULL DEFAULT 0,
+        updated_at    TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cbonuses_company ON customer_bonuses(company_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bonus_transactions (
+        id            SERIAL PRIMARY KEY,
+        company_id    INT NOT NULL,
+        customer_id   INT NOT NULL,
+        type          VARCHAR(16) NOT NULL,
+        amount        NUMERIC(16,2) NOT NULL,
+        source        VARCHAR(20),
+        source_id     INT,
+        balance_after NUMERIC(16,2),
+        expires_at    TIMESTAMP,
+        created_at    TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bonustx_customer ON bonus_transactions(customer_id, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bonustx_company ON bonus_transactions(company_id)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS referral_settings (
+        company_id        INT PRIMARY KEY,
+        min_purchase_uzs  NUMERIC(16,2) NOT NULL DEFAULT 50000,
+        bonus_to_referrer NUMERIC(16,2) NOT NULL DEFAULT 20000,
+        discount_pct      NUMERIC(6,2)  NOT NULL DEFAULT 15,
+        validity_days     INT NOT NULL DEFAULT 90,
+        updated_at        TIMESTAMP DEFAULT NOW()
+      )`);
+    // === Phase 2 — Прогноз клиентской базы (forecast) ============================
+    // Месячные снапшоты RFM-сегмента каждого покупателя — источник матрицы переходов.
+    // Пишутся из rfmRecompute() при compute-on-read (планировщика/триггеров нет).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS customer_rfm_history (
+        id          SERIAL PRIMARY KEY,
+        customer_id INT NOT NULL,
+        company_id  INT NOT NULL,
+        period      DATE NOT NULL,          -- первое число месяца снапшота
+        segment     VARCHAR(30) NOT NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        UNIQUE (customer_id, period)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_rfm_hist_company_period ON customer_rfm_history(company_id, period)`);
+
+// === Центр алертов (alert-center) — постоянная таблица + compute-on-read ===
+    // Алерты ГЕНЕРИРУЮТСЯ на чтении из источников (низкий остаток, out-of-stock, просроченные
+    // долги клиентов/поставщиков, неотвеченные complaints>24ч). UPSERT по
+    // (company_id, module, source_table, source_id); исчезнувшие → status='resolved'.
+    // Без cron/setInterval/триггеров.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alerts (
+        id            SERIAL PRIMARY KEY,
+        company_id    INTEGER NOT NULL,
+        branch_id     INTEGER,
+        module        TEXT NOT NULL,                       -- inventory|finance|hr|crm|purchase
+        severity      TEXT NOT NULL,                       -- critical|warning|info
+        title         TEXT NOT NULL,
+        description   TEXT,
+        action        TEXT,                                -- deep-link во фронте (/owner/...)
+        source_table  TEXT,
+        source_id     TEXT,                                -- TEXT: source_id может быть составным
+        status        TEXT NOT NULL DEFAULT 'open',        -- open|resolved
+        resolved_by   INTEGER,
+        resolved_at   TIMESTAMP,
+        created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+        expires_at    TIMESTAMP
+      )`);
+    // Уникальный ключ для dedup-UPSERT по природному источнику алерта.
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_alerts_source
+      ON alerts(company_id, module, source_table, source_id)
+      WHERE source_table IS NOT NULL AND source_id IS NOT NULL`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alerts_company_branch_status
+      ON alerts(company_id, branch_id, status, severity)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_alerts_company_status
+      ON alerts(company_id, status)`);
+
+// === Детектор аномалий (anomaly) ===========================================
+    // Сравнение метрик дня с 30-дн скользящим средним по тому же дню недели.
+    // Генерация compute-on-read (НЕ ночной cron): на GET считаем отклонения и
+    // UPSERT-им в anomalies (dedup по company_id,branch_id,date,metric).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS anomalies (
+        id              SERIAL PRIMARY KEY,
+        company_id      INT NOT NULL,
+        branch_id       INT NOT NULL,
+        date            DATE NOT NULL,
+        module          VARCHAR(20) NOT NULL DEFAULT 'sales',
+        metric          VARCHAR(50) NOT NULL,
+        expected_value  NUMERIC(18,2) NOT NULL DEFAULT 0,
+        actual_value    NUMERIC(18,2) NOT NULL DEFAULT 0,
+        deviation_pct   NUMERIC(8,2)  NOT NULL DEFAULT 0,
+        severity        VARCHAR(20)   NOT NULL,
+        possible_causes TEXT[]        DEFAULT '{}',
+        status          VARCHAR(20)   NOT NULL DEFAULT 'new',
+        reviewed_by     INT,
+        review_note     TEXT,
+        created_at      TIMESTAMP DEFAULT NOW(),
+        UNIQUE (company_id, branch_id, date, metric)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_anomalies_company_date ON anomalies(company_id, date DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_anomalies_branch ON anomalies(branch_id, date DESC)`);
+
+// === Когортный анализ (cohorts) — кэш ретеншна по месяцу первой покупки ===
+    // compute-on-read с TTL (планировщика/триггеров нет). Источник: stock_outcome.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cohort_cache (
+        id            SERIAL PRIMARY KEY,
+        company_id    INT  NOT NULL,
+        branch_id     INT,                       -- NULL = вся компания (владелец)
+        cohort_month  DATE NOT NULL,             -- первое число месяца первой покупки
+        cohort_size   INT  NOT NULL DEFAULT 0,
+        retention     JSONB NOT NULL DEFAULT '{}'::jsonb,  -- {"0":100,"1":68,...} % вернувшихся
+        revenue       JSONB NOT NULL DEFAULT '{}'::jsonb,  -- {"0":4560000,...} выручка по мес
+        calculated_at TIMESTAMP DEFAULT NOW()
+      )`);
+    // Раздельная уникальность по скоупу: NULL != NULL в обычном UNIQUE, поэтому два partial-индекса.
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cohort_company_month
+      ON cohort_cache(company_id, cohort_month) WHERE branch_id IS NULL`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cohort_company_branch_month
+      ON cohort_cache(company_id, branch_id, cohort_month) WHERE branch_id IS NOT NULL`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cohort_company_branch
+      ON cohort_cache(company_id, branch_id, cohort_month)`);
+
+// === Задачи / Поручения (tasks) — Kanban + список ============================
+    // КАНОНИЧЕСКАЯ таблица tasks (создаёт ТОЛЬКО этот инструмент; task-analytics и
+    // task-templates её ТОЛЬКО читают/пишут). Просрочка вычисляется на чтении
+    // (compute-on-read): status NOT IN (done,cancelled) AND due_date < CURRENT_DATE.
+    // Без cron/триггеров. started_at/completed_at проставляются на смене статуса.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id                 SERIAL PRIMARY KEY,
+        company_id         INTEGER NOT NULL,
+        branch_id          INTEGER,
+        title              TEXT NOT NULL,
+        description        TEXT,
+        assignee_id        INTEGER,
+        created_by         INTEGER,
+        priority           TEXT DEFAULT 'medium',          -- critical|high|medium|low
+        due_date           DATE,
+        due_time           TIME,
+        status             TEXT DEFAULT 'todo',            -- todo|in_progress|done|cancelled
+        started_at         TIMESTAMP,
+        completed_at       TIMESTAMP,
+        source             TEXT DEFAULT 'manual',          -- manual|system|template
+        source_alert_id    INTEGER,
+        source_template_id INTEGER,
+        tags               TEXT[],
+        created_at         TIMESTAMP DEFAULT NOW(),
+        updated_at         TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_branch_status
+      ON tasks(company_id, branch_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status_due
+      ON tasks(assignee_id, status, due_date)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_tasks_due_date_active
+      ON tasks(company_id, due_date) WHERE status IN ('todo','in_progress')`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS task_comments (
+        id         SERIAL PRIMARY KEY,
+        task_id    INTEGER NOT NULL,
+        author_id  INTEGER,
+        text       TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id)`);
+
+// === Воронка бизнеса (business-funnel) — ручной ввод показов/посетителей ===
+    // Ступени 1-2 (показы рекламы / посетители) данных в системе нет → ручной ввод.
+    // period = первое число текущего месяца. Уникальность по (company, branch, period),
+    // где branch_id NULL (ввод на уровне всей компании) считается отдельным слотом → COALESCE(...,0).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS funnel_inputs (
+        id          SERIAL PRIMARY KEY,
+        company_id  INTEGER NOT NULL,
+        branch_id   INTEGER,
+        period      DATE NOT NULL,
+        ad_views    INTEGER NOT NULL DEFAULT 0,
+        visitors    INTEGER NOT NULL DEFAULT 0,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    // Экспрессионный UNIQUE-индекс: COALESCE(branch_id,0) делает NULL-филиал уникальным слотом.
+    // ON CONFLICT в роуте ссылается на ровно эти выражения (инференс по выражениям индекса).
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_funnel_inputs_period
+      ON funnel_inputs(company_id, COALESCE(branch_id, 0), period)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_funnel_inputs_company
+      ON funnel_inputs(company_id, period)`);
+
+// === Анализ корзины (basket) — кэш пар совместно покупаемых товаров ===
+    // compute-on-read с TTL 24ч (планировщика/триггеров нет).
+    // «Корзина» ≈ строки stock_outcome, сгруппированные по (created_by, customer_id, минута).
+    // Источник: одобренные продажи. Менеджер скоупится своим филиалом.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS basket_pairs (
+        id              SERIAL PRIMARY KEY,
+        company_id      INT  NOT NULL,
+        branch_id       INT,                        -- NULL = вся компания (владелец)
+        product_a_id    INT  NOT NULL,
+        product_b_id    INT  NOT NULL,              -- всегда a_id < b_id (нормализованная пара)
+        together_count  INT  NOT NULL DEFAULT 0,    -- в скольких корзинах встретилась пара
+        count_a         INT  NOT NULL DEFAULT 0,    -- корзин с товаром A
+        count_b         INT  NOT NULL DEFAULT 0,    -- корзин с товаром B
+        baskets_total   INT  NOT NULL DEFAULT 0,    -- всего многотоварных корзин в скоупе
+        support_pct     NUMERIC(6,3) NOT NULL DEFAULT 0,  -- together/total * 100
+        confidence_a_b  NUMERIC(6,2) NOT NULL DEFAULT 0,  -- P(B|A) = together/count_a * 100
+        confidence_b_a  NUMERIC(6,2) NOT NULL DEFAULT 0,  -- P(A|B) = together/count_b * 100
+        lift            NUMERIC(8,3) NOT NULL DEFAULT 0,  -- confidence_a_b / (count_b/total)
+        avg_basket_uzs  NUMERIC(18,2) NOT NULL DEFAULT 0, -- средний чек корзин с этой парой
+        calculated_at   TIMESTAMP DEFAULT NOW()
+      )`);
+    // Раздельная уникальность по скоупу: NULL != NULL в обычном UNIQUE → два partial-индекса.
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_basket_company_pair
+      ON basket_pairs(company_id, product_a_id, product_b_id) WHERE branch_id IS NULL`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_basket_company_branch_pair
+      ON basket_pairs(company_id, branch_id, product_a_id, product_b_id) WHERE branch_id IS NOT NULL`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_basket_company_branch
+      ON basket_pairs(company_id, branch_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_basket_recommend
+      ON basket_pairs(company_id, branch_id, product_a_id, product_b_id)`);
+
+// === Юнит-экономика (unit-economics) =====================================
+    // Площадь филиала (м²) для экономики на квадратный метр. Данных нет в системе —
+    // ручной ввод владельцем через PATCH /api/branches/:id/area. NULL → прочерк в UI.
+    await pool.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS area_sqm NUMERIC`);
+    // Аренда филиала в месяц (для аренды/м²). Тоже ручной ввод; NULL → прочерк.
+    await pool.query(`ALTER TABLE branches ADD COLUMN IF NOT EXISTS rent_monthly_uzs NUMERIC`);
+
+// === ССП (Balanced Scorecard) — bsc_* ===
+    // Учредитель задаёт стратегию: отделы с весами (сумма=100), метрики с планом на 3 года,
+    // факты вносятся по дате. completion% = fact/plan*100, агрегация по отделам взвешенно.
+    // Только compute-on-read: ни cron, ни триггеров.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bsc_strategies (
+        id          SERIAL PRIMARY KEY,
+        company_id  INT  NOT NULL,
+        name        TEXT NOT NULL,
+        start_date  DATE NOT NULL,
+        end_date    DATE NOT NULL,
+        total_score NUMERIC(5,2),
+        created_by  INT,
+        created_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_strat_company ON bsc_strategies(company_id, created_at DESC)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bsc_departments (
+        id            SERIAL PRIMARY KEY,
+        strategy_id   INT  NOT NULL REFERENCES bsc_strategies(id) ON DELETE CASCADE,
+        name          TEXT NOT NULL,
+        weight_pct    NUMERIC(5,2) NOT NULL DEFAULT 0,
+        color         VARCHAR(7),
+        display_order INT DEFAULT 0
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_dept_strat ON bsc_departments(strategy_id, display_order)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bsc_metrics (
+        id            SERIAL PRIMARY KEY,
+        department_id INT  NOT NULL REFERENCES bsc_departments(id) ON DELETE CASCADE,
+        name          TEXT NOT NULL,
+        unit          TEXT,
+        source_type   TEXT NOT NULL DEFAULT 'manual',  -- manual | auto_pos | auto_crm | auto_inventory
+        plan_year_1   NUMERIC(15,2) DEFAULT 0,
+        plan_year_2   NUMERIC(15,2) DEFAULT 0,
+        plan_year_3   NUMERIC(15,2) DEFAULT 0,
+        display_order INT DEFAULT 0
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_metric_dept ON bsc_metrics(department_id, display_order)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bsc_fact_values (
+        id          SERIAL PRIMARY KEY,
+        metric_id   INT  NOT NULL REFERENCES bsc_metrics(id) ON DELETE CASCADE,
+        fact_date   DATE NOT NULL,
+        fact_value  NUMERIC(15,2) NOT NULL DEFAULT 0,
+        created_by  INT,
+        created_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_fact_metric ON bsc_fact_values(metric_id, fact_date)`);
+
+// === Чеклисты открытия/закрытия (checklists) ===
+    // Шаблоны создаёт founder; manager/сотрудники выполняют. Дневную completion
+    // досоздаём на GET /today (compute-on-read; cron/триггеров нет).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS checklist_templates (
+        id          SERIAL PRIMARY KEY,
+        company_id  INT  NOT NULL,
+        name        VARCHAR(100) NOT NULL,
+        type        VARCHAR(20)  NOT NULL DEFAULT 'custom',  -- morning|evening|weekly|custom
+        is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+        created_by  INT,
+        created_at  TIMESTAMP    DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cl_tpl_company ON checklist_templates(company_id, is_active)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS checklist_template_items (
+        id             SERIAL PRIMARY KEY,
+        template_id    INT  NOT NULL REFERENCES checklist_templates(id) ON DELETE CASCADE,
+        order_index    INT  NOT NULL DEFAULT 0,
+        title          VARCHAR(255) NOT NULL,
+        description    TEXT,
+        is_required    BOOLEAN NOT NULL DEFAULT TRUE,
+        requires_photo BOOLEAN NOT NULL DEFAULT FALSE,
+        UNIQUE (template_id, order_index)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cl_tpl_items_tpl ON checklist_template_items(template_id, order_index)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS checklist_completions (
+        id           SERIAL PRIMARY KEY,
+        template_id  INT  NOT NULL REFERENCES checklist_templates(id) ON DELETE CASCADE,
+        branch_id    INT  NOT NULL,
+        completed_by INT,
+        date         DATE NOT NULL,
+        started_at   TIMESTAMP,
+        completed_at TIMESTAMP,
+        items_total  INT  NOT NULL DEFAULT 0,
+        items_done   INT  NOT NULL DEFAULT 0,
+        UNIQUE (template_id, branch_id, date)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cl_completions_branch_date ON checklist_completions(branch_id, date DESC)`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS checklist_item_results (
+        id               SERIAL PRIMARY KEY,
+        completion_id    INT NOT NULL REFERENCES checklist_completions(id) ON DELETE CASCADE,
+        template_item_id INT NOT NULL,
+        is_done          BOOLEAN NOT NULL DEFAULT FALSE,
+        done_at          TIMESTAMP,
+        note             TEXT,
+        UNIQUE (completion_id, template_item_id)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cl_item_results_completion ON checklist_item_results(completion_id)`);
+
+// === ЖУРНАЛ СОБЫТИЙ (Audit Log / event-journal) — расширение легаси-таблицы audit_log ===
+    // Базовая таблица audit_log существует на проде (создана вне ensureSchema, исторические строки без новых полей).
+    // На холодном старте/новой БД — досоздаём минимальный каркас, затем доращиваем колонки.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id          BIGSERIAL PRIMARY KEY,
+        user_id     INT,
+        username    VARCHAR(255),
+        action      VARCHAR(50),
+        entity_type VARCHAR(50),
+        entity_id   INT,
+        old_value   JSONB,
+        new_value   JSONB,
+        ip_address  VARCHAR(64),
+        created_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    // Новые поля журнала (обратносовместимо: все NULL-able / с дефолтами).
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS company_id        INT`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS branch_id         INT`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS user_role         VARCHAR(20)`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS module            VARCHAR(30)`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS description       TEXT`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS is_suspicious     BOOLEAN DEFAULT false`);
+    await pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS suspicious_reason VARCHAR(255)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_company_date ON audit_log(company_id, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_branch_date  ON audit_log(branch_id, created_at DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_suspicious   ON audit_log(company_id, is_suspicious) WHERE is_suspicious = true`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_module       ON audit_log(company_id, module)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_user_ej      ON audit_log(company_id, user_id)`);
+
+// === Шаблоны процессов (task-templates) — авто-генерация повторяющихся задач ===
+    // Каноническую таблицу tasks создаёт инструмент 'tasks'. Здесь — ТОЛЬКО task_templates,
+    // плюс safety-net создание tasks (CREATE IF NOT EXISTS) на случай, если 'tasks' ещё не задеплоен
+    // (на момент написания инструмент 'tasks' в server.js ОТСУТСТВУЕТ). 'tasks' свою CREATE IF NOT EXISTS
+    // не перезапишет — схемы согласованы с канонической из брифа.
+    // Генерация задач — compute-on-read (generateTasksFromTemplates вызывается из GET /api/task-templates
+    // и, при наличии, из GET /api/tasks). Планировщика/cron/триггеров НЕТ.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS task_templates (
+        id              SERIAL PRIMARY KEY,
+        company_id      INT  NOT NULL,
+        branch_id       INT,                           -- NULL = все филиалы
+        title           TEXT NOT NULL,
+        description     TEXT,
+        assignee_type   VARCHAR(20) NOT NULL DEFAULT 'manager', -- specific_employee/role/first_on_shift/manager
+        assignee_id     INT,                           -- если specific_employee
+        assignee_role   VARCHAR(20),                   -- если role: cashier/seller/warehouse/manager
+        recurrence      VARCHAR(30) NOT NULL,          -- daily/daily_except_sunday/weekly_mon/weekly_sat/biweekly_1_15/monthly_1/monthly_last
+        recurrence_time TIME,
+        priority        VARCHAR(10) NOT NULL DEFAULT 'medium',
+        is_active       BOOLEAN NOT NULL DEFAULT true,
+        created_by      INT,
+        created_at      TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_templates_company ON task_templates(company_id, is_active)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_templates_branch  ON task_templates(branch_id)`);
+
+    // Dedup авто-задач: один шаблон → одна задача на дату. Partial unique → нужен для ON CONFLICT
+    // в generateTasksFromTemplates. (Каноническая таблица tasks + её индексы создаются выше;
+    // дублирующий safety-net CREATE TABLE удалён — он был мёртвым no-op.)
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_template_date
+      ON tasks(source_template_id, due_date) WHERE source_template_id IS NOT NULL`);
+
+    // === Индексы операционного ядра (perf). На самых сканируемых таблицах (stock_outcome/
+    // product_stock/cash_*) индексов не было → seq scan на КАЖДОМ запросе дашборда/BHI/RFM/
+    // alert/anomaly/cohort/basket. Каждый индекс в своём try/catch — отсутствие колонки на
+    // конкретной базе не должно валить остальные миграции (ensureSchema — один try/catch).
+    const coreIdx = [
+      `CREATE INDEX IF NOT EXISTS idx_so_branch_status_created  ON stock_outcome(branch_id, status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_so_customer_status_created ON stock_outcome(customer_id, status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_so_product                ON stock_outcome(product_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ps_branch                 ON product_stock(branch_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ci_branch_created         ON cash_income(branch_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ce_branch_created         ON cash_expense(branch_id, created_at)`,
+    ];
+    for (const ddl of coreIdx) { try { await pool.query(ddl); } catch (e) { console.error('core idx skip:', e.message); } }
+
+    // ===== Волна 1 (Склад) — миграции (изолированный try/catch) =====
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS stock_transfers (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          from_branch INTEGER NOT NULL,
+          to_branch INTEGER NOT NULL,
+          qty NUMERIC NOT NULL,
+          status TEXT NOT NULL DEFAULT 'in_transit',
+          sent_at TIMESTAMPTZ DEFAULT NOW(),
+          received_at TIMESTAMPTZ,
+          created_by INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_transfers_company ON stock_transfers(company_id, sent_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_stock_transfers_branches ON stock_transfers(from_branch, to_branch);
+        ALTER TABLE products ADD COLUMN IF NOT EXISTS lead_time_days INTEGER DEFAULT 7;
+        ALTER TABLE products ADD COLUMN IF NOT EXISTS min_stock NUMERIC DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS inventory_audits (
+          id          SERIAL PRIMARY KEY,
+          company_id  INTEGER NOT NULL,
+          branch_id   INTEGER,
+          started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          finished_at TIMESTAMPTZ,
+          status      TEXT NOT NULL DEFAULT 'open',
+          total_items INTEGER NOT NULL DEFAULT 0,
+          matched     INTEGER NOT NULL DEFAULT 0,
+          loss_sum    NUMERIC NOT NULL DEFAULT 0,
+          created_by  INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS audit_items (
+          id         SERIAL PRIMARY KEY,
+          audit_id   INTEGER NOT NULL REFERENCES inventory_audits(id) ON DELETE CASCADE,
+          product_id INTEGER NOT NULL,
+          book_qty   NUMERIC NOT NULL DEFAULT 0,
+          actual_qty NUMERIC,
+          diff_sum   NUMERIC,
+          status     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_items_audit ON audit_items(audit_id);
+        CREATE INDEX IF NOT EXISTS idx_inventory_audits_company ON inventory_audits(company_id);
+      `);
+      console.log('wave1 (warehouse) schema OK');
+    } catch (w1) { console.error('wave1 schema err', w1.message); }
+
+    // ===== Волна 2 (Финансы) — миграции =====
+    try {
+      await pool.query(`ALTER TABLE cash_expense ADD COLUMN IF NOT EXISTS category TEXT;`);
+      console.log('wave2 (finance) schema OK');
+    } catch (w2) { console.error('wave2 schema err', w2.message); }
+
+    // ===== Волна 2b (Финансы: рентабельность/налоги/валюта/коэффициенты) — миграции =====
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS balance_entries (
+          id SERIAL PRIMARY KEY,
+          company_id INTEGER NOT NULL,
+          branch_id INTEGER,
+          period DATE,
+          total_assets NUMERIC(18,2) DEFAULT 0,
+          equity NUMERIC(18,2) DEFAULT 0,
+          depreciation NUMERIC(18,2) DEFAULT 0,
+          interest_expense NUMERIC(18,2) DEFAULT 0,
+          taxes NUMERIC(18,2) DEFAULT 0,
+          manual_liabilities NUMERIC DEFAULT 0,
+          manual_interest_expense NUMERIC DEFAULT 0,
+          manual_equity NUMERIC DEFAULT 0,
+          manual_other_assets NUMERIC DEFAULT 0,
+          manual_fixed_assets NUMERIC DEFAULT 0,
+          created_by INTEGER,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_balance_entries_company_period ON balance_entries (company_id, branch_id, period DESC);
+        CREATE TABLE IF NOT EXISTS exchange_rates (
+          id SERIAL PRIMARY KEY, currency TEXT NOT NULL, rate NUMERIC NOT NULL,
+          date DATE NOT NULL, source TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE (currency, date)
+        );
+        CREATE TABLE IF NOT EXISTS tax_settings (
+          company_id INTEGER PRIMARY KEY, regime TEXT NOT NULL DEFAULT 'simplified',
+          rate_pct NUMERIC(6,2) NOT NULL DEFAULT 4, period_type TEXT NOT NULL DEFAULT 'quarter'
+        );
+        CREATE TABLE IF NOT EXISTS tax_payments (
+          id SERIAL PRIMARY KEY, company_id INTEGER NOT NULL, period TEXT NOT NULL,
+          base_amount NUMERIC(18,2) NOT NULL DEFAULT 0, rate_pct NUMERIC(6,2) NOT NULL DEFAULT 4,
+          amount NUMERIC(18,2) NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+          due_date DATE, paid_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (company_id, period)
+        );
+      `);
+      console.log('wave2b (finance) schema OK');
+    } catch (w2b) { console.error('wave2b schema err', w2b.message); }
+
+    // ===== Волна 3 (Закупки) — миграции (чистый SQL) =====
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS supplier_returns (
+          id SERIAL PRIMARY KEY, company_id INTEGER NOT NULL, branch_id INTEGER,
+          supplier_id INTEGER, product_id INTEGER NOT NULL, qty NUMERIC(16,2) NOT NULL DEFAULT 0,
+          amount NUMERIC(16,2) NOT NULL DEFAULT 0, reason TEXT, status TEXT NOT NULL DEFAULT 'open',
+          compensation_type TEXT, created_by INTEGER, created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_sup_returns_company ON supplier_returns(company_id, branch_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_sup_returns_supplier ON supplier_returns(supplier_id);
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+          id SERIAL PRIMARY KEY, company_id INTEGER NOT NULL, branch_id INTEGER, supplier_id INTEGER,
+          status TEXT NOT NULL DEFAULT 'draft', total_amount NUMERIC NOT NULL DEFAULT 0,
+          expected_at DATE, created_by INTEGER, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS purchase_order_items (
+          id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+          product_id INTEGER, qty NUMERIC NOT NULL DEFAULT 0, price NUMERIC NOT NULL DEFAULT 0, total NUMERIC NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_po_company ON purchase_orders(company_id);
+        CREATE INDEX IF NOT EXISTS idx_poi_order ON purchase_order_items(order_id);
+        CREATE TABLE IF NOT EXISTS receivings (
+          id SERIAL PRIMARY KEY, company_id INTEGER NOT NULL, branch_id INTEGER, supplier_id INTEGER,
+          order_id INTEGER, invoice_no VARCHAR(60), total_amount NUMERIC(16,2) DEFAULT 0,
+          status VARCHAR(20) DEFAULT 'full', created_by INTEGER, created_at TIMESTAMP DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS receiving_items (
+          id SERIAL PRIMARY KEY, receiving_id INTEGER NOT NULL REFERENCES receivings(id) ON DELETE CASCADE,
+          product_id INTEGER, ordered_qty NUMERIC(14,2) DEFAULT 0, received_qty NUMERIC(14,2) DEFAULT 0,
+          diff NUMERIC(14,2) DEFAULT 0, note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_receivings_company_created ON receivings(company_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_receivings_branch ON receivings(branch_id);
+        CREATE INDEX IF NOT EXISTS idx_receiving_items_rec ON receiving_items(receiving_id);
+      `);
+      console.log('wave3 (procurement) schema OK');
+    } catch (w3) { console.error('wave3 schema err', w3.message); }
+
+    // ===== Волна 4 (Продажи) — миграции =====
+    try {
+      await pool.query(`
+-- ===== discounts =====
+CREATE TABLE IF NOT EXISTS discounts (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER,
+  branch_id INTEGER,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'percent',
+  value NUMERIC NOT NULL DEFAULT 0,
+  min_qty INTEGER,
+  starts_at DATE,
+  ends_at DATE,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_discounts_company ON discounts(company_id);
+CREATE INDEX IF NOT EXISTS idx_discounts_branch ON discounts(branch_id);
+
+-- ===== customer-campaigns =====
+CREATE TABLE IF NOT EXISTS notification_campaigns (
+  id          SERIAL PRIMARY KEY,
+  company_id  INTEGER NOT NULL,
+  branch_id   INTEGER,
+  segment     TEXT NOT NULL DEFAULT 'all',
+  message     TEXT NOT NULL,
+  channel     TEXT NOT NULL DEFAULT 'telegram',
+  sent_count  INTEGER NOT NULL DEFAULT 0,
+  read_count  INTEGER NOT NULL DEFAULT 0,
+  created_by  INTEGER,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_notif_campaigns_company ON notification_campaigns (company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_campaigns_branch ON notification_campaigns (branch_id);
+
+-- ===== nps =====
+CREATE TABLE IF NOT EXISTS reviews (
+  id           SERIAL PRIMARY KEY,
+  company_id   INTEGER NOT NULL,
+  branch_id    INTEGER,
+  customer_id  INTEGER,
+  is_anonymous BOOLEAN NOT NULL DEFAULT FALSE,
+  score        INTEGER NOT NULL,
+  comment      TEXT,
+  type         TEXT,
+  source       TEXT NOT NULL DEFAULT 'manual',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_company ON reviews (company_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_company_source ON reviews (company_id, source);
+CREATE INDEX IF NOT EXISTS idx_reviews_company_type ON reviews (company_id, type);
+CREATE INDEX IF NOT EXISTS idx_reviews_branch ON reviews (branch_id);
+
+-- ===== scripts =====
+CREATE TABLE IF NOT EXISTS sales_scripts (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER,
+  title TEXT NOT NULL,
+  situation TEXT,
+  steps TEXT,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS script_usage (
+  id SERIAL PRIMARY KEY,
+  script_id INTEGER REFERENCES sales_scripts(id) ON DELETE CASCADE,
+  employee_id INTEGER,
+  result TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sales_scripts_company ON sales_scripts(company_id);
+CREATE INDEX IF NOT EXISTS idx_script_usage_script ON script_usage(script_id);
+CREATE INDEX IF NOT EXISTS idx_script_usage_created ON script_usage(created_at);
+
+-- ===== leadgen =====
+-- Лид-трекер: воронка лидов (источник → интерес → статус → сумма)
+CREATE TABLE IF NOT EXISTS leads (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  name VARCHAR(200),
+  phone VARCHAR(60),
+  email VARCHAR(200),
+  source VARCHAR(40) NOT NULL DEFAULT 'other',
+  interest TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'new',
+  est_value NUMERIC(16,2) NOT NULL DEFAULT 0,
+  assigned_to INTEGER,
+  closed_at TIMESTAMP,
+  created_by INTEGER,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
+CREATE INDEX IF NOT EXISTS idx_leads_branch ON leads(branch_id);
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+
+-- ===== loyalty =====
+CREATE TABLE IF NOT EXISTS loyalty_accounts (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  customer_id INTEGER NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'standard',
+  points_balance BIGINT NOT NULL DEFAULT 0,
+  total_spent BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS loyalty_accounts_company_customer_uk
+  ON loyalty_accounts (company_id, customer_id);
+
+CREATE INDEX IF NOT EXISTS loyalty_accounts_company_idx
+  ON loyalty_accounts (company_id);
+
+CREATE TABLE IF NOT EXISTS loyalty_transactions (
+  id SERIAL PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES loyalty_accounts(id) ON DELETE CASCADE,
+  type TEXT NOT NULL DEFAULT 'earn',
+  points BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS loyalty_transactions_account_idx
+  ON loyalty_transactions (account_id);
+`);
+      console.log('wave4 (sales) schema OK');
+    } catch (w4) { console.error('wave4 schema err', w4.message); }
+
+    // ===== Волна 5 (Персонал/HR) — миграции (дедуп absences) =====
+    try {
+      await pool.query(`
+-- ===== schedules =====
+CREATE TABLE IF NOT EXISTS shift_templates (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  break_min INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS schedules (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  employee_id INTEGER NOT NULL,
+  work_date DATE NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  hours NUMERIC(5,2),
+  status TEXT NOT NULL DEFAULT 'planned',
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_templates_company ON shift_templates(company_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_company_date ON schedules(company_id, work_date);
+CREATE INDEX IF NOT EXISTS idx_schedules_employee ON schedules(employee_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_branch ON schedules(branch_id);
+
+-- ===== attendance =====
+CREATE TABLE IF NOT EXISTS attendance (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  employee_id INTEGER,
+  work_date DATE NOT NULL,
+  planned_start TIMESTAMPTZ,
+  planned_end TIMESTAMPTZ,
+  actual_start TIMESTAMPTZ,
+  actual_end TIMESTAMPTZ,
+  hours NUMERIC(6,2),
+  late_minutes INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'expected',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_attendance_company ON attendance (company_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_branch ON attendance (branch_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_employee ON attendance (employee_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (company_id, work_date);
+
+-- ===== absences =====
+CREATE TABLE IF NOT EXISTS absences (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  employee_id INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT 'vacation',
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_by INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_absences_company ON absences (company_id);
+CREATE INDEX IF NOT EXISTS idx_absences_branch ON absences (branch_id);
+CREATE INDEX IF NOT EXISTS idx_absences_employee ON absences (employee_id);
+CREATE INDEX IF NOT EXISTS idx_absences_status ON absences (status);
+CREATE INDEX IF NOT EXISTS idx_absences_dates ON absences (start_date, end_date);
+
+-- ===== salaries =====
+CREATE TABLE IF NOT EXISTS salaries (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  employee_id INTEGER NOT NULL,
+  period TEXT NOT NULL,
+  base NUMERIC NOT NULL DEFAULT 0,
+  commission NUMERIC NOT NULL DEFAULT 0,
+  bonus NUMERIC NOT NULL DEFAULT 0,
+  penalty NUMERIC NOT NULL DEFAULT 0,
+  total NUMERIC NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS salaries_company_employee_period_idx ON salaries (company_id, employee_id, period);
+CREATE INDEX IF NOT EXISTS salaries_company_period_idx ON salaries (company_id, period);
+CREATE INDEX IF NOT EXISTS salaries_status_idx ON salaries (status);
+
+-- ===== hr-adjustments =====
+CREATE TABLE IF NOT EXISTS employee_adjustments (
+  id          SERIAL PRIMARY KEY,
+  company_id  INTEGER NOT NULL,
+  branch_id   INTEGER,
+  employee_id INTEGER NOT NULL,
+  type        TEXT NOT NULL,
+  category    TEXT,
+  amount      BIGINT NOT NULL DEFAULT 0,
+  source      TEXT DEFAULT 'manual',
+  note        TEXT,
+  created_by  INTEGER,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_emp_adj_company ON employee_adjustments (company_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_emp_adj_employee ON employee_adjustments (employee_id);
+CREATE INDEX IF NOT EXISTS idx_emp_adj_branch ON employee_adjustments (branch_id);
+
+CREATE TABLE IF NOT EXISTS penalty_rules (
+  id         SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  name       TEXT NOT NULL,
+  amount     BIGINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_penalty_rules_company ON penalty_rules (company_id);
+
+-- ===== training =====
+CREATE TABLE IF NOT EXISTS courses (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL,
+  position TEXT NOT NULL,
+  title TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_courses_company ON courses(company_id);
+CREATE INDEX IF NOT EXISTS idx_courses_position ON courses(company_id, position);
+
+CREATE TABLE IF NOT EXISTS lessons (
+  id SERIAL PRIMARY KEY,
+  course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  video_url TEXT,
+  duration_min INTEGER NOT NULL DEFAULT 0,
+  ord INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_lessons_course ON lessons(course_id, ord);
+
+CREATE TABLE IF NOT EXISTS course_progress (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL,
+  lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+  completed BOOLEAN NOT NULL DEFAULT FALSE,
+  completed_at TIMESTAMPTZ,
+  UNIQUE (employee_id, lesson_id)
+);
+CREATE INDEX IF NOT EXISTS idx_course_progress_emp ON course_progress(employee_id);
+CREATE INDEX IF NOT EXISTS idx_course_progress_lesson ON course_progress(lesson_id);
+`);
+      console.log('wave5 (hr) schema OK');
+    } catch (w5) { console.error('wave5 schema err', w5.message); }
+
     console.log('schema OK');
   } catch (e) {
     console.error('ensureSchema err', e.message);
   }
 }
 ensureSchema();
+
+// ===================== ВОЛНА 1: СКЛАД (warehouse) =====================
+
+// ===== stock-outcome-report =====
+// === Расход товара — агрегат stock_outcome по типам за период (read-only) ===
+app.get('/api/warehouse/outcome-summary', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период: day / week / month / year → начало интервала.
+    const periodMap = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = periodMap[req.query.period] || periodMap.month;
+
+    // KPI: продано шт, себестоимость реализованного (qty*price_buy), брак, перемещения(return).
+    const kpiQ = await pool.query(`
+      SELECT
+        COALESCE(SUM(so.quantity) FILTER (WHERE so.outcome_type = 'sale'), 0)                       AS sold_qty,
+        COALESCE(SUM(so.quantity * p.price_buy) FILTER (WHERE so.outcome_type = 'sale'), 0)         AS sold_cost,
+        COALESCE(SUM(so.quantity) FILTER (WHERE so.outcome_type = 'writeoff'), 0)                   AS writeoff_qty,
+        COALESCE(SUM(so.quantity) FILTER (WHERE so.outcome_type = 'return'), 0)                     AS transfer_qty
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1
+        AND so.status = 'approved'
+        AND so.created_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+    `, [companyId]);
+
+    // Таблица операций за период.
+    const rowsQ = await pool.query(`
+      SELECT so.id, so.outcome_type, so.quantity, so.created_at, so.writeoff_reason, so.note,
+             p.name_ru AS name, p.unit, p.price_buy,
+             b.name AS branch_name
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      LEFT JOIN branches b ON b.id = so.branch_id
+      WHERE p.company_id = $1
+        AND so.status = 'approved'
+        AND so.created_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+      ORDER BY so.created_at DESC
+      LIMIT 300
+    `, [companyId]);
+
+    const k = kpiQ.rows[0] || {};
+    const kpi = {
+      sold_qty:     parseFloat(k.sold_qty || 0),
+      sold_cost:    parseFloat(k.sold_cost || 0),
+      writeoff_qty: parseFloat(k.writeoff_qty || 0),
+      transfer_qty: parseFloat(k.transfer_qty || 0),
+    };
+
+    const rows = rowsQ.rows.map(r => ({
+      id: r.id,
+      outcome_type: r.outcome_type,
+      name: r.name,
+      unit: r.unit,
+      quantity: parseFloat(r.quantity || 0),
+      price_buy: parseFloat(r.price_buy || 0),
+      created_at: r.created_at,
+      source: r.branch_name || r.writeoff_reason || r.note || null,
+    }));
+
+    res.json({ kpi, rows });
+  } catch (e) {
+    console.error('outcome-summary err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== stock-transfers =====
+// === Warehouse transfers — перемещения между складами ===
+app.get('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    // менеджер видит перемещения, где его филиал — отправитель ИЛИ получатель
+    const branchSQL = branchId ? `AND (t.from_branch = ${parseInt(branchId)} OR t.to_branch = ${parseInt(branchId)})` : '';
+
+    // период для агрегатов истории
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const intervalMap = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = intervalMap[period];
+
+    const { rows: transfers } = await pool.query(`
+      SELECT t.id, t.product_id, p.name_ru AS product_name, p.price_buy,
+             t.from_branch, t.to_branch, t.qty, t.status, t.sent_at, t.received_at,
+             (t.qty * COALESCE(p.price_buy, 0)) AS value
+      FROM stock_transfers t
+      JOIN products p ON p.id = t.product_id
+      WHERE t.company_id = $1
+        AND t.sent_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+      ORDER BY t.sent_at DESC
+    `, [companyId]);
+
+    const aggregates = transfers.reduce((a, t) => {
+      a.invoices += 1;
+      a.units += parseFloat(t.qty || 0);
+      a.value += parseFloat(t.value || 0);
+      return a;
+    }, { invoices: 0, units: 0, value: 0 });
+
+    // справочники для формы отправки
+    const { rows: branches } = await pool.query(
+      'SELECT id, name FROM branches WHERE company_id = $1 ORDER BY name', [companyId]);
+    const { rows: products } = await pool.query(
+      'SELECT id, name_ru AS name FROM products WHERE company_id = $1 AND deleted_at IS NULL ORDER BY name_ru', [companyId]);
+
+    res.json({ transfers, aggregates, branches, products });
+  } catch (e) { console.error('warehouse/transfers GET err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+    const { product_id, from_branch, to_branch, qty } = req.body;
+    const pid = parseInt(product_id), from = parseInt(from_branch), to = parseInt(to_branch), q = parseFloat(qty);
+    if (!pid || !from || !to || !(q > 0)) return res.status(400).json({ error: 'Неверные данные перемещения' });
+    if (from === to) return res.status(400).json({ error: 'Склады отправки и получения должны отличаться' });
+
+    // менеджер может отправлять только со своего филиала
+    if (req.user.role === 'manager' && req.user.branch_id && req.user.branch_id !== from) {
+      return res.status(403).json({ error: 'Можно отправлять только со своего склада' });
+    }
+
+    // проверка принадлежности товара и филиалов компании
+    const own = await client.query(
+      `SELECT (SELECT 1 FROM products WHERE id = $1 AND company_id = $3) AS p_ok,
+              (SELECT 1 FROM branches WHERE id = $2 AND company_id = $3) AS f_ok,
+              (SELECT 1 FROM branches WHERE id = $4 AND company_id = $3) AS t_ok`,
+      [pid, from, companyId, to]);
+    if (!own.rows[0].p_ok || !own.rows[0].f_ok || !own.rows[0].t_ok) {
+      return res.status(403).json({ error: 'Товар или склад не принадлежит компании' });
+    }
+
+    await client.query('BEGIN');
+    // атомарное списание остатка с склада-отправителя
+    await client.query(
+      `INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1, $2, 0) ON CONFLICT (product_id, branch_id) DO NOTHING`,
+      [pid, from]);
+    const dec = await client.query(
+      `UPDATE product_stock SET quantity = quantity - $3, updated_at = NOW()
+       WHERE product_id = $1 AND branch_id = $2 AND quantity >= $3 RETURNING quantity`,
+      [pid, from, q]);
+    if (!dec.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Недостаточно остатка на складе отправки' });
+    }
+
+    const ins = await client.query(
+      `INSERT INTO stock_transfers (company_id, product_id, from_branch, to_branch, qty, status, sent_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, 'in_transit', NOW(), $6) RETURNING id`,
+      [companyId, pid, from, to, q, req.user.id]);
+
+    await client.query('COMMIT');
+    res.json({ ok: true, id: ins.rows[0].id });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('warehouse/transfers POST err', e);
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+app.patch('/api/warehouse/transfers/:id/receive', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id);
+    await client.query('BEGIN');
+    const cur = await client.query(
+      `SELECT * FROM stock_transfers WHERE id = $1 AND company_id = $2 FOR UPDATE`, [id, companyId]);
+    const tr = cur.rows[0];
+    if (!tr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Перемещение не найдено' }); }
+    if (tr.status !== 'in_transit') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Перемещение уже принято' }); }
+    // менеджер может принимать только на свой филиал
+    if (req.user.role === 'manager' && req.user.branch_id && req.user.branch_id !== tr.to_branch) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Можно принимать только на свой склад' });
+    }
+
+    // зачисление остатка на склад-получатель
+    await client.query(
+      `INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1, $2, $3)
+       ON CONFLICT (product_id, branch_id) DO UPDATE SET quantity = product_stock.quantity + $3, updated_at = NOW()`,
+      [tr.product_id, tr.to_branch, tr.qty]);
+    await client.query(
+      `UPDATE stock_transfers SET status = 'received', received_at = NOW() WHERE id = $1`, [id]);
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('warehouse/transfers receive err', e);
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+// ===== product-movements =====
+// === Warehouse — История движения товара (приход + расход с накопительным остатком) ===
+app.get('/api/warehouse/movements', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const productId = req.query.product_id ? parseInt(req.query.product_id) : null;
+
+    // Период → интервал и шаг бакета для графика остатка
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const intervalMap = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = intervalMap[period];
+
+    // Список товаров для выпадашки (всегда отдаём, чтобы фронт мог выбрать)
+    const prodSQL = await pool.query(
+      `SELECT id, name_ru, name_uz, unit, barcode
+         FROM products
+        WHERE company_id = $1 AND deleted_at IS NULL
+        ORDER BY name_ru ASC`,
+      [companyId]
+    );
+    const products = prodSQL.rows;
+
+    // Если товар не выбран — берём первый из списка
+    const pid = productId || (products[0] ? products[0].id : null);
+    if (!pid) {
+      return res.json({ products, kpi: {}, movements: [], balance_series: [] });
+    }
+
+    // Проверка принадлежности товара компании + unit/текущий остаток
+    const pRow = await pool.query(
+      `SELECT id, name_ru, unit FROM products WHERE id = $1 AND company_id = $2`,
+      [pid, companyId]
+    );
+    if (!pRow.rows[0]) return res.status(404).json({ error: 'Product not found' });
+    const unit = pRow.rows[0].unit || '';
+
+    const incBranchSQL = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+    const outBranchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const psBranchSQL  = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Текущий остаток (сумма по филиалам в скоупе)
+    const balRow = await pool.query(
+      `SELECT COALESCE(SUM(ps.quantity), 0) AS bal
+         FROM product_stock ps
+        WHERE ps.product_id = $1 ${psBranchSQL}`,
+      [pid]
+    );
+    const currentBalance = parseFloat(balRow.rows[0].bal || 0);
+
+    // UNION приходов (+qty) и расходов (-quantity), сортировка по дате
+    const movSQL = await pool.query(
+      `SELECT * FROM (
+         SELECT si.id AS id, 'income' AS kind, si.quantity::numeric AS qty,
+                si.price AS price, si.branch_id AS branch_id,
+                si.created_by AS user_id, si.created_at AS created_at
+           FROM stock_income si
+          WHERE si.product_id = $1 ${incBranchSQL}
+         UNION ALL
+         SELECT so.id AS id,
+                CASE WHEN so.outcome_type = 'writeoff' THEN 'writeoff'
+                     WHEN so.outcome_type = 'return'   THEN 'return'
+                     ELSE 'sale' END AS kind,
+                so.quantity::numeric AS qty,
+                so.price AS price, so.branch_id AS branch_id,
+                so.created_by AS user_id, so.created_at AS created_at
+           FROM stock_outcome so
+          WHERE so.product_id = $1 AND so.status = 'approved' ${outBranchSQL}
+       ) m
+       ORDER BY m.created_at ASC, m.id ASC`,
+      [pid]
+    );
+
+    // Имена филиалов и пользователей
+    const branchRows = (await pool.query(`SELECT id, name FROM branches WHERE company_id = $1`, [companyId])).rows;
+    const userRows = (await pool.query(`SELECT id, COALESCE(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)), ''), username) AS name FROM users WHERE company_id = $1`, [companyId])).rows;
+    const branchMap = Object.fromEntries(branchRows.map(b => [b.id, b.name]));
+    const userMap = Object.fromEntries(userRows.map(u => [u.id, u.name]));
+
+    // Накопительный остаток: идём от самого раннего движения; чтобы финиш совпал
+    // с текущим остатком — стартовый остаток = current − (сумма дельт всех движений).
+    const allRows = movSQL.rows;
+    const isIncome = (k) => k === 'income' || k === 'return';
+    const totalDelta = allRows.reduce((s, r) => s + (isIncome(r.kind) ? parseFloat(r.qty) : -parseFloat(r.qty)), 0);
+    let running = currentBalance - totalDelta;
+
+    const movements = allRows.map(r => {
+      const q = parseFloat(r.qty) || 0;
+      running += isIncome(r.kind) ? q : -q;
+      return {
+        id: r.id,
+        kind: r.kind,
+        qty: q,
+        price: r.price != null ? parseFloat(r.price) : null,
+        balance_after: running,
+        branch_name: branchMap[r.branch_id] || null,
+        user_name: userMap[r.user_id] || null,
+        created_at: r.created_at,
+      };
+    });
+
+    // KPI за период
+    const sinceMs = Date.now() - { day: 1, week: 7, month: 30, year: 365 }[period] * 86400000;
+    const inPeriod = movements.filter(m => new Date(m.created_at).getTime() >= sinceMs);
+    const incomeQty = inPeriod.filter(m => isIncome(m.kind)).reduce((s, m) => s + m.qty, 0);
+    const outcomeQty = inPeriod.filter(m => !isIncome(m.kind)).reduce((s, m) => s + m.qty, 0);
+    // Оборачиваемость (дней): средний остаток / средний дневной расход за период
+    const days = { day: 1, week: 7, month: 30, year: 365 }[period];
+    const avgDailyOut = outcomeQty / days;
+    const turnoverDays = avgDailyOut > 0 ? Math.round(currentBalance / avgDailyOut) : null;
+
+    // График остатка: последняя точка остатка на каждый день периода
+    const seriesMap = {};
+    movements.forEach(m => {
+      const d = new Date(m.created_at);
+      const key = d.toISOString().slice(0, 10);
+      seriesMap[key] = m.balance_after;
+    });
+    let lastVal = movements.length ? (movements.find(m => new Date(m.created_at).getTime() >= sinceMs)?.balance_after ?? currentBalance) : currentBalance;
+    const balance_series = [];
+    for (let t = sinceMs; t <= Date.now(); t += 86400000) {
+      const key = new Date(t).toISOString().slice(0, 10);
+      if (seriesMap[key] != null) lastVal = seriesMap[key];
+      balance_series.push({ date: key, balance: lastVal });
+    }
+
+    res.json({
+      products,
+      kpi: {
+        balance: currentBalance,
+        unit,
+        income_qty: incomeQty,
+        outcome_qty: outcomeQty,
+        turnover_days: turnoverDays,
+      },
+      movements,
+      balance_series,
+    });
+  } catch (e) {
+    console.error('warehouse/movements err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== turnover-deadstock =====
+// === Оборачиваемость и мёртвый сток ===
+app.get('/api/warehouse/turnover', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const stockBranchSQL = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Длина периода в днях для нормировки продаж (turnover_days = avg_stock / (sales_qty / days)).
+    const periodDays = { day: 1, week: 7, month: 30, year: 365 }[req.query.period] || 30;
+
+    const { rows } = await pool.query(`
+      WITH sales AS (
+        SELECT so.product_id,
+               SUM(so.quantity) AS sales_qty
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= NOW() - ($2 || ' days')::interval
+          ${branchSQL}
+        GROUP BY so.product_id
+      ),
+      last_move AS (
+        SELECT so.product_id,
+               MAX(so.created_at) AS last_at
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          ${branchSQL}
+        GROUP BY so.product_id
+      ),
+      stock AS (
+        SELECT ps.product_id,
+               SUM(ps.quantity) AS stock_qty
+        FROM product_stock ps
+        WHERE 1=1 ${stockBranchSQL}
+        GROUP BY ps.product_id
+      )
+      SELECT p.id AS product_id, p.name_ru, p.unit, p.price_buy,
+             COALESCE(s.stock_qty, 0)         AS stock_qty,
+             COALESCE(sa.sales_qty, 0)        AS sales_qty,
+             lm.last_at,
+             EXTRACT(DAY FROM (NOW() - lm.last_at)) AS days_since_last_movement
+      FROM products p
+      LEFT JOIN sales sa     ON sa.product_id = p.id
+      LEFT JOIN last_move lm ON lm.product_id = p.id
+      LEFT JOIN stock s      ON s.product_id  = p.id
+      WHERE p.company_id = $1
+        AND p.deleted_at IS NULL
+      ORDER BY p.name_ru
+    `, [companyId, periodDays]);
+
+    const items = [];
+    const dead = [];
+    let frozenSum = 0, fastCount = 0, normalCount = 0, slowCount = 0, deadCount = 0;
+    let turnoverSum = 0, turnoverN = 0;
+
+    for (const r of rows) {
+      const stockQty = parseFloat(r.stock_qty || 0);
+      const salesQty = parseFloat(r.sales_qty || 0);
+      const priceBuy = parseFloat(r.price_buy || 0);
+      const daysSince = r.days_since_last_movement == null ? null : Math.round(parseFloat(r.days_since_last_movement));
+      // avg_stock — приближаем текущим остатком (нет исторических снимков склада).
+      const avgStock = stockQty;
+      const dailySales = salesQty / periodDays;
+      const turnoverDays = dailySales > 0 ? Math.round(avgStock / dailySales) : null;
+      const frozen = Math.round(stockQty * priceBuy);
+
+      const isDead = stockQty > 0 && (daysSince == null || daysSince > 90);
+      let cls;
+      if (isDead) cls = 'dead';
+      else if (turnoverDays == null) cls = 'slow';
+      else if (turnoverDays <= 7) cls = 'fast';
+      else if (turnoverDays <= 30) cls = 'normal';
+      else cls = 'slow';
+
+      if (cls === 'fast') fastCount++;
+      else if (cls === 'normal') normalCount++;
+      else if (cls === 'slow') slowCount++;
+
+      if (turnoverDays != null) { turnoverSum += turnoverDays; turnoverN++; }
+
+      const row = {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        avg_stock: Math.round(avgStock),
+        sales_qty: Math.round(salesQty),
+        stock: Math.round(stockQty),
+        turnover_days: turnoverDays,
+        days_since_last_movement: daysSince,
+        frozen_sum: frozen,
+        turnover_class: cls,
+      };
+      items.push(row);
+
+      if (isDead) {
+        deadCount++;
+        frozenSum += frozen;
+        dead.push(row);
+      }
+    }
+
+    dead.sort((a, b) => b.frozen_sum - a.frozen_sum);
+
+    res.json({
+      items,
+      dead,
+      summary: {
+        avg_turnover_days: turnoverN > 0 ? Math.round(turnoverSum / turnoverN) : 0,
+        fast_count: fastCount,
+        normal_count: normalCount,
+        slow_count: slowCount,
+        dead_count: deadCount,
+        frozen_sum: frozenSum,
+      },
+    });
+  } catch (e) {
+    console.error('warehouse/turnover err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== eoq =====
+// === EOQ — оптимальный размер заказа (модель Уилсона) ===
+app.get('/api/warehouse/eoq', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // S — фиксированная стоимость размещения заказа (параметр, default 50000 сум).
+    const orderCost = req.query.order_cost ? Math.max(0, parseFloat(req.query.order_cost)) : 50000;
+
+    // D — годовой спрос: суммарное проданное количество за 365 дней (только продажи).
+    const { rows } = await pool.query(`
+      SELECT p.id AS product_id, p.name_ru, p.unit, p.price_buy,
+             COALESCE(SUM(so.quantity), 0) AS demand
+      FROM products p
+      LEFT JOIN stock_outcome so ON so.product_id = p.id
+        AND so.status = 'approved'
+        AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '365 days'
+        ${branchSQL}
+      WHERE p.company_id = $1
+        AND p.deleted_at IS NULL
+      GROUP BY p.id, p.name_ru, p.unit, p.price_buy
+      HAVING COALESCE(SUM(so.quantity), 0) > 0
+      ORDER BY demand DESC
+    `, [companyId]);
+
+    const items = rows.map(r => {
+      const D = parseFloat(r.demand) || 0;
+      const priceBuy = parseFloat(r.price_buy) || 0;
+      // H — стоимость хранения единицы в год = 25% от себестоимости.
+      const H = priceBuy * 0.25;
+      const S = orderCost;
+      let eoq = 0, ordersPerYear = 0, intervalDays = 0, annualCost = 0;
+      if (D > 0 && H > 0) {
+        eoq = Math.sqrt((2 * D * S) / H);
+        ordersPerYear = eoq > 0 ? D / eoq : 0;
+        intervalDays = ordersPerYear > 0 ? 365 / ordersPerYear : 0;
+        annualCost = ordersPerYear * S + (eoq / 2) * H;
+      }
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        price_buy: priceBuy,
+        demand: D,
+        holding_cost: H,
+        eoq,
+        orders_per_year: ordersPerYear,
+        interval_days: intervalDays,
+        annual_cost: annualCost,
+      };
+    });
+
+    res.json({ items, order_cost: orderCost });
+  } catch (e) {
+    console.error('eoq err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== reorder-point =====
+// === Reorder Point (ROP) — точка заказа ===
+app.get('/api/warehouse/reorder-point', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const psBranchSQL = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период расчёта среднего спроса (по дням). По умолчанию — месяц (30 дней).
+    const PERIOD_DAYS = { day: 1, week: 7, month: 30, year: 365 };
+    const periodKey = String(req.query.period || 'month');
+    const days = PERIOD_DAYS[periodKey] || 30;
+    // Глобальный безопасный страх-запас по умолчанию (если у товара нет min_stock).
+    const safetyDefault = req.query.safety_stock != null ? Math.max(0, parseInt(req.query.safety_stock) || 0) : 0;
+
+    const { rows } = await pool.query(`
+      SELECT p.id AS product_id, p.name_ru, p.unit, p.price_buy,
+             COALESCE(p.lead_time_days, 7)        AS lead_time,
+             COALESCE(p.min_stock, 0)             AS min_stock,
+             COALESCE(sold.qty, 0)                AS sold_qty,
+             COALESCE(stk.qty, 0)                 AS stock
+      FROM products p
+      LEFT JOIN (
+        SELECT so.product_id, SUM(so.quantity) AS qty
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= NOW() - INTERVAL '${days} days'
+          ${branchSQL}
+        GROUP BY so.product_id
+      ) sold ON sold.product_id = p.id
+      LEFT JOIN (
+        SELECT ps.product_id, SUM(ps.quantity) AS qty
+        FROM product_stock ps
+        WHERE TRUE ${psBranchSQL}
+        GROUP BY ps.product_id
+      ) stk ON stk.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+      ORDER BY p.name_ru ASC
+    `, [companyId]);
+
+    const items = rows.map(r => {
+      const soldQty = parseFloat(r.sold_qty) || 0;
+      const avgDaily = days > 0 ? soldQty / days : 0;
+      const leadTime = parseInt(r.lead_time) || 7;
+      // Страх-запас: min_stock товара, иначе глобальный параметр (или 0).
+      const safetyStock = (parseFloat(r.min_stock) || 0) || safetyDefault;
+      const stock = parseFloat(r.stock) || 0;
+      const rop = Math.round(avgDaily * leadTime + safetyStock);
+      const needOrder = stock <= rop;
+      // Рекомендованное кол-во дозаказа: покрыть до уровня (ROP + спрос за срок поставки).
+      const target = rop + Math.round(avgDaily * leadTime);
+      const suggestQty = needOrder ? Math.max(0, target - stock) : 0;
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        price_buy: parseFloat(r.price_buy) || 0,
+        avg_daily_demand: Math.round(avgDaily * 100) / 100,
+        lead_time: leadTime,
+        safety_stock: Math.round(safetyStock),
+        rop,
+        stock: Math.round(stock * 100) / 100,
+        need_order: needOrder,
+        suggest_qty: Math.round(suggestQty),
+      };
+    });
+
+    const toOrder = items.filter(i => i.need_order);
+    const summary = {
+      total: items.length,
+      to_order: toOrder.length,
+      avg_lead_time: items.length ? Math.round(items.reduce((s, i) => s + i.lead_time, 0) / items.length) : 0,
+      reorder_cost: Math.round(toOrder.reduce((s, i) => s + i.suggest_qty * i.price_buy, 0)),
+    };
+
+    res.json({ period: periodKey, items, summary });
+  } catch (e) {
+    console.error('reorder-point err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== safety-stock =====
+// === Safety stock — Z·sigma·sqrt(lead_time) по 90-дн истории спроса ===
+app.get('/api/warehouse/safety-stock', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Sigma среднесуточного спроса: STDDEV дневных продаж (outcome_type='sale') за 90 дней.
+    // Дни без продаж учитываются как 0 через generate_series, иначе sigma занижается.
+    const { rows } = await pool.query(`
+      WITH days AS (
+        SELECT generate_series(
+          (NOW() - INTERVAL '89 days')::date, NOW()::date, INTERVAL '1 day'
+        )::date AS d
+      ),
+      per_day AS (
+        SELECT p.id AS product_id,
+               days.d AS d,
+               COALESCE(SUM(so.quantity), 0) AS qty
+        FROM products p
+        CROSS JOIN days
+        LEFT JOIN stock_outcome so
+          ON so.product_id = p.id
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at::date = days.d
+          ${branchSQL}
+        WHERE p.company_id = $1 AND p.deleted_at IS NULL
+        GROUP BY p.id, days.d
+      ),
+      agg AS (
+        SELECT pd.product_id,
+               AVG(pd.qty) AS qty_avg,
+               STDDEV_POP(pd.qty) AS qty_sigma,
+               SUM(pd.qty) AS qty_total
+        FROM per_day pd
+        GROUP BY pd.product_id
+      )
+      SELECT p.id AS product_id, p.name_ru, p.name_uz, p.unit,
+             COALESCE(p.price_buy, 0) AS price_buy,
+             COALESCE(p.lead_time_days, 7) AS lead_time_days,
+             COALESCE(p.min_stock, 0) AS min_stock,
+             COALESCE(agg.qty_avg, 0) AS qty_avg,
+             COALESCE(agg.qty_sigma, 0) AS qty_sigma,
+             COALESCE(agg.qty_total, 0) AS qty_total
+      FROM products p
+      JOIN agg ON agg.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+        AND COALESCE(agg.qty_total, 0) > 0
+      ORDER BY (COALESCE(agg.qty_sigma, 0) * COALESCE(p.price_buy, 0)) DESC
+    `, [companyId]);
+
+    const Z95 = 1.65; // уровень сервиса 95%
+    let totalValue = 0;
+    const items = rows.map(r => {
+      const sigma = parseFloat(r.qty_sigma || 0);
+      const avg = parseFloat(r.qty_avg || 0);
+      const leadTime = parseInt(r.lead_time_days || 7);
+      const priceBuy = parseFloat(r.price_buy || 0);
+      const safetyStock = Math.ceil(Z95 * sigma * Math.sqrt(leadTime));
+      const cov = avg > 0 ? sigma / avg : null;
+      totalValue += safetyStock * priceBuy;
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        name_uz: r.name_uz,
+        unit: r.unit,
+        price_buy: priceBuy,
+        lead_time_days: leadTime,
+        sigma: Math.round(sigma * 100) / 100,
+        avg_daily: Math.round(avg * 100) / 100,
+        qty_total: parseFloat(r.qty_total || 0),
+        cov: cov == null ? null : Math.round(cov * 1000) / 1000,
+        safety_stock: safetyStock,           // при 95% (Z=1.65); клиент пересчитывает what-if
+        value: safetyStock * priceBuy,
+      };
+    });
+
+    res.json({
+      items,
+      service_level: 95,
+      z: Z95,
+      total_value: totalValue,
+      total_units: items.reduce((s, i) => s + i.safety_stock, 0),
+      count: items.length,
+    });
+  } catch (e) {
+    console.error('safety-stock err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== purchase-roi =====
+// === Purchase ROI — возврат на вложения по каждому товару ===
+app.get('/api/warehouse/purchase-roi', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период из query (day/week/month/year) → интервал назад от текущего момента.
+    const PERIODS = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = PERIODS[req.query.period] || PERIODS.month;
+
+    const { rows } = await pool.query(`
+      SELECT p.id AS product_id, p.name_ru, p.unit,
+             COALESCE(SUM(so.quantity * so.price), 0)        AS revenue,
+             COALESCE(SUM(so.quantity * p.price_buy), 0)     AS purchase_cost,
+             COALESCE(SUM(so.quantity), 0)                   AS qty
+      FROM products p
+      JOIN stock_outcome so ON so.product_id = p.id
+        AND so.status = 'approved'
+        AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+      GROUP BY p.id, p.name_ru, p.unit
+      HAVING COALESCE(SUM(so.quantity), 0) > 0
+      ORDER BY (COALESCE(SUM(so.quantity * so.price), 0) - COALESCE(SUM(so.quantity * p.price_buy), 0)) DESC
+    `, [companyId]);
+
+    const items = rows.map(r => {
+      const revenue = parseFloat(r.revenue || 0);
+      const cost = parseFloat(r.purchase_cost || 0);
+      const profit = revenue - cost;
+      const roi = cost > 0 ? (profit / cost) * 100 : null;
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        qty: parseFloat(r.qty || 0),
+        revenue,
+        purchase_cost: cost,
+        profit,
+        roi,
+      };
+    });
+
+    const totalRevenue = items.reduce((s, i) => s + i.revenue, 0);
+    const totalCost = items.reduce((s, i) => s + i.purchase_cost, 0);
+    const totalProfit = totalRevenue - totalCost;
+    const totalRoi = totalCost > 0 ? (totalProfit / totalCost) * 100 : null;
+
+    res.json({
+      items,
+      total_revenue: totalRevenue,
+      total_cost: totalCost,
+      total_profit: totalProfit,
+      total_roi: totalRoi,
+    });
+  } catch (e) {
+    console.error('purchase-roi err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== min-stock-alert =====
+// === Минимальный остаток / Алерт — read-only ===
+app.get('/api/warehouse/min-stock-alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const stockBranchSQL = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Текущий остаток (суммарно по выбранному филиалу или всем), минимальная норма,
+    // средний дневной расход по продажам/списаниям за 30 дней.
+    const { rows } = await pool.query(`
+      WITH stock AS (
+        SELECT ps.product_id, COALESCE(SUM(ps.quantity), 0) AS quantity
+        FROM product_stock ps
+        WHERE 1=1 ${stockBranchSQL}
+        GROUP BY ps.product_id
+      ),
+      demand AS (
+        SELECT so.product_id, COALESCE(SUM(so.quantity), 0) AS qty_30d
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          AND so.outcome_type IN ('sale', 'writeoff')
+          AND so.created_at >= NOW() - INTERVAL '30 days'
+          ${branchSQL}
+        GROUP BY so.product_id
+      )
+      SELECT p.id AS product_id, p.name_ru, p.unit,
+             COALESCE(p.min_stock, 0) AS min_stock,
+             COALESCE(p.lead_time_days, 0) AS lead_time_days,
+             COALESCE(s.quantity, 0) AS quantity,
+             COALESCE(d.qty_30d, 0) AS qty_30d
+      FROM products p
+      LEFT JOIN stock s ON s.product_id = p.id
+      LEFT JOIN demand d ON d.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+      ORDER BY p.name_ru
+    `, [companyId]);
+
+    const summary = { critical: 0, low: 0, ok: 0, overstock: 0 };
+    const items = rows.map(r => {
+      const quantity = parseFloat(r.quantity || 0);
+      const minStock = parseFloat(r.min_stock || 0);
+      const avgDaily = parseFloat(r.qty_30d || 0) / 30;
+      let status;
+      if (quantity <= 0) status = 'critical';
+      else if (minStock > 0 && quantity < minStock) status = 'low';
+      else if (minStock > 0 && quantity > minStock * 3) status = 'overstock';
+      else status = 'ok';
+      // critical также если меньше половины минимума (но >0) — относим к critical
+      if (status === 'low' && minStock > 0 && quantity < minStock / 2) status = 'critical';
+      summary[status]++;
+
+      const shortage = minStock > quantity ? Math.round(minStock - quantity) : 0;
+      const daysOfSupply = avgDaily > 0 ? Math.round(quantity / avgDaily) : null;
+      // Рекомендуемый заказ: добить до 2× минимума (буфер), не меньше нехватки.
+      const suggestedOrder = minStock > 0 && quantity < minStock
+        ? Math.max(shortage, Math.round(minStock * 2 - quantity))
+        : 0;
+
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        quantity,
+        min_stock: minStock,
+        lead_time_days: parseInt(r.lead_time_days || 0),
+        avg_daily_demand: Math.round(avgDaily * 100) / 100,
+        days_of_supply: daysOfSupply,
+        shortage,
+        suggested_order: suggestedOrder,
+        status,
+      };
+    });
+
+    // Активные алерты — critical и low, сначала самые срочные.
+    const order = { critical: 0, low: 1, ok: 2, overstock: 3 };
+    const alerts = items
+      .filter(i => i.status === 'critical' || i.status === 'low')
+      .sort((a, b) => (order[a.status] - order[b.status]) || (a.days_of_supply ?? 1e9) - (b.days_of_supply ?? 1e9));
+
+    res.json({ items, summary, alerts });
+  } catch (e) {
+    console.error('min-stock-alerts err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== barcodes =====
+app.get('/api/warehouse/barcodes-coverage', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `WHERE ps.branch_id = ${parseInt(branchId)}` : '';
+
+    const { rows } = await pool.query(`
+      SELECT p.id AS product_id,
+             p.name_ru,
+             p.unit,
+             p.barcode,
+             COALESCE((
+               SELECT SUM(ps.quantity)
+               FROM product_stock ps
+               ${branchSQL ? branchSQL + ' AND ps.product_id = p.id' : 'WHERE ps.product_id = p.id'}
+             ), 0) AS stock
+      FROM products p
+      WHERE p.company_id = $1
+        AND p.deleted_at IS NULL
+      ORDER BY (p.barcode IS NOT NULL) ASC, p.name_ru ASC
+    `, [companyId]);
+
+    const items = rows.map(r => ({
+      product_id: r.product_id,
+      name: r.name_ru,
+      unit: r.unit,
+      barcode: r.barcode,
+      has_barcode: r.barcode != null && r.barcode !== '',
+      stock: parseFloat(r.stock || 0),
+    }));
+
+    const total = items.length;
+    const withBarcode = items.filter(i => i.has_barcode).length;
+    const without = total - withBarcode;
+    const coveragePct = total > 0 ? Math.round((withBarcode / total) * 100) : 0;
+
+    res.json({
+      total,
+      with_barcode: withBarcode,
+      without_barcode: without,
+      coverage_pct: coveragePct,
+      items,
+    });
+  } catch (e) {
+    console.error('barcodes-coverage err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== demand-forecast =====
+// === Прогноз потребности склада — когда и сколько закупать ===
+app.get('/api/warehouse/demand-forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // менеджер пинится своим филиалом
+    const horizon = Math.min(Math.max(parseInt(req.query.horizon) || 30, 1), 365);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const stockBranchSQL = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Скользящее среднее дневных продаж по stock_outcome (sale, approved) за 90 дней,
+    // текущий остаток ps.quantity (по филиалу или сумма по компании).
+    const { rows } = await pool.query(`
+      WITH sales AS (
+        SELECT so.product_id,
+               SUM(so.quantity) AS qty_90d
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= NOW() - INTERVAL '90 days'
+          ${branchSQL}
+        GROUP BY so.product_id
+      ),
+      stock AS (
+        SELECT ps.product_id, SUM(ps.quantity) AS stock_qty
+        FROM product_stock ps
+        WHERE 1=1 ${stockBranchSQL}
+        GROUP BY ps.product_id
+      )
+      SELECT p.id AS product_id, p.name_ru, p.unit,
+             COALESCE(p.price_buy, 0) AS price_buy,
+             COALESCE(p.min_stock, 0) AS min_stock,
+             COALESCE(p.lead_time_days, 7) AS lead_time_days,
+             COALESCE(s.qty_90d, 0) AS qty_90d,
+             COALESCE(st.stock_qty, 0) AS stock_qty
+      FROM products p
+      LEFT JOIN sales s ON s.product_id = p.id
+      LEFT JOIN stock st ON st.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+    `, [companyId]);
+
+    const fmtDate = (d) => {
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      return `${dd}.${mm}`;
+    };
+
+    let urgentCount = 0, soonCount = 0, okCount = 0, excessCount = 0, totalCost = 0;
+    const items = rows.map(r => {
+      const qty90 = parseFloat(r.qty_90d) || 0;
+      const dailyAvg = qty90 / 90;                       // скользящее среднее за день
+      const forecastQty = Math.round(dailyAvg * horizon); // прогноз продаж на горизонт
+      const stock = parseFloat(r.stock_qty) || 0;
+      const minStock = parseFloat(r.min_stock) || 0;
+      const leadTime = parseInt(r.lead_time_days) || 7;
+      const priceBuy = parseFloat(r.price_buy) || 0;
+
+      const daysLeft = dailyAvg > 0 ? Math.floor(stock / dailyAvg) : null; // дни до исчерпания
+
+      // Нужно закупить = прогноз спроса + страховой запас (min_stock) − текущий остаток
+      let orderQty = Math.max(0, Math.ceil(forecastQty + minStock - stock));
+      const orderCost = orderQty * priceBuy;
+
+      // Дедлайн заказа = сегодня + (дни до исчерпания − lead_time)
+      let urgency, orderDeadline = null;
+      if (daysLeft != null && dailyAvg > 0) {
+        if (stock > forecastQty * 1.5 && forecastQty > 0) {
+          urgency = 'excess'; orderQty = 0;
+        } else if (daysLeft <= leadTime) {
+          urgency = 'urgent';
+          orderDeadline = fmtDate(new Date());
+        } else if (daysLeft <= leadTime + 21) {
+          urgency = 'soon';
+          const d = new Date(); d.setDate(d.getDate() + (daysLeft - leadTime));
+          orderDeadline = fmtDate(d);
+        } else {
+          urgency = 'normal'; orderQty = 0;
+        }
+      } else {
+        // продаж нет — если есть остаток, это потенциальный излишек
+        urgency = stock > 0 ? 'excess' : 'normal';
+        orderQty = 0;
+      }
+      if (urgency === 'excess' || urgency === 'normal') {
+        // переоценим стоимость при обнулённом orderQty
+      }
+      const finalCost = orderQty * priceBuy;
+
+      if (urgency === 'urgent') urgentCount++;
+      else if (urgency === 'soon') soonCount++;
+      else if (urgency === 'excess') excessCount++;
+      else okCount++;
+      totalCost += finalCost;
+
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit,
+        forecast_qty: forecastQty,
+        stock,
+        days_left: daysLeft,
+        order_qty: orderQty,
+        order_cost: finalCost,
+        order_deadline: orderDeadline,
+        urgency,
+      };
+    });
+
+    // Сортировка: срочные → заранее → излишек → норма
+    const rank = { urgent: 0, soon: 1, excess: 2, normal: 3 };
+    items.sort((a, b) => (rank[a.urgency] - rank[b.urgency]) || (b.order_cost - a.order_cost));
+
+    res.json({
+      horizon,
+      summary: {
+        urgent_count: urgentCount,
+        soon_count: soonCount,
+        excess_count: excessCount,
+        ok_count: okCount,
+        total_purchase_cost: totalCost,
+      },
+      items,
+    });
+  } catch (e) {
+    console.error('demand-forecast err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== inventory-whatif =====
+// === What-if (Склад) — read-only baseline; вся математика сценариев на фронте ===
+app.get('/api/warehouse/whatif-base', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSO = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const branchPS = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // Baseline по товарам: себестоимость/цена, продаж в месяц (90д/3),
+    // текущий остаток, lead_time, min_stock.
+    const prodQ = await pool.query(`
+      SELECT p.id AS product_id, p.name_ru AS name, p.unit,
+             p.price_buy, p.price_sell,
+             COALESCE(p.lead_time_days, 7) AS lead_time_days,
+             COALESCE(p.min_stock, 0)      AS min_stock,
+             COALESCE(st.stock, 0)         AS stock,
+             COALESCE(sl.sold_90d, 0)      AS sold_90d
+      FROM products p
+      LEFT JOIN LATERAL (
+        SELECT SUM(ps.quantity) AS stock
+        FROM product_stock ps
+        WHERE ps.product_id = p.id ${branchPS}
+      ) st ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT SUM(so.quantity) AS sold_90d
+        FROM stock_outcome so
+        WHERE so.product_id = p.id
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= NOW() - INTERVAL '90 days'
+          ${branchSO}
+      ) sl ON TRUE
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+      ORDER BY p.price_sell DESC NULLS LAST
+      LIMIT 500
+    `, [companyId]);
+
+    const products = prodQ.rows.map(r => ({
+      product_id: r.product_id,
+      name: r.name,
+      unit: r.unit,
+      price_buy: parseFloat(r.price_buy) || 0,
+      price_sell: parseFloat(r.price_sell) || 0,
+      lead_time_days: parseInt(r.lead_time_days) || 7,
+      min_stock: parseFloat(r.min_stock) || 0,
+      stock: parseFloat(r.stock) || 0,
+      monthly_sales: Math.round(((parseFloat(r.sold_90d) || 0) / 3) * 10) / 10,
+    }));
+
+    // Неликвид: есть остаток, но нет продаж 60+ дней.
+    const deadQ = await pool.query(`
+      WITH last_sale AS (
+        SELECT so.product_id, MAX(so.created_at) AS last_at
+        FROM stock_outcome so
+        WHERE so.status = 'approved' AND so.outcome_type = 'sale' ${branchSO}
+        GROUP BY so.product_id
+      )
+      SELECT p.id AS product_id, p.name_ru AS name, p.unit,
+             p.price_buy, p.price_sell,
+             COALESCE(st.stock, 0) AS quantity,
+             ls.last_at,
+             CASE WHEN ls.last_at IS NULL
+                  THEN COALESCE(EXTRACT(DAY FROM NOW() - p.created_at)::int, 999)
+                  ELSE EXTRACT(DAY FROM NOW() - ls.last_at)::int END AS idle_days
+      FROM products p
+      LEFT JOIN LATERAL (
+        SELECT SUM(ps.quantity) AS stock
+        FROM product_stock ps
+        WHERE ps.product_id = p.id ${branchPS}
+      ) st ON TRUE
+      LEFT JOIN last_sale ls ON ls.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL
+        AND COALESCE(st.stock, 0) > 0
+        AND (ls.last_at IS NULL OR ls.last_at < NOW() - INTERVAL '60 days')
+      ORDER BY (COALESCE(st.stock, 0) * COALESCE(p.price_buy, 0)) DESC
+      LIMIT 100
+    `, [companyId]);
+
+    const dead_stock = deadQ.rows.map(r => ({
+      product_id: r.product_id,
+      name: r.name,
+      unit: r.unit,
+      quantity: parseFloat(r.quantity) || 0,
+      cost_per_unit: parseFloat(r.price_buy) || 0,
+      price_sell: parseFloat(r.price_sell) || 0,
+      idle_days: parseInt(r.idle_days) || 0,
+    }));
+
+    res.json({ products, dead_stock });
+  } catch (e) {
+    console.error('whatif-base err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== audit =====
+// === Инвентаризация склада (audit) — реальные данные ===
+// GET без id  -> список инвентаризаций (история, фильтр по периоду)
+// GET с id    -> детали одной инвентаризации + позиции (audit_items + имена товаров)
+app.get('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Детали конкретной инвентаризации
+    if (req.query.id) {
+      const auditId = parseInt(req.query.id);
+      const a = await pool.query(
+        `SELECT id, company_id, branch_id, started_at, finished_at, status,
+                total_items, matched, loss_sum, created_by
+         FROM inventory_audits WHERE id = $1 AND company_id = $2`,
+        [auditId, companyId]
+      );
+      if (!a.rows[0]) return res.status(404).json({ error: 'Инвентаризация не найдена' });
+      const audit = a.rows[0];
+      if (branchId && audit.branch_id && audit.branch_id !== branchId) {
+        return res.status(403).json({ error: 'Вне вашего филиала' });
+      }
+      const items = await pool.query(
+        `SELECT ai.id, ai.product_id, ai.book_qty, ai.actual_qty, ai.diff_sum, ai.status,
+                COALESCE(p.name_ru, p.name_uz, '—') AS name, p.unit, p.price_buy
+         FROM audit_items ai
+         LEFT JOIN products p ON p.id = ai.product_id
+         WHERE ai.audit_id = $1
+         ORDER BY name`,
+        [auditId]
+      );
+      return res.json({ audit, items: items.rows });
+    }
+
+    // Список инвентаризаций (история) с фильтром по периоду
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const periodSQL = `AND started_at >= NOW() - INTERVAL '1 ${period}'`;
+    const branchSQL = branchId ? `AND (branch_id = ${parseInt(branchId)} OR branch_id IS NULL)` : '';
+    const { rows } = await pool.query(
+      `SELECT id, branch_id, started_at, finished_at, status,
+              total_items, matched, loss_sum, created_by
+       FROM inventory_audits
+       WHERE company_id = $1 ${periodSQL} ${branchSQL}
+       ORDER BY started_at DESC
+       LIMIT 50`,
+      [companyId]
+    );
+    res.json({ audits: rows });
+  } catch (e) {
+    console.error('warehouse/audits GET err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST — старт инвентаризации: снапшот текущих остатков product_stock в audit_items.book_qty.
+app.post('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || (req.body && req.body.branch_id ? parseInt(req.body.branch_id) : null);
+    await client.query('BEGIN');
+
+    const ins = await client.query(
+      `INSERT INTO inventory_audits (company_id, branch_id, status, created_by)
+       VALUES ($1, $2, 'open', $3) RETURNING *`,
+      [companyId, branchId || null, req.user.id]
+    );
+    const audit = ins.rows[0];
+
+    // Снапшот остатков: только товары компании; если задан филиал — остатки этого филиала.
+    const branchSnap = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+    const snap = await client.query(
+      `INSERT INTO audit_items (audit_id, product_id, book_qty)
+       SELECT $1, p.id, COALESCE(SUM(ps.quantity), 0)
+       FROM products p
+       LEFT JOIN product_stock ps ON ps.product_id = p.id ${branchSnap}
+       WHERE p.company_id = $2 AND p.deleted_at IS NULL
+       GROUP BY p.id
+       RETURNING id`,
+      [audit.id, companyId]
+    );
+    await client.query(
+      `UPDATE inventory_audits SET total_items = $1 WHERE id = $2`,
+      [snap.rowCount, audit.id]
+    );
+    await client.query('COMMIT');
+    res.json({ audit: { ...audit, total_items: snap.rowCount } });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('warehouse/audits POST err', e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH — ввод факта по позиции (item_id + actual_qty) ЛИБО завершение (audit_id + finish:true).
+app.patch('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+
+    // Завершение инвентаризации: пересчёт итогов и закрытие.
+    if (req.body && req.body.finish && req.body.audit_id) {
+      const auditId = parseInt(req.body.audit_id);
+      const own = await pool.query(`SELECT id FROM inventory_audits WHERE id = $1 AND company_id = $2`, [auditId, companyId]);
+      if (!own.rows[0]) return res.status(404).json({ error: 'Инвентаризация не найдена' });
+      const agg = await pool.query(
+        `SELECT COUNT(*) FILTER (WHERE status = 'match') AS matched,
+                COALESCE(SUM(diff_sum) FILTER (WHERE diff_sum < 0), 0) AS loss_sum
+         FROM audit_items WHERE audit_id = $1`,
+        [auditId]
+      );
+      const upd = await pool.query(
+        `UPDATE inventory_audits
+         SET status = 'done', finished_at = NOW(), matched = $1, loss_sum = $2
+         WHERE id = $3 RETURNING *`,
+        [parseInt(agg.rows[0].matched), agg.rows[0].loss_sum, auditId]
+      );
+      return res.json({ audit: upd.rows[0] });
+    }
+
+    // Ввод факта по позиции.
+    if (!req.body || !req.body.item_id) return res.status(400).json({ error: 'item_id обязателен' });
+    const itemId = parseInt(req.body.item_id);
+    const actual = (req.body.actual_qty === null || req.body.actual_qty === undefined || req.body.actual_qty === '')
+      ? null : Math.max(0, parseFloat(req.body.actual_qty) || 0);
+
+    // Проверка принадлежности позиции компании + себестоимость для diff_sum.
+    const chk = await pool.query(
+      `SELECT ai.id, ai.book_qty, COALESCE(p.price_buy, 0) AS price_buy
+       FROM audit_items ai
+       JOIN inventory_audits a ON a.id = ai.audit_id
+       LEFT JOIN products p ON p.id = ai.product_id
+       WHERE ai.id = $1 AND a.company_id = $2`,
+      [itemId, companyId]
+    );
+    if (!chk.rows[0]) return res.status(404).json({ error: 'Позиция не найдена' });
+    const row = chk.rows[0];
+    const book = parseFloat(row.book_qty) || 0;
+    let status = null, diffSum = null;
+    if (actual != null) {
+      status = actual === book ? 'match' : (actual < book ? 'shortage' : 'surplus');
+      diffSum = (actual - book) * parseFloat(row.price_buy || 0); // UZS, отрицательная = недостача
+    }
+    const upd = await pool.query(
+      `UPDATE audit_items SET actual_qty = $1, diff_sum = $2, status = $3 WHERE id = $4
+       RETURNING id, product_id, book_qty, actual_qty, diff_sum, status`,
+      [actual, diffSum, status, itemId]
+    );
+    res.json({ item: upd.rows[0] });
+  } catch (e) {
+    console.error('warehouse/audits PATCH err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== defects =====
+// === Брак и списание — сводка потерь за период ===
+app.get('/api/warehouse/writeoff-summary', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);           // менеджер авто-скоупится на свой филиал
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период: день/неделя/месяц/год → интервал для NOW().
+    const periodMap = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = periodMap[req.query.period] || periodMap.month;
+
+    // Списания за период: потеря = quantity * себестоимость (price_buy; фолбэк на цену операции).
+    const woRes = await pool.query(`
+      SELECT so.id, so.created_at, so.quantity AS qty, so.writeoff_reason AS reason,
+             p.name_ru AS name, p.unit,
+             so.quantity * COALESCE(p.price_buy, so.price, 0) AS amount,
+             COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.username) AS author
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id AND p.company_id = $1
+      LEFT JOIN users u ON u.id = so.created_by
+      WHERE so.outcome_type = 'writeoff'
+        AND so.status = 'approved'
+        AND so.created_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+      ORDER BY so.created_at DESC
+    `, [companyId]);
+
+    const journal = woRes.rows.map(r => ({
+      id: r.id,
+      created_at: r.created_at,
+      name: r.name,
+      unit: r.unit,
+      qty: parseFloat(r.qty || 0),
+      amount: parseFloat(r.amount || 0),
+      reason: r.reason || null,
+      author: r.author || null,
+    }));
+
+    const lossAmount = journal.reduce((s, r) => s + r.amount, 0);
+    const lossQty = journal.reduce((s, r) => s + r.qty, 0);
+
+    // Оборот за тот же период (продажи) — для доли списаний.
+    const turnRes = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS turnover
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id AND p.company_id = $1
+      WHERE so.outcome_type = 'sale'
+        AND so.status = 'approved'
+        AND so.created_at >= NOW() - INTERVAL '${interval}'
+        ${branchSQL}
+    `, [companyId]);
+    const turnover = parseFloat(turnRes.rows[0]?.turnover || 0);
+    const sharePct = turnover > 0 ? (lossAmount / turnover) * 100 : 0;
+
+    // Группировка по причинам (по сумме потерь).
+    const byReason = {};
+    for (const r of journal) {
+      const key = r.reason || 'Без причины';
+      if (!byReason[key]) byReason[key] = { reason: key, qty: 0, amount: 0, count: 0 };
+      byReason[key].qty += r.qty;
+      byReason[key].amount += r.amount;
+      byReason[key].count += 1;
+    }
+    const totalCount = journal.length || 1;
+    const reasons = Object.values(byReason)
+      .map(r => ({ ...r, share_pct: (r.count / totalCount) * 100 }))
+      .sort((a, b) => b.amount - a.amount);
+    const topReason = reasons.length ? { reason: reasons[0].reason, share_pct: reasons[0].share_pct } : null;
+
+    res.json({
+      loss_amount: lossAmount,
+      loss_qty: lossQty,
+      turnover,
+      share_pct: sharePct,
+      top_reason: topReason,
+      reasons,
+      journal,
+    });
+  } catch (e) {
+    console.error('writeoff-summary err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+
+
+// ===================== ВОЛНА 2: ФИНАНСЫ (finance) =====================
+
+// ===== expenses-report =====
+// === ОТЧЁТ РАСХОДОВ (раздел Финансы, только учредитель/гендиректор) ===
+// Источник: cash_expense (операционные расходы + закупки товара).
+// Read-only. Менеджер НЕ имеет доступа к финансам компании.
+// Категория берётся из cash_expense.category; для legacy-строк (category IS NULL)
+// классифицируем по ключевым словам в description.
+
+// SQL-выражение нормализованной категории (одно и то же в обоих эндпоинтах).
+const EXP_CAT_SQL = `
+  CASE
+    WHEN ce.category IS NOT NULL AND ce.category <> '' THEN ce.category
+    WHEN ce.description ILIKE '%закуп%' OR ce.description ILIKE '%постав%' THEN 'Закупка товара'
+    WHEN ce.description ILIKE '%аренд%' OR ce.description ILIKE '%помещ%'   THEN 'Аренда'
+    WHEN ce.description ILIKE '%зарплат%' OR ce.description ILIKE '%оклад%' OR ce.description ILIKE '%зп%' THEN 'Зарплаты'
+    WHEN ce.description ILIKE '%реклам%' OR ce.description ILIKE '%маркет%' THEN 'Реклама'
+    WHEN ce.description ILIKE '%коммунал%' OR ce.description ILIKE '%свет%' OR ce.description ILIKE '%вода%' OR ce.description ILIKE '%газ%' OR ce.description ILIKE '%электр%' THEN 'Коммунальные'
+    ELSE 'Прочие'
+  END`;
+
+// Помощник: окно периода по ?days (по умолчанию 30 дней) + предыдущее окно той же длины.
+function expensesWindow(query) {
+  const days = Math.max(1, Math.min(366, parseInt(query.days, 10) || 30));
+  const to = new Date();
+  const from = new Date(to); from.setDate(from.getDate() - days); from.setHours(0, 0, 0, 0);
+  const prevFrom = new Date(from); prevFrom.setDate(prevFrom.getDate() - days);
+  return { from: from.toISOString(), to: to.toISOString(), prevFrom: prevFrom.toISOString() };
+}
+
+// GET /api/finance/expenses/summary — агрегат по категориям (сумма, доля %, динамика к прошлому периоду)
+app.get('/api/finance/expenses/summary', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ total: 0, operating: 0, purchases: 0, categories: [] });
+    const { from, to, prevFrom } = expensesWindow(req.query);
+
+    // Текущий период: сумма по категориям
+    const cp = []; const cc = branchArrayCond(scope, cp, 'ce.branch_id');
+    const curQ = await pool.query(
+      `SELECT ${EXP_CAT_SQL} AS category, COALESCE(SUM(ce.amount),0) AS amount
+       FROM cash_expense ce
+       WHERE ${cc} AND ce.created_at >= $${cp.length + 1} AND ce.created_at < $${cp.length + 2}
+       GROUP BY 1`,
+      [...cp, from, to]);
+
+    // Прошлый период: сумма по категориям (для динамики)
+    const pp = []; const pc = branchArrayCond(scope, pp, 'ce.branch_id');
+    const prevQ = await pool.query(
+      `SELECT ${EXP_CAT_SQL} AS category, COALESCE(SUM(ce.amount),0) AS amount
+       FROM cash_expense ce
+       WHERE ${pc} AND ce.created_at >= $${pp.length + 1} AND ce.created_at < $${pp.length + 2}
+       GROUP BY 1`,
+      [...pp, prevFrom, from]);
+
+    const prevMap = {};
+    prevQ.rows.forEach(r => { prevMap[r.category] = parseFloat(r.amount) || 0; });
+
+    const total = curQ.rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
+    const categories = curQ.rows
+      .map(r => {
+        const amount = parseFloat(r.amount) || 0;
+        const prev = prevMap[r.category] || 0;
+        const delta_pct = prev > 0 ? Math.round(((amount - prev) / prev) * 100) : null;
+        return {
+          category: r.category,
+          amount,
+          share: total > 0 ? Math.round((amount / total) * 1000) / 10 : 0,
+          delta_pct,
+        };
+      })
+      .sort((a, b) => b.amount - a.amount);
+
+    const purchases = categories.filter(c => c.category === 'Закупка товара').reduce((a, c) => a + c.amount, 0);
+    const operating = total - purchases;
+
+    res.json({ period: { from, to }, total, operating, purchases, categories });
+  } catch (e) { console.error('expenses-summary err', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/finance/expenses — реестр операций (дата/категория/сумма/комментарий/ответственный)
+app.get('/api/finance/expenses', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) return res.json({ operations: [], truncated: false });
+    const { from, to } = expensesWindow(req.query);
+
+    const op = []; const oc = branchArrayCond(scope, op, 'ce.branch_id');
+    const LIMIT = 200;
+    const { rows } = await pool.query(
+      `SELECT ce.id, ce.amount, ce.created_at, ce.description AS comment,
+              ${EXP_CAT_SQL} AS category,
+              COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.username) AS responsible
+       FROM cash_expense ce
+       LEFT JOIN users u ON u.id = ce.created_by
+       WHERE ${oc} AND ce.created_at >= $${op.length + 1} AND ce.created_at < $${op.length + 2}
+       ORDER BY ce.created_at DESC
+       LIMIT ${LIMIT + 1}`,
+      [...op, from, to]);
+
+    const truncated = rows.length > LIMIT;
+    const operations = (truncated ? rows.slice(0, LIMIT) : rows).map(r => ({
+      id: r.id,
+      created_at: r.created_at,
+      category: r.category,
+      amount: parseFloat(r.amount) || 0,
+      comment: r.comment || '',
+      responsible: r.responsible || null,
+    }));
+
+    res.json({ period: { from, to }, operations, truncated });
+  } catch (e) { console.error('expenses-list err', e); res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
+
+// ============ ВОЛНА 2b: ФИНАНСЫ (рентабельность/календарь/валюта/налоги/коэффициенты/что-если) ============
+
+// ===== profitability =====
+// ===================================================================
+// Рентабельность — GET /api/finance/profitability + POST /api/finance/balance-entry
+// founder/gen_dir/admin (БЕЗ manager — финансы компании). Деньги UZS полным числом.
+// revenue/net_profit/cogs из stock_outcome + cash_expense; балансовые данные (активы/
+// капитал/амортизация/проценты/налоги) — ручной ввод в balance_entries (последняя запись).
+// ===================================================================
+
+app.get('/api/finance/profitability', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const r = periodRangeUnified(period);
+
+    // Филиалы в скоупе (проверка принадлежности компании).
+    let bq;
+    if (branchId) bq = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [branchId, companyId]);
+    else bq = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    const ids = bq.rows.map(x => x.id);
+    if (!ids.length) {
+      return res.json({ period, revenue: 0, cogs: 0, net_profit: 0, has_balance: false, metrics: {} });
+    }
+
+    // --- Выручка и себестоимость из продаж (как /api/analytics/report) ---
+    const salesQ = await pool.query(
+      `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
+              COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost
+       FROM stock_outcome so JOIN products p ON p.id=so.product_id
+       WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         AND so.created_at >= $2 AND so.created_at < $3`,
+      [ids, r.from, r.to]);
+    const revenue = parseFloat(salesQ.rows[0]?.revenue) || 0;
+    const cogs = parseFloat(salesQ.rows[0]?.cost) || 0;
+
+    // --- Операционные расходы из кассы за период ---
+    const expQ = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS v FROM cash_expense
+       WHERE branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3`,
+      [ids, r.from, r.to]);
+    const opex = parseFloat(expQ.rows[0]?.v) || 0;
+
+    const grossProfit = revenue - cogs;          // валовая прибыль
+    const operatingProfit = grossProfit - opex;  // операционная прибыль
+    const netProfit = operatingProfit;           // чистая прибыль (без отдельного учёта налогов в потоке)
+
+    // --- Последняя ручная балансовая запись (по компании, опц. филиал) ---
+    const beQ = await pool.query(
+      `SELECT total_assets, equity, depreciation, interest_expense, taxes
+       FROM balance_entries
+       WHERE company_id = $1 ${branchId ? 'AND branch_id = $2' : 'AND branch_id IS NULL'}
+       ORDER BY period DESC, created_at DESC LIMIT 1`,
+      branchId ? [companyId, branchId] : [companyId]);
+    const be = beQ.rows[0] || null;
+    const hasBalance = !!(be && (parseFloat(be.total_assets) > 0 || parseFloat(be.equity) > 0));
+
+    const totalAssets = be ? parseFloat(be.total_assets) || 0 : 0;
+    const equity = be ? parseFloat(be.equity) || 0 : 0;
+    const depreciation = be ? parseFloat(be.depreciation) || 0 : 0;
+    const interest = be ? parseFloat(be.interest_expense) || 0 : 0;
+    const taxes = be ? parseFloat(be.taxes) || 0 : 0;
+
+    // --- Коэффициенты (round1) ---
+    const pct = (num, den) => den > 0 ? Math.round((num / den) * 1000) / 10 : null;
+    const ros = pct(netProfit, revenue);
+    const roa = hasBalance ? pct(netProfit, totalAssets) : null;
+    const roe = hasBalance ? pct(netProfit, equity) : null;
+    const grossMargin = pct(grossProfit, revenue);
+    const ebitda = operatingProfit + depreciation + interest + taxes; // EBITDA = опер.прибыль + аморт + % + налоги
+    const ebitdaMargin = pct(ebitda, revenue);
+    const assetTurnover = hasBalance && totalAssets > 0 ? Math.round((revenue / totalAssets) * 100) / 100 : null;
+
+    // --- Статусы (ok | warn | bad) по нормам ---
+    const stRange = (v, lo, hi) => v == null ? null : (v >= lo ? 'ok' : v >= lo * 0.5 ? 'warn' : 'bad');
+    const stMin = (v, min) => v == null ? null : (v >= min ? 'ok' : v >= min * 0.5 ? 'warn' : 'bad');
+
+    res.json({
+      period,
+      range: { from: r.from, to: r.to },
+      revenue, cogs, opex, gross_profit: grossProfit,
+      operating_profit: operatingProfit, net_profit: netProfit,
+      has_balance: hasBalance,
+      balance: hasBalance ? { total_assets: totalAssets, equity, depreciation, interest_expense: interest, taxes } : null,
+      metrics: {
+        ros, roa, roe,
+        gross_margin: grossMargin,
+        ebitda, ebitda_margin: ebitdaMargin,
+        asset_turnover: assetTurnover,
+        ros_status: stRange(ros, 5, 15),
+        roa_status: stMin(roa, 10),
+        roe_status: stMin(roe, 15),
+        gross_margin_status: stRange(grossMargin, 20, 40),
+        ebitda_margin_status: stMin(ebitdaMargin, 10),
+        asset_turnover_status: stMin(assetTurnover, 1),
+      },
+    });
+  } catch (e) { console.error('profitability err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/finance/balance-entry', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.body); // null = вся компания
+    // Если указан филиал — проверяем принадлежность компании.
+    if (branchId) {
+      const chk = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [branchId, companyId]);
+      if (!chk.rows[0]) return res.status(400).json({ error: 'Branch out of scope' });
+    }
+    const num = (x) => { const v = parseFloat(x); return Number.isFinite(v) && v >= 0 ? v : 0; };
+    const { rows } = await pool.query(
+      `INSERT INTO balance_entries
+         (company_id, branch_id, period, total_assets, equity, depreciation, interest_expense, taxes, created_by)
+       VALUES ($1, $2, date_trunc('month', now())::date, $3, $4, $5, $6, $7, $8)
+       RETURNING id, period`,
+      [companyId, branchId,
+       num(req.body.total_assets), num(req.body.equity), num(req.body.depreciation),
+       num(req.body.interest_expense), num(req.body.taxes), req.user.id]);
+    res.json({ ok: true, id: rows[0].id, period: rows[0].period });
+  } catch (e) { console.error('balance-entry err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== payment-calendar =====
+// ── Платёжный календарь — прогноз остатка кассы на N дней (по умолчанию 14).
+// БЕЗ новых таблиц: исходящие = неоплаченные stock_income (долг поставщикам),
+// входящие = дебиторка stock_outcome (долг клиентов), старт = касса (cash_income−cash_expense).
+// Только финансовые роли — менеджер не имеет доступа к финансам компании.
+app.get('/api/finance/payment-calendar', auth(['admin','gen_dir','founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);          // int|null
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 14, 1), 60);
+
+    // Доп. branch-фильтры (через products.company_id уже скоупим компанию)
+    const siBranch = branchId ? `AND si.branch_id = $2` : '';
+    const soBranch = branchId ? `AND so.branch_id = $2` : '';
+    const ceBranch = branchId ? `AND ce.branch_id = $2` : '';
+    const ciBranch = branchId ? `AND ci.branch_id = $2` : '';
+    const p = branchId ? [companyId, branchId] : [companyId];
+
+    // 1) Стартовый баланс кассы = расчётные cash_income (settled) − cash_expense.
+    //    company-скоуп через branches.company_id; ветка — опционально.
+    const balQ = await pool.query(
+      `SELECT
+         (SELECT COALESCE(SUM(ci.amount),0) FROM cash_income ci
+            JOIN branches b ON b.id = ci.branch_id
+            WHERE b.company_id = $1 AND ci.is_settled IS NOT FALSE ${ciBranch})
+       - (SELECT COALESCE(SUM(ce.amount),0) FROM cash_expense ce
+            JOIN branches b ON b.id = ce.branch_id
+            WHERE b.company_id = $1 ${ceBranch}) AS balance`, p);
+    const startingBalance = Math.round(parseFloat(balQ.rows[0].balance) || 0);
+
+    // 2) Исходящие — неоплаченные закупки (долг поставщикам) со сроком в горизонте.
+    const out = await pool.query(
+      `SELECT si.due_date::date AS day,
+              ((si.quantity * si.price) - COALESCE(si.paid_amount,0)) AS amount,
+              s.name AS supplier_name
+         FROM stock_income si
+         JOIN products p ON p.id = si.product_id
+         LEFT JOIN suppliers s ON s.id = si.supplier_id
+        WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+          AND si.due_date IS NOT NULL
+          AND si.due_date::date >= CURRENT_DATE
+          AND si.due_date::date < CURRENT_DATE + ($${p.length + 1}::int)
+          ${siBranch}
+        ORDER BY si.due_date ASC`, [...p, days]);
+
+    // 3) Входящие — дебиторка клиентов (продажи) со сроком в горизонте.
+    const inc = await pool.query(
+      `SELECT so.due_date::date AS day,
+              ((so.quantity * so.price) - COALESCE(so.paid_amount,0)) AS amount,
+              c.name AS customer_name
+         FROM stock_outcome so
+         JOIN products p ON p.id = so.product_id
+         LEFT JOIN customers c ON c.id = so.customer_id
+        WHERE p.company_id = $1 AND so.status = 'approved'
+          AND so.payment_status <> 'paid'
+          AND so.due_date IS NOT NULL
+          AND so.due_date::date >= CURRENT_DATE
+          AND so.due_date::date < CURRENT_DATE + ($${p.length + 1}::int)
+          ${soBranch}
+        ORDER BY so.due_date ASC`, [...p, days]);
+
+    const iso = (dt) => new Date(dt).toISOString().slice(0, 10);
+    const rawPayments = [];
+    for (const r of out.rows) {
+      const amt = Math.round(parseFloat(r.amount) || 0);
+      if (amt <= 0) continue;
+      rawPayments.push({ day: iso(r.day), direction: 'out', amount: amt,
+        title: r.supplier_name ? `Оплата поставщику: ${r.supplier_name}` : 'Оплата поставщику' });
+    }
+    for (const r of inc.rows) {
+      const amt = Math.round(parseFloat(r.amount) || 0);
+      if (amt <= 0) continue;
+      rawPayments.push({ day: iso(r.day), direction: 'in', amount: amt,
+        title: r.customer_name ? `Поступление от клиента: ${r.customer_name}` : 'Поступление от клиента' });
+    }
+    // Сортировка по дате; в пределах дня — сначала приходы, затем расходы (консервативная оценка разрыва)
+    rawPayments.sort((a, b) => a.day === b.day
+      ? (a.direction === b.direction ? 0 : a.direction === 'in' ? -1 : 1)
+      : (a.day < b.day ? -1 : 1));
+
+    // 4) Нарастающий итог остатка + минимальный безопасный уровень.
+    //    Мин. безопасный уровень = max(0, 10% от стартового баланса) — простая эвристика без новых настроек.
+    const minSafe = Math.max(0, Math.round(startingBalance * 0.1));
+    let running = startingBalance;
+    const payments = rawPayments.map(p2 => {
+      running += p2.direction === 'in' ? p2.amount : -p2.amount;
+      return { ...p2, balance_after: running };
+    });
+
+    // 5) Дневная серия остатка для графика (по календарным дням горизонта).
+    const dayMap = new Map();
+    for (const p2 of payments) dayMap.set(p2.day, p2.balance_after); // последний остаток дня
+    const daysSeries = [];
+    let acc = startingBalance;
+    const base = new Date(); base.setHours(0, 0, 0, 0);
+    for (let i = 0; i < days; i++) {
+      const dt = new Date(base); dt.setDate(base.getDate() + i);
+      const key = iso(dt);
+      if (dayMap.has(key)) acc = dayMap.get(key);
+      daysSeries.push({ day: key, balance: acc });
+    }
+
+    // 6) Алерты — дни, где остаток опускается ниже минимального безопасного уровня.
+    const alerts = daysSeries.filter(x => x.balance < minSafe).map(x => ({ day: x.day, balance: x.balance }));
+
+    const totalIncoming = payments.filter(x => x.direction === 'in').reduce((s, x) => s + x.amount, 0);
+    const totalOutgoing = payments.filter(x => x.direction === 'out').reduce((s, x) => s + x.amount, 0);
+
+    res.json({
+      days_horizon: days,
+      starting_balance: startingBalance,
+      min_safe: minSafe,
+      total_incoming: totalIncoming,
+      total_outgoing: totalOutgoing,
+      ending_balance: running,
+      payments,
+      days: daysSeries,
+      alerts,
+    });
+  } catch (e) { console.error('payment-calendar err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== currency-ops =====
+// === Валютные операции (только учредитель/гендиректор) ===
+// stock_outcome.price / stock_income.price ХРАНЯТСЯ В UZS; exchange_rate = сум за 1$,
+// т.е. USD = quantity*price / exchange_rate, UZS = quantity*price (по канону server.js, ~стр.1008).
+app.get('/api/finance/currency', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const pr = periodRangeUnified(req.query.period);
+
+    // Параметры: $1 companyId, $2 from, $3 to, [$4 branchId]
+    const params = [companyId, pr.from, pr.to];
+    let soBranch = '', siBranch = '';
+    if (branchId) {
+      params.push(branchId);
+      soBranch = `AND so.branch_id = $${params.length}`;
+      siBranch = `AND si.branch_id = $${params.length}`;
+    }
+
+    // Продажи в валюте (stock_outcome, approved). branch->company через branches.
+    const salesSQL = `
+      SELECT so.id, so.created_at, 'sale' AS type,
+             COALESCE(so.currency, 'UZS') AS currency,
+             so.exchange_rate AS rate,
+             (so.quantity * so.price) AS total_uzs
+      FROM stock_outcome so
+      JOIN branches b ON b.id = so.branch_id
+      WHERE b.company_id = $1 AND so.status = 'approved'
+        AND COALESCE(so.currency, 'UZS') <> 'UZS'
+        AND so.exchange_rate IS NOT NULL AND so.exchange_rate > 0
+        AND so.created_at >= $2 AND so.created_at < $3 ${soBranch}`;
+
+    // Закупки в валюте (stock_income). company через products.
+    const buysSQL = `
+      SELECT si.id, si.created_at, 'purchase' AS type,
+             COALESCE(si.currency, 'UZS') AS currency,
+             si.exchange_rate AS rate,
+             (si.quantity * si.price) AS total_uzs
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      WHERE p.company_id = $1
+        AND COALESCE(si.currency, 'UZS') <> 'UZS'
+        AND si.exchange_rate IS NOT NULL AND si.exchange_rate > 0
+        AND si.created_at >= $2 AND si.created_at < $3 ${siBranch}`;
+
+    const { rows } = await pool.query(
+      `${salesSQL} UNION ALL ${buysSQL} ORDER BY created_at DESC LIMIT 500`, params);
+
+    const operations = rows.map(r => {
+      const rate = parseFloat(r.rate) || 0;
+      const totalUzs = parseFloat(r.total_uzs) || 0;
+      const amountUsd = rate > 0 ? totalUzs / rate : 0;
+      return {
+        created_at: r.created_at,
+        type: r.type,
+        currency: r.currency,
+        rate: Math.round(rate),
+        amount_usd: Math.round(amountUsd * 100) / 100,
+        total_uzs: Math.round(totalUzs),
+      };
+    });
+
+    const opsCount = operations.length;
+    const totalUsd = operations.reduce((s, o) => s + o.amount_usd, 0);
+    const totalUzs = operations.reduce((s, o) => s + o.total_uzs, 0);
+    // Средневзвешенный курс = сумма UZS / сумма USD
+    const avgRate = totalUsd > 0 ? Math.round(totalUzs / totalUsd) : null;
+
+    // Курсовая разница: отклонение курса каждой операции от средневзвешенного,
+    // помноженное на её объём в USD (оценка потерь на колебаниях курса).
+    let fxLoss = 0;
+    if (avgRate) {
+      for (const o of operations) fxLoss += Math.abs(o.rate - avgRate) * o.amount_usd;
+    }
+    fxLoss = Math.round(fxLoss);
+    // Банковская комиссия конвертации ~0.5% от эквивалента в сумах.
+    const feeLoss = Math.round(totalUzs * 0.005);
+    const totalLoss = fxLoss + feeLoss;
+
+    res.json({
+      period: req.query.period || 'month',
+      ops_count: opsCount,
+      total_usd: Math.round(totalUsd * 100) / 100,
+      total_uzs: Math.round(totalUzs),
+      avg_rate: avgRate,
+      fx_loss: fxLoss,
+      fee_loss: feeLoss,
+      total_loss: totalLoss,
+      operations,
+    });
+  } catch (e) {
+    console.error('finance/currency err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== taxes =====
+// === НАЛОГИ (taxes) — финансы компании, только учредитель/гендиректор ===
+// Расчёт базы из выручки (stock_outcome approved), режим по умолчанию — упрощёнка 4% оборота.
+// Хранение: tax_settings (режим/ставка) + tax_payments (начисления/оплаты) — см. schemaSql.
+
+// Гарантирует наличие настроек налогов у компании (создаёт дефолт: упрощёнка 4%, квартал).
+async function ensureTaxSettings(companyId) {
+  const { rows } = await pool.query('SELECT regime, rate_pct, period_type FROM tax_settings WHERE company_id=$1', [companyId]);
+  if (rows[0]) return rows[0];
+  const ins = await pool.query(
+    `INSERT INTO tax_settings (company_id, regime, rate_pct, period_type)
+     VALUES ($1,'simplified',4,'quarter')
+     ON CONFLICT (company_id) DO UPDATE SET regime=EXCLUDED.regime
+     RETURNING regime, rate_pct, period_type`, [companyId]);
+  return ins.rows[0];
+}
+
+const TAX_REGIME_LABEL = { simplified: 'Упрощёнка', vat: 'НДС', general: 'Общий режим' };
+
+// Синхронизирует начисления: для каждого квартала года с выручкой создаёт строку в tax_payments,
+// если её ещё нет. Уже существующие (в т.ч. оплаченные) — не трогает.
+async function syncTaxAccruals(companyId, year, ratePct) {
+  // Выручка по кварталам из одобренных продаж (UZS полным числом через total/price*qty с курсом)
+  const { rows } = await pool.query(`
+    SELECT EXTRACT(QUARTER FROM so.created_at)::int AS q,
+           COALESCE(SUM(so.quantity * so.price * COALESCE(so.exchange_rate,1)),0) AS base
+    FROM stock_outcome so
+    JOIN branches b ON b.id = so.branch_id
+    WHERE b.company_id = $1 AND so.status='approved'
+      AND EXTRACT(YEAR FROM so.created_at)::int = $2
+    GROUP BY 1`, [companyId, year]);
+  for (const r of rows) {
+    const base = Math.round(parseFloat(r.base) || 0);
+    if (base <= 0) continue;
+    const period = `${year}-Q${r.q}`;
+    const amount = Math.round(base * ratePct / 100);
+    // Срок оплаты — 25-е число месяца, следующего за кварталом
+    const dueMonth = r.q * 3; // конец квартала: 3,6,9,12 → срок в след. месяце
+    const due = new Date(Date.UTC(year, dueMonth, 25)); // месяц 0-based: q3 → month index 3 = апрель? корректируем ниже
+    const dueDate = new Date(Date.UTC(year, r.q * 3, 25)).toISOString().slice(0, 10);
+    await pool.query(`
+      INSERT INTO tax_payments (company_id, period, base_amount, rate_pct, amount, status, due_date)
+      VALUES ($1,$2,$3,$4,$5,'pending',$6)
+      ON CONFLICT (company_id, period) DO UPDATE
+        SET base_amount = EXCLUDED.base_amount,
+            amount = EXCLUDED.amount,
+            rate_pct = EXCLUDED.rate_pct
+        WHERE tax_payments.status <> 'paid'`,
+      [companyId, period, base, ratePct, amount, dueDate]);
+  }
+}
+
+// GET /api/finance/taxes?year= — метрики + история платежей
+app.get('/api/finance/taxes', auth(['admin','gen_dir','founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const settings = await ensureTaxSettings(companyId);
+    const ratePct = parseFloat(settings.rate_pct) || 4;
+
+    await syncTaxAccruals(companyId, year, ratePct);
+
+    const { rows: payments } = await pool.query(`
+      SELECT id, period, base_amount, rate_pct, amount, status, due_date, paid_at
+      FROM tax_payments
+      WHERE company_id=$1 AND period LIKE $2
+      ORDER BY period`, [companyId, year + '-%']);
+
+    // Выручка за год (для налоговой нагрузки)
+    const { rows: revRows } = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price * COALESCE(so.exchange_rate,1)),0) AS rev
+      FROM stock_outcome so JOIN branches b ON b.id = so.branch_id
+      WHERE b.company_id=$1 AND so.status='approved'
+        AND EXTRACT(YEAR FROM so.created_at)::int = $2`, [companyId, year]);
+    const revenueYear = Math.round(parseFloat(revRows[0]?.rev) || 0);
+
+    const paidTotal = payments.filter(p => p.status === 'paid').reduce((a, p) => a + Math.round(parseFloat(p.amount) || 0), 0);
+    const accruedTotal = payments.reduce((a, p) => a + Math.round(parseFloat(p.amount) || 0), 0);
+    const outstanding = accruedTotal - paidTotal;
+    const next = payments
+      .filter(p => p.status !== 'paid')
+      .sort((a, b) => new Date(a.due_date) - new Date(b.due_date))[0] || null;
+    const taxBurden = revenueYear > 0 ? Math.round((accruedTotal / revenueYear) * 1000) / 10 : 0;
+
+    res.json({
+      year,
+      regime: settings.regime,
+      regime_label: TAX_REGIME_LABEL[settings.regime] || 'Упрощёнка',
+      rate_pct: ratePct,
+      period_type: settings.period_type,
+      revenue_year: revenueYear,
+      paid_total: paidTotal,
+      accrued_total: accruedTotal,
+      outstanding,
+      tax_burden_pct: taxBurden,
+      next_payment: next ? {
+        id: next.id, period: next.period, amount: Math.round(parseFloat(next.amount) || 0), due_date: next.due_date,
+      } : null,
+      payments: payments.map(p => ({
+        id: p.id, period: p.period,
+        base_amount: Math.round(parseFloat(p.base_amount) || 0),
+        rate_pct: parseFloat(p.rate_pct),
+        amount: Math.round(parseFloat(p.amount) || 0),
+        status: p.status, due_date: p.due_date, paid_at: p.paid_at,
+      })),
+    });
+  } catch (e) { console.error('finance/taxes err', e); res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/finance/taxes/:id/pay — отметить платёж уплаченным
+app.patch('/api/finance/taxes/:id/pay', auth(['admin','gen_dir','founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id);
+    const { rowCount } = await pool.query(
+      `UPDATE tax_payments SET status='paid', paid_at=NOW()
+       WHERE id=$1 AND company_id=$2 AND status<>'paid'`, [id, companyId]);
+    if (!rowCount) return res.status(404).json({ error: 'Платёж не найден или уже уплачен' });
+    res.json({ ok: true });
+  } catch (e) { console.error('finance/taxes pay err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== financial-ratios =====
+// === Финансовые коэффициенты === GET /api/finance/ratios?period=
+// Авто: касса (cash_income−cash_expense), дебиторка (unpaid stock_outcome),
+// запасы (product_stock×price_buy), кредиторка (unpaid stock_income).
+// Ручной баланс (balance_entries): обязательства, проценты по кредитам, собственный капитал, прочие активы.
+app.get('/api/finance/ratios', auth(['admin','gen_dir','founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = String(req.query.period || 'month');
+    const now = new Date();
+    let from;
+    if (period === 'day') from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    else if (period === 'week') { from = new Date(now); from.setDate(now.getDate() - 6); from.setHours(0,0,0,0); }
+    else if (period === 'year') from = new Date(now.getFullYear(), 0, 1);
+    else from = new Date(now.getFullYear(), now.getMonth(), 1); // month (default)
+    const fromIso = from.toISOString(), toIso = now.toISOString();
+
+    // Скоуп филиала (опционально). Все запросы изолированы по company_id через products.company_id / branches.company_id.
+    const bCond = branchId ? `AND so.branch_id = $2` : '';
+    const bParam = branchId ? [companyId, branchId] : [companyId];
+
+    // --- АВТО-ДАННЫЕ ---
+    // Касса (наличность) = приход − расход за период (по филиалам компании)
+    const cashQ = await pool.query(`
+      SELECT
+        COALESCE((SELECT SUM(ci.amount) FROM cash_income ci JOIN branches b ON b.id=ci.branch_id
+                  WHERE b.company_id=$1 AND ci.is_settled IS NOT FALSE AND ci.created_at>=$2 AND ci.created_at<$3 ${branchId?'AND ci.branch_id=$4':''}),0)
+        - COALESCE((SELECT SUM(ce.amount) FROM cash_expense ce JOIN branches b ON b.id=ce.branch_id
+                  WHERE b.company_id=$1 AND ce.created_at>=$2 AND ce.created_at<$3 ${branchId?'AND ce.branch_id=$4':''}),0) AS cash`,
+      branchId ? [companyId, fromIso, toIso, branchId] : [companyId, fromIso, toIso]);
+    const cash = Math.max(0, parseFloat(cashQ.rows[0].cash) || 0);
+
+    // Дебиторка = неоплаченные продажи (нам должны)
+    const recvQ = await pool.query(`
+      SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) v
+      FROM stock_outcome so JOIN products p ON p.id=so.product_id
+      WHERE p.company_id=$1 AND so.payment_status <> 'paid' AND so.status='approved' ${branchId?'AND so.branch_id=$2':''}`, bParam);
+    const receivables = parseFloat(recvQ.rows[0].v) || 0;
+
+    // Кредиторка = неоплаченные закупки (мы должны поставщикам)
+    const payQ = await pool.query(`
+      SELECT COALESCE(SUM((si.quantity*si.price) - COALESCE(si.paid_amount,0)),0) v
+      FROM stock_income si JOIN products p ON p.id=si.product_id
+      WHERE p.company_id=$1 AND si.payment_status <> 'paid' ${branchId?'AND si.branch_id=$2':''}`, bParam);
+    const payables = parseFloat(payQ.rows[0].v) || 0;
+
+    // Запасы (склад) по себестоимости
+    const invQ = await pool.query(`
+      SELECT COALESCE(SUM(ps.quantity * COALESCE(p.price_buy,0)),0) v
+      FROM product_stock ps JOIN products p ON p.id=ps.product_id JOIN branches b ON b.id=ps.branch_id
+      WHERE b.company_id=$1 ${branchId?'AND ps.branch_id=$2':''}`, bParam);
+    const inventory = parseFloat(invQ.rows[0].v) || 0;
+
+    // Выручка / себестоимость / опер. прибыль за период (для оборачиваемости и покрытия процентов)
+    const salesQ = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity*so.price),0) revenue,
+             COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
+      FROM stock_outcome so JOIN products p ON p.id=so.product_id
+      WHERE p.company_id=$1 AND so.status='approved' AND so.created_at>=${branchId?'$3':'$2'} AND so.created_at<${branchId?'$4':'$3'} ${branchId?'AND so.branch_id=$2':''}`,
+      branchId ? [companyId, branchId, fromIso, toIso] : [companyId, fromIso, toIso]);
+    const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
+    const cogs = parseFloat(salesQ.rows[0].cogs) || 0;
+    const opexQ = await pool.query(`
+      SELECT COALESCE(SUM(ce.amount),0) v FROM cash_expense ce JOIN branches b ON b.id=ce.branch_id
+      WHERE b.company_id=$1 AND ce.created_at>=${branchId?'$3':'$2'} AND ce.created_at<${branchId?'$4':'$3'} ${branchId?'AND ce.branch_id=$2':''}`,
+      branchId ? [companyId, branchId, fromIso, toIso] : [companyId, fromIso, toIso]);
+    const opex = parseFloat(opexQ.rows[0].v) || 0;
+    const operatingProfit = (revenue - cogs) - opex;
+
+    // --- РУЧНОЙ БАЛАНС (balance_entries) — последний снимок компании ---
+    const balQ = await pool.query(`
+      SELECT manual_liabilities, manual_interest_expense, manual_equity, manual_other_assets
+      FROM balance_entries WHERE company_id=$1 ORDER BY created_at DESC LIMIT 1`, [companyId]);
+    const bal = balQ.rows[0] || {};
+    const manualLiabilities = parseFloat(bal.manual_liabilities) || 0;
+    const interestExpense = parseFloat(bal.manual_interest_expense) || 0;
+    const manualEquity = parseFloat(bal.manual_equity) || 0;
+    const otherAssets = parseFloat(bal.manual_other_assets) || 0;
+
+    // --- СВОДНЫЕ ВЕЛИЧИНЫ ---
+    const currentAssets = cash + receivables + inventory;
+    // Краткосрочные обязательства = кредиторка (авто) + ручные обязательства
+    const currentLiabilities = payables + manualLiabilities;
+    const totalAssets = currentAssets + otherAssets;
+    const totalLiabilities = currentLiabilities; // допущение: все обязательства краткосрочные, если иное не введено
+
+    const r1 = (n) => Math.round(n * 100) / 100;
+    const status = (v, ok) => v == null ? 'bad' : (ok ? 'good' : 'warn');
+
+    // 1) Текущая ликвидность
+    const currentRatio = currentLiabilities > 0 ? r1(currentAssets / currentLiabilities) : null;
+    // 2) Быстрая ликвидность
+    const quickRatio = currentLiabilities > 0 ? r1((currentAssets - inventory) / currentLiabilities) : null;
+    // 3) Долговая нагрузка = обязательства / активы
+    const debtRatio = totalAssets > 0 ? r1(totalLiabilities / totalAssets) : null;
+    // 4) Оборачиваемость дебиторки = выручка / дебиторка
+    const recvTurnover = receivables > 0 ? r1(revenue / receivables) : null;
+    // 5) Оборачиваемость запасов = себестоимость / запасы
+    const invTurnover = inventory > 0 ? r1(cogs / inventory) : null;
+    // 6) Покрытие процентов = опер. прибыль / проценты
+    const interestCoverage = interestExpense > 0 ? r1(operatingProfit / interestExpense) : null;
+
+    const sLbl = { good: 'Норма', warn: 'Внимание', bad: 'Нет данных' };
+    const lbl = (s) => sLbl[s];
+
+    const ratios = [
+      { name: 'Текущая ликвидность', value: currentRatio, suffix: '', norm: '> 1.5',
+        status: status(currentRatio, currentRatio >= 1.5), status_label: currentRatio == null ? sLbl.bad : (currentRatio >= 1.5 ? sLbl.good : sLbl.warn),
+        hint: 'Хватит ли оборотных активов, чтобы покрыть краткосрочные долги. Больше 1.5 — запас прочности есть.' },
+      { name: 'Быстрая ликвидность', value: quickRatio, suffix: '', norm: '> 1.0',
+        status: status(quickRatio, quickRatio >= 1.0), status_label: quickRatio == null ? sLbl.bad : (quickRatio >= 1.0 ? sLbl.good : sLbl.warn),
+        hint: 'Сможем ли расплатиться по долгам без распродажи склада (только деньги и дебиторка).' },
+      { name: 'Долговая нагрузка', value: debtRatio, suffix: '', norm: '< 0.5',
+        status: status(debtRatio, debtRatio != null && debtRatio < 0.5), status_label: debtRatio == null ? sLbl.bad : (debtRatio < 0.5 ? sLbl.good : sLbl.warn),
+        hint: 'Какая доля активов профинансирована долгами. Меньше 0.5 — бизнес не перегружен кредитами.' },
+      { name: 'Оборачиваемость дебиторки', value: recvTurnover, suffix: '×', norm: '> 6×',
+        status: status(recvTurnover, recvTurnover >= 6), status_label: recvTurnover == null ? sLbl.bad : (recvTurnover >= 6 ? sLbl.good : sLbl.warn),
+        hint: 'Как быстро клиенты возвращают долги. Выше — деньги возвращаются быстрее.' },
+      { name: 'Оборачиваемость запасов', value: invTurnover, suffix: '×', norm: '> 3×',
+        status: status(invTurnover, invTurnover >= 3), status_label: invTurnover == null ? sLbl.bad : (invTurnover >= 3 ? sLbl.good : sLbl.warn),
+        hint: 'Как быстро распродаётся склад. Выше — товар не залёживается.' },
+      { name: 'Покрытие процентов', value: interestCoverage, suffix: '×', norm: '> 3×',
+        status: status(interestCoverage, interestCoverage >= 3), status_label: interestCoverage == null ? sLbl.bad : (interestCoverage >= 3 ? sLbl.good : sLbl.warn),
+        hint: 'Во сколько раз прибыль покрывает проценты по кредитам. Выше 3 — кредиты обслуживаются легко.' },
+    ];
+
+    res.json({
+      period, from: fromIso, to: toIso,
+      cash, receivables, inventory, payables,
+      current_assets: currentAssets,
+      current_liabilities: currentLiabilities,
+      total_assets: totalAssets,
+      revenue, cogs, operating_profit: operatingProfit,
+      manual_equity: manualEquity,
+      interest_expense: interestExpense,
+      ratios,
+    });
+  } catch (e) { console.error('finance/ratios err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== fin-whatif =====
+// === ФИНАНСЫ: «Что если» — baseline для фронтовых сценариев ===
+// НОВЫЙ эндпоинт (modeling не трогаем). Возвращает только агрегаты-baseline;
+// вся математика 3 сценариев (филиал / кредит / цены) — на фронте.
+// Источники: stock_outcome+products (выручка/себестоимость), cash_expense
+// (постоянные расходы), cash_income−cash_expense (остаток в кассе).
+// auth БЕЗ manager — это финансы всей компании.
+app.get('/api/finance/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
+    if (scope.restrictive && scope.ids.length === 0) {
+      return res.json({ current_revenue: 0, current_profit: 0, current_fixed_costs: 0, cogs_ratio: 0, current_balance: 0, min_safe_balance: 0 });
+    }
+    // Текущий календарный месяц
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const to = now.toISOString();
+
+    // Выручка и себестоимость за месяц (как в computeBreakEven)
+    const sp = []; const sc = branchArrayCond(scope, sp, 'so.branch_id');
+    const salesQ = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity*so.price),0) revenue,
+             COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
+      FROM stock_outcome so JOIN products p ON p.id=so.product_id
+      WHERE so.status='approved' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
+      [...sp, from, to]);
+
+    // Постоянные расходы за месяц (касса)
+    const ep = []; const ec = branchArrayCond(scope, ep);
+    const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
+
+    // Остаток в кассе (приход − расход за всё время; income только settled)
+    const ip2 = []; const ic2 = branchArrayCond(scope, ip2);
+    const incTotalQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_income WHERE ${ic2} AND is_settled IS NOT FALSE`, ip2);
+    const ep2 = []; const ec2 = branchArrayCond(scope, ep2);
+    const expTotalQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec2}`, ep2);
+
+    const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
+    const cogs = parseFloat(salesQ.rows[0].cogs) || 0;
+    const fixedCosts = parseFloat(expQ.rows[0].t) || 0;
+    const grossProfit = revenue - cogs;
+    const profit = grossProfit - fixedCosts;
+    const cogsRatio = revenue > 0 ? cogs / revenue : 0;
+    const balance = (parseFloat(incTotalQ.rows[0].t) || 0) - (parseFloat(expTotalQ.rows[0].t) || 0);
+    // Минимальный безопасный остаток = постоянные расходы за месяц (подушка на 1 мес операционки)
+    const minSafe = Math.round(fixedCosts);
+
+    res.json({
+      current_revenue: Math.round(revenue),
+      current_profit: Math.round(profit),
+      current_fixed_costs: Math.round(fixedCosts),
+      cogs_ratio: Math.round(cogsRatio * 1000) / 1000,
+      current_balance: Math.round(balance),
+      min_safe_balance: minSafe,
+    });
+  } catch (e) { console.error('whatif-base err', e); res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
+
+// ============ ВОЛНА 3: ЗАКУПКИ (procurement) ============
+
+// ===== purchase-history =====
+// === ИСТОРИЯ ЗАКУПОК (read-only по stock_income) ===
+// GET /api/procurement/history?period=day|week|month|year[&branch_id=]
+// Возвращает: summary, chart (помесячно), by_supplier (с долей %), rows (реестр).
+// Скоуп компании — JOIN products p (p.company_id); ветка — si.branch_id (getBranchFilter).
+app.get('/api/procurement/history', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Период → начало диапазона (закупки от now()-interval)
+    const periodMap = { day: '1 day', week: '7 days', month: '1 month', year: '1 year' };
+    const interval = periodMap[req.query.period] || '1 month';
+
+    const params = [companyId, interval];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = ` AND si.branch_id = $${params.length}`; }
+
+    const where = `WHERE p.company_id = $1
+        AND si.created_at >= (CURRENT_DATE - $2::interval)${branchFilter}`;
+
+    // 1) Сводка
+    const summaryQ = pool.query(`
+      SELECT COALESCE(SUM(si.quantity * si.price), 0)         AS total,
+             COUNT(*)                                          AS invoices,
+             COUNT(DISTINCT COALESCE(s.name, si.supplier))     AS suppliers,
+             COALESCE(SUM(si.quantity), 0)                     AS items
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      ${where}
+    `, params);
+
+    // 2) Помесячный график (последние 12 мес, независимо от period — для динамики)
+    const chartQ = pool.query(`
+      SELECT to_char(date_trunc('month', si.created_at), 'YYYY-MM') AS ym,
+             COALESCE(SUM(si.quantity * si.price), 0)               AS total
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      WHERE p.company_id = $1
+        AND si.created_at >= (CURRENT_DATE - INTERVAL '12 months')${branchId ? ` AND si.branch_id = $2` : ''}
+      GROUP BY 1 ORDER BY 1
+    `, branchId ? [companyId, branchId] : [companyId]);
+
+    // 3) Разбивка по поставщикам
+    const supplierQ = pool.query(`
+      SELECT COALESCE(s.name, si.supplier)            AS supplier,
+             COALESCE(SUM(si.quantity * si.price), 0) AS total,
+             COUNT(*)                                  AS invoices
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      ${where}
+      GROUP BY COALESCE(s.name, si.supplier)
+      ORDER BY total DESC
+    `, params);
+
+    // 4) Реестр закупок
+    const rowsQ = pool.query(`
+      SELECT si.id, si.created_at, si.quantity, si.price,
+             (si.quantity * si.price) AS total,
+             p.name_ru AS product_name, p.unit,
+             COALESCE(s.name, si.supplier) AS supplier
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      ${where}
+      ORDER BY si.created_at DESC
+      LIMIT 500
+    `, params);
+
+    const [summaryR, chartR, supplierR, rowsR] = await Promise.all([summaryQ, chartQ, supplierQ, rowsQ]);
+
+    const summary = {
+      total:     parseFloat(summaryR.rows[0].total) || 0,
+      invoices:  parseInt(summaryR.rows[0].invoices) || 0,
+      suppliers: parseInt(summaryR.rows[0].suppliers) || 0,
+      items:     parseFloat(summaryR.rows[0].items) || 0,
+    };
+
+    const monthNames = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+    const chart = chartR.rows.map(r => {
+      const m = parseInt(r.ym.slice(5, 7)) - 1;
+      return { label: monthNames[m] || r.ym, total: parseFloat(r.total) || 0 };
+    });
+
+    const periodTotal = supplierR.rows.reduce((a, r) => a + (parseFloat(r.total) || 0), 0);
+    const by_supplier = supplierR.rows.map(r => {
+      const total = parseFloat(r.total) || 0;
+      const invoices = parseInt(r.invoices) || 0;
+      return {
+        supplier: r.supplier,
+        total,
+        invoices,
+        share: periodTotal > 0 ? (total / periodTotal) * 100 : 0,
+        avg_check: invoices > 0 ? total / invoices : 0,
+      };
+    });
+
+    const rows = rowsR.rows.map(r => ({
+      id: r.id,
+      created_at: r.created_at,
+      quantity: parseFloat(r.quantity) || 0,
+      price: parseFloat(r.price) || 0,
+      total: parseFloat(r.total) || 0,
+      product_name: r.product_name,
+      unit: r.unit,
+      supplier: r.supplier,
+    }));
+
+    res.json({ summary, chart, by_supplier, rows });
+  } catch (e) { console.error('procurement/history err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== supplier-returns =====
+// === PROCUREMENT: ВОЗВРАТЫ ПОСТАВЩИКУ ===
+app.get('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'month';
+    const interval = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' }[period];
+
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(parseInt(branchId)); branchSQL = `AND sr.branch_id = $${params.length}`; }
+
+    const listQ = await pool.query(`
+      SELECT sr.id, sr.supplier_id, sr.product_id, sr.qty, sr.amount, sr.reason,
+             sr.status, sr.compensation_type, sr.created_at,
+             COALESCE(s.name, '')   AS supplier_name,
+             COALESCE(p.name_ru,'') AS product_name
+      FROM supplier_returns sr
+      JOIN products p ON p.id = sr.product_id
+      LEFT JOIN suppliers s ON s.id = sr.supplier_id
+      WHERE p.company_id = $1 ${branchSQL}
+        AND sr.created_at >= NOW() - INTERVAL '${interval}'
+      ORDER BY sr.created_at DESC
+      LIMIT 500
+    `, params);
+    const items = listQ.rows.map(r => ({
+      id: r.id, supplier_id: r.supplier_id, product_id: r.product_id,
+      supplier_name: r.supplier_name, product_name: r.product_name,
+      qty: parseFloat(r.qty || 0), amount: parseFloat(r.amount || 0),
+      reason: r.reason, status: r.status, compensation_type: r.compensation_type,
+      created_at: r.created_at,
+    }));
+
+    const summary = items.reduce((a, it) => {
+      a.count += 1; a.total += it.amount;
+      if (it.status === 'compensated') a.compensated += it.amount; else a.in_progress += it.amount;
+      return a;
+    }, { count: 0, total: 0, compensated: 0, in_progress: 0 });
+
+    const supQ = await pool.query(`
+      WITH ret AS (
+        SELECT sr.supplier_id, COALESCE(s.name,'') AS supplier_name,
+               COUNT(*) AS cnt, COALESCE(SUM(sr.amount),0) AS amount
+        FROM supplier_returns sr
+        JOIN products p ON p.id = sr.product_id
+        LEFT JOIN suppliers s ON s.id = sr.supplier_id
+        WHERE p.company_id = $1 ${branchSQL}
+          AND sr.created_at >= NOW() - INTERVAL '${interval}'
+        GROUP BY sr.supplier_id, s.name
+      ),
+      buy AS (
+        SELECT si.supplier_id, COALESCE(SUM(si.quantity * si.price),0) AS purchased
+        FROM stock_income si
+        JOIN products p ON p.id = si.product_id
+        WHERE p.company_id = $1 ${branchId ? `AND si.branch_id = $2` : ''}
+          AND si.created_at >= NOW() - INTERVAL '${interval}'
+        GROUP BY si.supplier_id
+      )
+      SELECT ret.supplier_id, ret.supplier_name, ret.cnt::int AS count, ret.amount,
+             CASE WHEN COALESCE(buy.purchased,0) > 0 THEN (ret.amount / buy.purchased) * 100 ELSE NULL END AS return_rate
+      FROM ret LEFT JOIN buy ON buy.supplier_id = ret.supplier_id
+      ORDER BY ret.amount DESC
+    `, params);
+    const by_supplier = supQ.rows.map(r => ({
+      supplier_id: r.supplier_id, supplier_name: r.supplier_name,
+      count: parseInt(r.count || 0), amount: parseFloat(r.amount || 0),
+      return_rate: r.return_rate == null ? null : parseFloat(r.return_rate),
+    }));
+
+    res.json({ summary, items, by_supplier });
+  } catch (e) { console.error('procurement/returns GET err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
+    const { supplier_id, product_id, qty, amount, reason, compensation_type } = req.body;
+    if (!product_id) return res.status(400).json({ error: 'product_id required' });
+    const own = await pool.query('SELECT id FROM products WHERE id=$1 AND company_id=$2', [product_id, companyId]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'Product not found' });
+    const { rows } = await pool.query(`
+      INSERT INTO supplier_returns
+        (company_id, branch_id, supplier_id, product_id, qty, amount, reason, compensation_type, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+    `, [companyId, branchId, supplier_id || null, product_id,
+        parseFloat(qty) || 0, parseFloat(amount) || 0, reason || null, compensation_type || null, req.user.id]);
+    res.json(rows[0]);
+  } catch (e) { console.error('procurement/returns POST err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/procurement/returns/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { status, compensation_type } = req.body;
+    const { rows } = await pool.query(`
+      UPDATE supplier_returns sr
+      SET status = COALESCE($1, sr.status),
+          compensation_type = COALESCE($2, sr.compensation_type)
+      FROM products p
+      WHERE sr.id = $3 AND p.id = sr.product_id AND p.company_id = $4
+      RETURNING sr.*
+    `, [status || null, compensation_type || null, req.params.id, companyId]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { console.error('procurement/returns PATCH err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== supplier-ratings =====
+// === Рейтинг поставщиков — read-only агрегат по stock_income (+ брак, если есть) ===
+// Балл 0-5: доставка в срок (60% · до 3.0) + качество/без брака (30% · до 1.5) + опыт/объём (10% · до 0.5).
+// Скоуп компании — через JOIN products (p.company_id); ветка — si.branch_id (getBranchFilter).
+// supplier_returns опциональна: LEFT JOIN через to_regclass-гард, иначе брак = 0.
+app.get('/api/procurement/ratings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const days = Math.min(Math.max(parseInt(req.query.days) || 90, 1), 365);
+    const branchSQL = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+
+    // Брак по поставщику — только если таблица supplier_returns существует.
+    const hasReturns = await pool.query(`SELECT to_regclass('public.supplier_returns') AS t`);
+    const returnsExist = !!hasReturns.rows[0].t;
+    const defectSQL = returnsExist
+      ? `LEFT JOIN LATERAL (
+           SELECT COALESCE(SUM(sr.qty),0) AS defect_qty
+           FROM supplier_returns sr WHERE sr.supplier_id = agg.supplier_id
+         ) ret ON TRUE`
+      : '';
+    const defectSel = returnsExist ? `ret.defect_qty` : `0`;
+
+    const { rows } = await pool.query(`
+      WITH agg AS (
+        SELECT si.supplier_id,
+               COALESCE(MAX(s.name), MAX(si.supplier), '—') AS name,
+               COUNT(*)::int AS orders,
+               COALESCE(SUM(si.quantity * si.price), 0) AS volume,
+               COALESCE(SUM(si.quantity), 0) AS qty_total,
+               COUNT(*) FILTER (
+                 WHERE si.payment_status <> 'paid'
+                   AND si.due_date IS NOT NULL
+                   AND si.due_date < CURRENT_DATE
+               )::int AS late_count
+        FROM stock_income si
+        JOIN products p ON p.id = si.product_id
+        LEFT JOIN suppliers s ON s.id = si.supplier_id
+        WHERE p.company_id = $1
+          AND si.created_at >= NOW() - INTERVAL '${days} days'
+          ${branchSQL}
+        GROUP BY si.supplier_id
+      )
+      SELECT agg.supplier_id, agg.name, agg.orders, agg.volume, agg.qty_total, agg.late_count,
+             ${defectSel} AS defect_qty
+      FROM agg
+      ${defectSQL}
+      ORDER BY agg.volume DESC
+      LIMIT 500
+    `, [companyId]);
+
+    const maxOrders = Math.max(1, ...rows.map(r => Number(r.orders)));
+    const suppliers = rows.map(r => {
+      const orders = Number(r.orders);
+      const lateCount = Number(r.late_count);
+      const qtyTotal = Number(r.qty_total);
+      const defectQty = Number(r.defect_qty) || 0;
+      const onTimePct = orders > 0 ? ((orders - lateCount) / orders) * 100 : 100;
+      const defectPct = qtyTotal > 0 ? (defectQty / qtyTotal) * 100 : 0;
+      // Баллы: доставка 0-3, качество 0-1.5, опыт 0-0.5.
+      const sDelivery = (onTimePct / 100) * 3;
+      const sQuality = (1 - Math.min(defectPct, 100) / 100) * 1.5;
+      const sExp = Math.min(orders / maxOrders, 1) * 0.5;
+      const score = Math.round((sDelivery + sQuality + sExp) * 10) / 10;
+      return {
+        supplier_id: r.supplier_id,
+        name: r.name,
+        orders,
+        volume: Number(r.volume),
+        late_count: lateCount,
+        on_time_pct: onTimePct,
+        defect_pct: defectPct,
+        score,
+      };
+    });
+
+    const avg = suppliers.length
+      ? Math.round((suppliers.reduce((a, s) => a + s.score, 0) / suppliers.length) * 10) / 10
+      : 0;
+    const sorted = [...suppliers].sort((a, b) => b.score - a.score);
+    const best = sorted[0] ? { name: sorted[0].name, score: sorted[0].score } : null;
+    const worst = sorted.length > 1 ? { name: sorted[sorted.length - 1].name, score: sorted[sorted.length - 1].score } : null;
+
+    res.json({ suppliers, avg_rating: avg, best, worst, returns_tracked: returnsExist });
+  } catch (e) {
+    console.error('procurement/ratings err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== purchase-forecast =====
+// === PROCUREMENT: прогноз закупок (read-only) ===
+// По товару: прогноз спроса = скользящее среднее дневных продаж (stock_outcome approved, 90д) * horizon;
+// остаток = SUM(product_stock.quantity); дни до 0 = stock / avg_daily;
+// срочность: urgent (<=lead_time дней до 0), soon (<=lead_time*2 или 30д), normal;
+// дедлайн заказа = today + max(0, days_left - lead_time); рекоменд. объём = max(0, forecast+safety - stock);
+// сумма-ориентир = order_qty * price_buy (UZS). Скоуп компании через products.company_id, ветка — getBranchFilter.
+app.get('/api/procurement/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const horizon = Math.min(Math.max(parseInt(req.query.horizon, 10) || 30, 1), 90);
+    const soBranch = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const psBranch = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    const { rows } = await pool.query(`
+      WITH demand AS (
+        SELECT so.product_id,
+               SUM(so.quantity)::numeric / 90.0 AS avg_daily
+        FROM stock_outcome so
+        WHERE so.status = 'approved'
+          AND so.created_at >= NOW() - INTERVAL '90 days'
+          ${soBranch}
+        GROUP BY so.product_id
+      ),
+      stock AS (
+        SELECT ps.product_id, COALESCE(SUM(ps.quantity), 0) AS qty
+        FROM product_stock ps
+        WHERE TRUE ${psBranch}
+        GROUP BY ps.product_id
+      ),
+      sup AS (
+        SELECT DISTINCT ON (si.product_id) si.product_id, si.supplier AS supplier_name
+        FROM stock_income si
+        WHERE si.supplier IS NOT NULL AND si.supplier <> ''
+        ORDER BY si.product_id, si.created_at DESC
+      )
+      SELECT p.id AS product_id, p.name_ru, p.unit,
+             COALESCE(p.price_buy, 0)             AS price_buy,
+             COALESCE(p.lead_time_days, 7)        AS lead_time,
+             COALESCE(p.min_stock, 0)             AS min_stock,
+             COALESCE(d.avg_daily, 0)             AS avg_daily,
+             COALESCE(s.qty, 0)                   AS stock,
+             sup.supplier_name                    AS supplier
+      FROM products p
+      LEFT JOIN demand d ON d.product_id = p.id
+      LEFT JOIN stock  s ON s.product_id = p.id
+      LEFT JOIN sup      ON sup.product_id = p.id
+      WHERE p.company_id = $1
+        AND COALESCE(d.avg_daily, 0) > 0
+    `, [companyId]);
+
+    const now = Date.now();
+    const DAY = 86400000;
+    let urgentCount = 0, soonCount = 0, totalCost = 0;
+    const items = [];
+
+    for (const r of rows) {
+      const avgDaily = parseFloat(r.avg_daily) || 0;
+      const stock = parseFloat(r.stock) || 0;
+      const leadTime = parseInt(r.lead_time, 10) || 7;
+      const safety = parseFloat(r.min_stock) || 0;
+      const priceBuy = parseFloat(r.price_buy) || 0;
+
+      const forecastQty = Math.round(avgDaily * horizon);
+      const daysLeft = avgDaily > 0 ? Math.floor(stock / avgDaily) : null;
+      const orderQty = Math.max(0, Math.round(forecastQty + safety - stock));
+      if (orderQty <= 0) continue;
+
+      const orderCost = Math.round(orderQty * priceBuy);
+      // дедлайн заказа: чтобы успеть до исчерпания с учётом срока поставки
+      const slack = (daysLeft == null ? horizon : daysLeft) - leadTime;
+      const orderDeadline = new Date(now + Math.max(0, slack) * DAY).toISOString();
+
+      let urgency;
+      if (daysLeft != null && daysLeft <= leadTime) urgency = 'urgent';
+      else if (daysLeft != null && daysLeft <= Math.max(leadTime * 2, 30)) urgency = 'soon';
+      else urgency = 'normal';
+
+      if (urgency === 'urgent') urgentCount++;
+      else if (urgency === 'soon') soonCount++;
+      totalCost += orderCost;
+
+      items.push({
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit || '',
+        supplier: r.supplier || null,
+        forecast_qty: forecastQty,
+        stock: Math.round(stock),
+        days_left: daysLeft,
+        order_qty: orderQty,
+        order_cost: orderCost,
+        order_deadline: orderDeadline,
+        lead_time: leadTime,
+        urgency,
+      });
+    }
+
+    // сортировка: сначала срочные, затем по близости дедлайна
+    const rank = { urgent: 0, soon: 1, normal: 2 };
+    items.sort((a, b) => (rank[a.urgency] - rank[b.urgency]) ||
+      ((a.days_left ?? 1e9) - (b.days_left ?? 1e9)));
+
+    res.json({
+      horizon,
+      summary: {
+        urgent_count: urgentCount,
+        soon_count: soonCount,
+        order_count: items.length,
+        total_cost: totalCost,
+      },
+      items,
+    });
+  } catch (e) { console.error('procurement/forecast err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== what-if-purchases =====
+// === «Что если — Закупки» — baseline для сценарного моделирования (математика на фронте) ===
+app.get('/api/procurement/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const soBranch = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const siBranch = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+    const psBranch = branchId ? `AND ps.branch_id = ${parseInt(branchId)}` : '';
+
+    // 1) Среднедневной спрос + текущая маржа (продажи 90 дн, status='approved')
+    const demandQ = await pool.query(`
+      SELECT
+        COALESCE(SUM(so.quantity), 0)                              AS qty_90d,
+        COALESCE(SUM(so.quantity * so.price), 0)                   AS revenue_90d,
+        COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0)   AS cogs_90d
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1
+        AND so.status = 'approved'
+        AND so.created_at >= NOW() - INTERVAL '90 days'
+        ${soBranch}
+    `, [companyId]);
+    const qty90 = parseFloat(demandQ.rows[0].qty_90d) || 0;
+    const revenue90 = parseFloat(demandQ.rows[0].revenue_90d) || 0;
+    const cogs90 = parseFloat(demandQ.rows[0].cogs_90d) || 0;
+    const avgDailyDemand = qty90 / 90;
+    const marginPct = revenue90 > 0 ? ((revenue90 - cogs90) / revenue90) * 100 : 0;
+
+    // 2) Текущий остаток (ед.) для оборачиваемости
+    const stockQ = await pool.query(`
+      SELECT COALESCE(SUM(ps.quantity), 0) AS stock_units
+      FROM product_stock ps
+      JOIN products p ON p.id = ps.product_id
+      WHERE p.company_id = $1 ${psBranch}
+    `, [companyId]);
+    const stockUnits = parseFloat(stockQ.rows[0].stock_units) || 0;
+    const turnoverDays = avgDailyDemand > 0 ? stockUnits / avgDailyDemand : 0;
+
+    // 3) Средняя закупочная цена + средний срок поставки по компании
+    const buyQ = await pool.query(`
+      SELECT
+        COALESCE(AVG(NULLIF(si.price, 0)), 0)                AS avg_buy_price,
+        COALESCE(AVG(NULLIF(p.lead_time_days, 0)), 7)        AS lead_time_days
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      WHERE p.company_id = $1
+        AND si.created_at >= NOW() - INTERVAL '180 days'
+        ${siBranch}
+    `, [companyId]);
+    const avgBuyPrice = parseFloat(buyQ.rows[0].avg_buy_price) || 0;
+    const baseLeadTime = parseFloat(buyQ.rows[0].lead_time_days) || 7;
+
+    // 4) Стоимость хранения ед/мес — оценка: ~2% от закупочной цены в месяц
+    const storageCostPerUnitMonth = Math.round(avgBuyPrice * 0.02);
+
+    // 5) Средняя фактическая отсрочка по компании (due_date − created_at)
+    const deferQ = await pool.query(`
+      SELECT COALESCE(AVG(GREATEST(EXTRACT(EPOCH FROM (si.due_date - si.created_at)) / 86400, 0)), 0) AS avg_deferral_days
+      FROM stock_income si
+      JOIN products p ON p.id = si.product_id
+      WHERE p.company_id = $1
+        AND si.due_date IS NOT NULL
+        AND si.created_at >= NOW() - INTERVAL '180 days'
+        ${siBranch}
+    `, [companyId]);
+    const avgDeferralDays = parseFloat(deferQ.rows[0].avg_deferral_days) || 0;
+
+    // 6) Поставщики: средняя цена / срок поставки / средняя отсрочка / число закупок
+    const supQ = await pool.query(`
+      SELECT s.id, s.name, s.phone,
+             COALESCE(st.income_count, 0)::int AS income_count,
+             COALESCE(st.avg_price, 0)         AS avg_price,
+             COALESCE(st.lead_time_days, 0)    AS lead_time_days,
+             COALESCE(st.avg_deferral_days, 0) AS avg_deferral_days
+      FROM suppliers s
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS income_count,
+               AVG(NULLIF(si.price, 0)) AS avg_price,
+               AVG(NULLIF(p.lead_time_days, 0)) AS lead_time_days,
+               AVG(GREATEST(EXTRACT(EPOCH FROM (si.due_date - si.created_at)) / 86400, 0)) AS avg_deferral_days
+        FROM stock_income si
+        JOIN products p ON p.id = si.product_id
+        WHERE si.supplier_id = s.id ${siBranch}
+      ) st ON TRUE
+      WHERE s.company_id = $1 AND s.deleted_at IS NULL
+      ORDER BY st.income_count DESC NULLS LAST, s.created_at DESC
+      LIMIT 50
+    `, [companyId]);
+
+    const suppliers = supQ.rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      phone: r.phone,
+      income_count: parseInt(r.income_count) || 0,
+      avg_price: Math.round(parseFloat(r.avg_price) || 0),
+      lead_time_days: Math.round(parseFloat(r.lead_time_days) || baseLeadTime),
+      avg_deferral_days: parseFloat(r.avg_deferral_days) || 0,
+    }));
+
+    res.json({
+      baseline: {
+        avg_daily_demand: avgDailyDemand,
+        turnover_days: turnoverDays,
+        stock_units: stockUnits,
+        avg_buy_price: avgBuyPrice,
+        lead_time_days: baseLeadTime,
+        storage_cost_per_unit_month: storageCostPerUnitMonth,
+        margin_pct: marginPct,
+        avg_deferral_days: avgDeferralDays,
+      },
+      suppliers,
+    });
+  } catch (e) {
+    console.error('whatif-base err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== procurement-orders =====
+// === Procurement: Заказы поставщикам (purchase orders) ===
+const PO_ACTIVE = `('draft','confirmed','in_transit')`;
+
+// Список заказов + KPI (активные / сумма активных / ближайшая поставка / просрочено)
+app.get('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = [companyId];
+    let where = 'po.company_id = $1';
+    if (branchId) { params.push(branchId); where += ` AND po.branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(`
+      SELECT po.id, po.status, po.total_amount, po.expected_at, po.created_at,
+             po.supplier_id,
+             COALESCE(s.name, '') AS supplier_name,
+             ('ЗП-' || to_char(po.created_at, 'YYYY') || '-' || lpad(po.id::text, 3, '0')) AS number,
+             (SELECT COUNT(*) FROM purchase_order_items i WHERE i.order_id = po.id)::int AS items_count
+      FROM purchase_orders po
+      LEFT JOIN suppliers s ON s.id = po.supplier_id
+      WHERE ${where}
+      ORDER BY po.created_at DESC
+      LIMIT 500
+    `, params);
+
+    // KPI
+    const kpiRows = rows;
+    const activeRows = kpiRows.filter(r => ['draft', 'confirmed', 'in_transit'].includes(r.status));
+    const active_count = activeRows.length;
+    const active_amount = activeRows.reduce((a, r) => a + Number(r.total_amount || 0), 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const overdue_count = activeRows.filter(r => r.expected_at && new Date(r.expected_at) < today).length;
+
+    // Ближайшая поставка: ближайшая будущая дата среди активных
+    const upcoming = activeRows
+      .filter(r => r.expected_at && new Date(r.expected_at) >= today)
+      .sort((a, b) => new Date(a.expected_at) - new Date(b.expected_at))[0];
+    let next_delivery = null;
+    if (upcoming) {
+      const days = Math.round((new Date(upcoming.expected_at) - today) / 86400000);
+      next_delivery = { expected_at: upcoming.expected_at, supplier: upcoming.supplier_name, days };
+    }
+
+    res.json({
+      kpi: { active_count, active_amount, overdue_count, next_delivery },
+      orders: rows,
+    });
+  } catch (e) { console.error('procurement/orders err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Детали заказа + позиции + таймлайн
+app.get('/api/procurement/orders/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { rows: oRows } = await pool.query(`
+      SELECT po.*, COALESCE(s.name, '') AS supplier_name, u.username AS created_by_name
+      FROM purchase_orders po
+      LEFT JOIN suppliers s ON s.id = po.supplier_id
+      LEFT JOIN users u ON u.id = po.created_by
+      WHERE po.id = $1 AND po.company_id = $2
+    `, [req.params.id, companyId]);
+    if (!oRows[0]) return res.status(404).json({ error: 'Not found' });
+    const order = oRows[0];
+
+    const { rows: items } = await pool.query(`
+      SELECT i.id, i.product_id, i.qty, i.price, i.total,
+             COALESCE(p.name_ru, '') AS product_name
+      FROM purchase_order_items i
+      LEFT JOIN products p ON p.id = i.product_id
+      WHERE i.order_id = $1
+      ORDER BY i.id
+    `, [req.params.id]);
+
+    const timeline = [{ label: 'Заказ создан', at: order.created_at }];
+    if (order.status === 'confirmed') timeline.push({ label: 'Подтверждён поставщиком', at: order.created_at });
+    if (order.status === 'in_transit') { timeline.push({ label: 'Подтверждён поставщиком', at: order.created_at }); timeline.push({ label: 'Отгружен · в пути', at: order.created_at }); }
+    if (order.status === 'received') timeline.push({ label: 'Принят на склад', at: order.created_at });
+    if (order.status === 'cancelled') timeline.push({ label: 'Заказ отменён', at: order.created_at });
+
+    res.json({ order, items, timeline });
+  } catch (e) { console.error('procurement/orders/:id err', e); res.status(500).json({ error: e.message }); }
+});
+
+// Создать заказ
+app.post('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
+    // Валидируем, что филиал принадлежит компании вызывающего (иначе можно записать заказ в чужой филиал).
+    if (branchId && branchId > 0) await assertBranchInCompany(req.user, branchId);
+    const { supplier_id, expected_at, items } = req.body;
+    const list = Array.isArray(items) ? items : [];
+    const total = list.reduce((a, it) => a + (Number(it.qty || 0) * Number(it.price || 0)), 0);
+
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `INSERT INTO purchase_orders (company_id, branch_id, supplier_id, status, total_amount, expected_at, created_by)
+       VALUES ($1,$2,$3,'draft',$4,$5,$6) RETURNING *`,
+      [companyId, branchId, supplier_id || null, total, expected_at || null, req.user.id]
+    );
+    const order = rows[0];
+    for (const it of list) {
+      const lineTotal = Number(it.qty || 0) * Number(it.price || 0);
+      await client.query(
+        `INSERT INTO purchase_order_items (order_id, product_id, qty, price, total)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [order.id, it.product_id || null, Number(it.qty || 0), Number(it.price || 0), lineTotal]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(order);
+  } catch (e) { await client.query('ROLLBACK'); console.error('procurement/orders POST err', e); res.status(400).json({ error: e.message }); }
+  finally { client.release(); }
+});
+
+// Изменить статус заказа
+app.patch('/api/procurement/orders/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { status } = req.body;
+    const allowed = ['draft', 'confirmed', 'in_transit', 'received', 'cancelled'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'invalid status' });
+    const { rows } = await pool.query(
+      `UPDATE purchase_orders SET status = $1 WHERE id = $2 AND company_id = $3 RETURNING *`,
+      [status, req.params.id, companyId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { console.error('procurement/orders status err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== receivings =====
+// ===================== ПРИЁМКА ТОВАРА (procurement/receivings) =====================
+// НОВЫЙ инструмент — НЕ путать с «Приходом товара» (income/WarehouseIncome).
+// Скоуп компании через JOIN branches b (b.company_id); ветка — getBranchFilter.
+
+// период → нижняя граница created_at
+function receivingsPeriodFrom(period) {
+  switch (period) {
+    case 'day':   return "NOW() - INTERVAL '1 day'";
+    case 'week':  return "NOW() - INTERVAL '7 days'";
+    case 'year':  return "NOW() - INTERVAL '365 days'";
+    case 'month':
+    default:      return "NOW() - INTERVAL '30 days'";
+  }
+}
+
+// GET список приёмок + KPI
+app.get('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const fromSQL = receivingsPeriodFrom(req.query.period);
+    const params = [companyId];
+    let branchFilter = '';
+    if (branchId) { params.push(branchId); branchFilter = `AND r.branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(`
+      SELECT r.id, r.branch_id, r.supplier_id, r.order_id, r.invoice_no,
+             r.total_amount, r.status, r.created_at,
+             s.name AS supplier_name,
+             (SELECT COUNT(*) FROM receiving_items ri WHERE ri.receiving_id = r.id) AS items_count
+      FROM receivings r
+      JOIN branches b ON b.id = r.branch_id
+      LEFT JOIN suppliers s ON s.id = r.supplier_id
+      WHERE b.company_id = $1
+        AND r.created_at >= ${fromSQL}
+        ${branchFilter}
+      ORDER BY r.created_at DESC
+      LIMIT 500
+    `, params);
+
+    // KPI: приёмок / сумма / расхождений / брак.
+    // diff_count — приёмки со статусом 'diff'; defect_qty — позиции брака ('defect').
+    const kpiRes = await pool.query(`
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(r.total_amount), 0) AS total_amount,
+        COUNT(*) FILTER (WHERE r.status = 'diff')::int AS diff_count,
+        COALESCE((
+          SELECT SUM(GREATEST(ri.ordered_qty - ri.received_qty, 0))
+          FROM receiving_items ri
+          JOIN receivings r2 ON r2.id = ri.receiving_id
+          JOIN branches b2 ON b2.id = r2.branch_id
+          WHERE b2.company_id = $1
+            AND r2.created_at >= ${fromSQL}
+            ${branchId ? `AND r2.branch_id = $2` : ''}
+            AND r2.status = 'defect'
+        ), 0) AS defect_qty
+      FROM receivings r
+      JOIN branches b ON b.id = r.branch_id
+      WHERE b.company_id = $1
+        AND r.created_at >= ${fromSQL}
+        ${branchFilter}
+    `, params);
+
+    res.json({ kpi: kpiRes.rows[0] || {}, receivings: rows });
+  } catch (e) { console.error('receivings list err', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET детали одной приёмки (позиции + замечания)
+app.get('/api/procurement/receivings/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const id = parseInt(req.params.id, 10);
+
+    const head = await pool.query(`
+      SELECT r.id, r.branch_id, r.supplier_id, r.order_id, r.invoice_no,
+             r.total_amount, r.status, r.created_at, s.name AS supplier_name
+      FROM receivings r
+      JOIN branches b ON b.id = r.branch_id
+      LEFT JOIN suppliers s ON s.id = r.supplier_id
+      WHERE r.id = $1 AND b.company_id = $2
+        ${branchId ? 'AND r.branch_id = $3' : ''}
+    `, branchId ? [id, companyId, branchId] : [id, companyId]);
+    if (!head.rows[0]) return res.status(404).json({ error: 'Приёмка не найдена' });
+
+    const items = await pool.query(`
+      SELECT ri.id, ri.product_id, ri.ordered_qty, ri.received_qty, ri.diff, ri.note,
+             p.name_ru AS product_name, p.unit
+      FROM receiving_items ri
+      LEFT JOIN products p ON p.id = ri.product_id
+      WHERE ri.receiving_id = $1
+      ORDER BY ri.id
+    `, [id]);
+
+    const notes = items.rows
+      .filter(it => it.note && String(it.note).trim())
+      .map(it => ({ product_name: it.product_name, note: it.note }));
+
+    res.json({ ...head.rows[0], items: items.rows, notes });
+  } catch (e) { console.error('receiving detail err', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST создать приёмку (+позиции). total_amount считается из позиций если не передан.
+app.post('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || req.body.branch_id;
+    if (!branchId) return res.status(400).json({ error: 'branch_id обязателен' });
+    // ветка принадлежит компании
+    const own = await client.query('SELECT id FROM branches WHERE id = $1 AND company_id = $2', [branchId, companyId]);
+    if (!own.rows[0]) return res.status(403).json({ error: 'Филиал не в вашей компании' });
+
+    const { supplier_id = null, order_id = null, invoice_no = null, status = 'full', items = [] } = req.body;
+
+    await client.query('BEGIN');
+    // сумма приёмки = передано или 0 (фронт может слать total_amount; иначе считаем по позициям*price нет — оставляем переданное)
+    const total = parseFloat(req.body.total_amount) || 0;
+    const ins = await client.query(`
+      INSERT INTO receivings (company_id, branch_id, supplier_id, order_id, invoice_no, total_amount, status, created_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      RETURNING id
+    `, [companyId, branchId, supplier_id, order_id, invoice_no, total, status, req.user.id]);
+    const recId = ins.rows[0].id;
+
+    for (const it of (Array.isArray(items) ? items : [])) {
+      const ordered = parseFloat(it.ordered_qty) || 0;
+      const received = parseFloat(it.received_qty) || 0;
+      await client.query(`
+        INSERT INTO receiving_items (receiving_id, product_id, ordered_qty, received_qty, diff, note)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [recId, it.product_id || null, ordered, received, received - ordered, it.note || null]);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ id: recId });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('receiving create err', e);
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+// ===== supplier-compare =====
+// === ЗАКУПКИ: Сравнение цен поставщиков (read-only, источник stock_income) ===
+// Без product_id -> список товаров с историей закупок (для выпадашки).
+// С product_id   -> сравнение поставщиков: AVG/MIN цена закупки, объём, отсрочка,
+//                   лучший/текущий поставщик и экономия мес/год.
+// Скоуп компании через JOIN products p (p.company_id); ветка — si.branch_id (getBranchFilter).
+app.get('/api/procurement/compare', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const productId = req.query.product_id ? parseInt(req.query.product_id, 10) : null;
+
+    // Период -> интервал для агрегации истории закупок
+    const PER = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = PER[req.query.period] || PER.month;
+    // месячный коэффициент объёма для расчёта экономии (нормируем к месяцу)
+    const MONTH_FACTOR = { day: 30, week: 30 / 7, month: 1, year: 1 / 12 };
+    const monthFactor = MONTH_FACTOR[req.query.period] || 1;
+
+    const branchSI = branchId ? `AND si.branch_id = ${parseInt(branchId)}` : '';
+
+    // ── Режим списка: товары, по которым есть приходы (для выпадашки) ──
+    if (!productId) {
+      const { rows } = await pool.query(`
+        SELECT p.id, p.name_ru
+        FROM products p
+        WHERE p.company_id = $1 AND p.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM stock_income si
+            WHERE si.product_id = p.id ${branchSI}
+          )
+        ORDER BY p.name_ru
+        LIMIT 1000
+      `, [companyId]);
+      return res.json({ products: rows });
+    }
+
+    // ── Режим сравнения по выбранному товару ──
+    const prodQ = await pool.query(
+      `SELECT id, name_ru FROM products WHERE id=$1 AND company_id=$2 AND deleted_at IS NULL`,
+      [productId, companyId]
+    );
+    if (!prodQ.rows[0]) return res.status(404).json({ error: 'Product not found' });
+    const productName = prodQ.rows[0].name_ru;
+
+    // Агрегация по поставщику за период (стоимость закупки = quantity*price, UZS)
+    const { rows: suppliers } = await pool.query(`
+      SELECT
+        si.supplier_id,
+        COALESCE(s.name, NULLIF(si.supplier, ''), 'Без поставщика') AS name,
+        COUNT(*)::int                                   AS income_count,
+        COALESCE(SUM(si.quantity), 0)                   AS total_qty,
+        COALESCE(SUM(si.quantity * si.price), 0)        AS total_value,
+        ROUND(AVG(NULLIF(si.price, 0)))                 AS avg_price,
+        MIN(NULLIF(si.price, 0))                        AS min_price,
+        MAX(NULLIF(si.price, 0))                        AS max_price,
+        ROUND(AVG(NULLIF(EXTRACT(DAY FROM (si.due_date::timestamp - si.created_at)), 0))) AS avg_deferral_days,
+        MAX(si.created_at)                              AS last_income_at
+      FROM stock_income si
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      JOIN products p ON p.id = si.product_id
+      WHERE p.company_id = $1
+        AND si.product_id = $2
+        AND si.created_at >= NOW() - INTERVAL '${interval}'
+        AND COALESCE(si.price, 0) > 0
+        ${branchSI}
+      GROUP BY si.supplier_id, COALESCE(s.name, NULLIF(si.supplier, ''), 'Без поставщика')
+      ORDER BY avg_price ASC NULLS LAST
+    `, [companyId, productId]);
+
+    suppliers.forEach(s => {
+      s.income_count = parseInt(s.income_count) || 0;
+      s.total_qty = parseFloat(s.total_qty) || 0;
+      s.total_value = parseFloat(s.total_value) || 0;
+      s.avg_price = parseFloat(s.avg_price) || 0;
+      s.min_price = parseFloat(s.min_price) || 0;
+      s.max_price = parseFloat(s.max_price) || 0;
+      s.avg_deferral_days = s.avg_deferral_days == null ? null : parseInt(s.avg_deferral_days);
+    });
+
+    // Лучший = минимальная средняя цена; текущий = последний по дате прихода
+    const best = suppliers.length
+      ? suppliers.reduce((a, b) => (b.avg_price > 0 && (a.avg_price === 0 || b.avg_price < a.avg_price) ? b : a))
+      : null;
+    const current = suppliers.length
+      ? suppliers.reduce((a, b) => (new Date(b.last_income_at) > new Date(a.last_income_at) ? b : a))
+      : null;
+
+    // Месячный объём закупок по товару (нормированный к месяцу) — для расчёта экономии
+    const totalQty = suppliers.reduce((s, x) => s + x.total_qty, 0);
+    const volume = Math.round(totalQty * monthFactor);
+
+    // Экономия = (средняя цена текущего − лучшая цена) × месячный объём
+    const perUnitSaving = (current && best && current.avg_price > best.min_price)
+      ? (current.avg_price - best.min_price) : 0;
+    const savingMonth = Math.round(perUnitSaving * volume);
+    const savingYear = savingMonth * 12;
+    const maxPrice = suppliers.reduce((m, x) => Math.max(m, x.max_price), 0);
+
+    res.json({
+      product_id: productId,
+      product_name: productName,
+      suppliers,
+      best: best ? { supplier_id: best.supplier_id, name: best.name, min_price: best.min_price, avg_price: best.avg_price } : null,
+      current: current ? { supplier_id: current.supplier_id, name: current.name, avg_price: current.avg_price } : null,
+      volume,
+      saving_month: savingMonth,
+      saving_year: savingYear,
+      max_price: maxPrice,
+    });
+  } catch (e) { console.error('procurement/compare err', e); res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
+
+// ============ ВОЛНА 4: ПРОДАЖИ (operations/marketing/support) ============
+
+// ===== discounts =====
+// === Скидки и акции — список + KPI ===
+app.get('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQLd = branchId ? `AND d.branch_id = ${parseInt(branchId)}` : '';
+    const branchSQLso = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Список акций (этой компании + опционально филиала)
+    const { rows: items } = await pool.query(`
+      SELECT id, company_id, branch_id, name, type, value, min_qty,
+             starts_at, ends_at, is_active, created_by, created_at
+      FROM discounts d
+      WHERE d.company_id = $1 ${branchSQLd}
+      ORDER BY d.is_active DESC, d.created_at DESC
+    `, [companyId]);
+
+    // Активных акций сейчас (is_active + дата в диапазоне или без дат)
+    const now = Date.now();
+    const active_count = items.filter(it => it.is_active
+      && (!it.starts_at || new Date(it.starts_at).getTime() <= now)
+      && (!it.ends_at || new Date(it.ends_at).getTime() >= now)).length;
+
+    // Средняя скидка (только % акции; если их нет — null)
+    const pct = items.filter(it => it.type === 'percent').map(it => parseFloat(it.value) || 0);
+    const avg_discount = pct.length ? Math.round(pct.reduce((s, v) => s + v, 0) / pct.length) : null;
+
+    // % чеков со скидкой и потери — нет поля скидки в чеках, поэтому прочерк/0
+    // (выручка считается за период по продажам как база; потери = 0 при отсутствии данных)
+    const { rows: rev } = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COUNT(*) AS checks
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1
+        AND so.status = 'approved'
+        AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '30 days'
+        ${branchSQLso}
+    `, [companyId]);
+
+    const kpi = {
+      active_count,
+      avg_discount,
+      discount_check_share: null, // нет данных о скидке в чеке → прочерк
+      lost_revenue: 0,            // нет данных о скидке в чеке → 0
+      revenue_30d: parseFloat(rev[0]?.revenue || 0),
+      checks_30d: parseInt(rev[0]?.checks || 0),
+    };
+
+    res.json({ items, kpi });
+  } catch (e) {
+    console.error('discounts list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Создать акцию ===
+app.post('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) ?? (req.body.branch_id ? parseInt(req.body.branch_id) : null);
+    const { name, type, value, min_qty, starts_at, ends_at } = req.body;
+    if (!name || !type || value == null) return res.status(400).json({ error: 'name, type, value required' });
+    const { rows } = await pool.query(`
+      INSERT INTO discounts (company_id, branch_id, name, type, value, min_qty, starts_at, ends_at, is_active, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
+      RETURNING *
+    `, [companyId, branchId, name, type, parseFloat(value) || 0,
+        min_qty == null || min_qty === '' ? null : parseInt(min_qty),
+        starts_at || null, ends_at || null, req.user.id]);
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('discounts create err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Обновить акцию (вкл/выкл, поля) ===
+app.patch('/api/discounts/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id);
+    const fields = [];
+    const vals = [];
+    let i = 1;
+    for (const k of ['name', 'type', 'value', 'min_qty', 'starts_at', 'ends_at', 'is_active']) {
+      if (req.body[k] !== undefined) { fields.push(`${k} = $${i++}`); vals.push(req.body[k]); }
+    }
+    if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
+    vals.push(id); vals.push(companyId);
+    const { rows } = await pool.query(`
+      UPDATE discounts SET ${fields.join(', ')}
+      WHERE id = $${i++} AND company_id = $${i}
+      RETURNING *
+    `, vals);
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('discounts update err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== sales-top-products =====
+// ─── Топ товаров (sales-top-products) — read-only по stock_outcome (sale, approved) ───
+app.get('/api/sales/top-products', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период: by default — последние 30 дней. from/to (ISO) опционально.
+    const from = req.query.from || null;
+    const to = req.query.to || null;
+    const params = [companyId];
+    let periodSQL = '';
+    if (from) { params.push(from); periodSQL += ` AND so.created_at >= $${params.length}`; }
+    if (to)   { params.push(to);   periodSQL += ` AND so.created_at <  $${params.length}`; }
+    else if (!from) { periodSQL += ` AND so.created_at >= NOW() - INTERVAL '30 days'`; }
+
+    // Предыдущий равный период — для тренда. Длина окна = (to-from) либо 30 дней.
+    const prevParams = [companyId];
+    let prevSQL = '';
+    if (from && to) {
+      prevParams.push(from); prevParams.push(to); prevParams.push(from);
+      prevSQL = ` AND so.created_at >= ($${prevParams.length - 2}::timestamptz - ($${prevParams.length - 1}::timestamptz - $${prevParams.length}::timestamptz)) AND so.created_at < $${prevParams.length}`;
+    } else if (from) {
+      prevParams.push(from); prevParams.push(from);
+      prevSQL = ` AND so.created_at >= ($${prevParams.length - 1}::timestamptz - INTERVAL '30 days') AND so.created_at < $${prevParams.length}`;
+    } else {
+      prevSQL = ` AND so.created_at >= NOW() - INTERVAL '60 days' AND so.created_at < NOW() - INTERVAL '30 days'`;
+    }
+    const baseWhere = `so.status='approved' AND so.outcome_type='sale' AND p.company_id=$1 ${branchSQL}`;
+
+    const [prodQ, prevQ, dowQ, hourQ, catQ] = await Promise.all([
+      // Топ товаров текущего периода
+      pool.query(`
+        SELECT p.id AS product_id, p.name_ru, p.unit,
+               COALESCE(SUM(so.quantity),0) AS qty,
+               COALESCE(SUM(so.quantity * so.price),0) AS revenue
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE ${baseWhere} ${periodSQL}
+        GROUP BY p.id, p.name_ru, p.unit
+        HAVING COALESCE(SUM(so.quantity * so.price),0) > 0
+        ORDER BY revenue DESC
+        LIMIT 50`, params),
+      // Выручка по товару за предыдущий период (для тренда)
+      pool.query(`
+        SELECT so.product_id, COALESCE(SUM(so.quantity * so.price),0) AS revenue
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.outcome_type='sale' AND p.company_id=$1 ${branchSQL} ${prevSQL}
+        GROUP BY so.product_id`, prevParams),
+      // Продажи по дню недели (EXTRACT DOW: 0=Вс .. 6=Сб)
+      pool.query(`
+        SELECT EXTRACT(DOW FROM so.created_at)::int AS dow,
+               COALESCE(SUM(so.quantity * so.price),0) AS revenue
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE ${baseWhere} ${periodSQL}
+        GROUP BY dow ORDER BY dow`, params),
+      // Продажи по часам (EXTRACT HOUR: 0..23)
+      pool.query(`
+        SELECT EXTRACT(HOUR FROM so.created_at)::int AS hour,
+               COALESCE(SUM(so.quantity * so.price),0) AS revenue
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE ${baseWhere} ${periodSQL}
+        GROUP BY hour ORDER BY hour`, params),
+      // Топ-категория по выручке
+      pool.query(`
+        SELECT COALESCE(c.name_ru, 'Без категории') AS category,
+               COALESCE(SUM(so.quantity * so.price),0) AS revenue
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        LEFT JOIN categories c ON c.id = p.category_id
+        WHERE ${baseWhere} ${periodSQL}
+        GROUP BY category ORDER BY revenue DESC LIMIT 1`, params),
+    ]);
+
+    const prevMap = {};
+    prevQ.rows.forEach(r => { prevMap[r.product_id] = parseFloat(r.revenue) || 0; });
+
+    const totalRevenue = prodQ.rows.reduce((s, r) => s + (parseFloat(r.revenue) || 0), 0);
+    const products = prodQ.rows.map(r => {
+      const revenue = parseFloat(r.revenue) || 0;
+      const prev = prevMap[r.product_id] || 0;
+      const trend = prev > 0 ? Math.round(((revenue - prev) / prev) * 1000) / 10 : (revenue > 0 ? null : 0);
+      return {
+        product_id: r.product_id,
+        name: r.name_ru,
+        unit: r.unit || '',
+        qty: parseFloat(r.qty) || 0,
+        revenue,
+        share: totalRevenue > 0 ? Math.round((revenue / totalRevenue) * 1000) / 10 : 0,
+        trend,
+      };
+    });
+
+    const by_dow = dowQ.rows.map(r => ({ dow: r.dow, revenue: parseFloat(r.revenue) || 0 }));
+    const by_hour = hourQ.rows.map(r => ({ hour: r.hour, revenue: parseFloat(r.revenue) || 0 }));
+
+    // KPI
+    const dowTotal = by_dow.reduce((s, d) => s + d.revenue, 0);
+    const bestDowRow = by_dow.reduce((m, d) => (d.revenue > (m?.revenue || -1) ? d : m), null);
+    const hourTotal = by_hour.reduce((s, h) => s + h.revenue, 0);
+    const peakHourRow = by_hour.reduce((m, h) => (h.revenue > (m?.revenue || -1) ? h : m), null);
+    const leader = products[0] || null;
+    const cat = catQ.rows[0] || null;
+    const catRevenue = cat ? parseFloat(cat.revenue) || 0 : 0;
+
+    const kpi = {
+      leader_name: leader ? leader.name : null,
+      leader_revenue: leader ? leader.revenue : 0,
+      leader_qty: leader ? leader.qty : 0,
+      best_dow: bestDowRow ? bestDowRow.dow : null,
+      best_dow_revenue: bestDowRow ? bestDowRow.revenue : 0,
+      peak_hour: peakHourRow ? peakHourRow.hour : null,
+      peak_hour_share: (peakHourRow && hourTotal > 0) ? Math.round((peakHourRow.revenue / hourTotal) * 1000) / 10 : null,
+      top_category: cat ? cat.category : null,
+      top_category_share: (cat && totalRevenue > 0) ? Math.round((catRevenue / totalRevenue) * 1000) / 10 : null,
+    };
+
+    res.json({ company_id: companyId, total_revenue: totalRevenue, kpi, products, by_dow, by_hour });
+  } catch (e) {
+    console.error('sales/top-products err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== seller-avg-check =====
+// === Средний чек по продавцу (operations) ============================
+// Read-only. Источник: stock_outcome (status='approved') JOIN products (скоуп company_id)
+// JOIN users (продавец = so.created_by). Чеки=COUNT, выручка=SUM(quantity*price) UZS,
+// ср.чек=выручка/чеки. Лидер дня, gap-ratio (топ/худший), потенциал (вся команда=ср.чек лидера).
+// Возвраты/план источника нет → null (фронт рисует прочерк). getBranchFilter для скоупа филиала.
+app.get('/api/operations/seller-avg-check', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    let days = parseInt(req.query.days, 10);
+    if (!Number.isFinite(days) || days < 1) days = 30;
+    if (days > 365) days = 365;
+
+    // Продажи (sale) по продавцам за период
+    const saleWhere = `p.company_id = $1
+        AND so.status = 'approved'
+        AND (so.outcome_type = 'sale' OR so.outcome_type IS NULL)
+        AND so.created_at >= (CURRENT_DATE - ($2 || ' days')::interval)
+        ${branchId ? 'AND so.branch_id = $3' : ''}`;
+    const saleParams = branchId ? [companyId, String(days), branchId] : [companyId, String(days)];
+
+    const { rows: sellerRows } = await pool.query(`
+      SELECT so.created_by AS seller_id,
+             TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS full_name,
+             u.username,
+             COUNT(*)::int AS checks,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      LEFT JOIN users u ON u.id = so.created_by
+      WHERE ${saleWhere}
+      GROUP BY so.created_by, u.first_name, u.last_name, u.username
+      HAVING COUNT(*) > 0
+      ORDER BY (COALESCE(SUM(so.quantity * so.price), 0) / NULLIF(COUNT(*),0)) DESC
+    `, saleParams);
+
+    // Возвраты по продавцам (если есть outcome_type='return')
+    const retWhere = `p.company_id = $1
+        AND so.status = 'approved'
+        AND so.outcome_type = 'return'
+        AND so.created_at >= (CURRENT_DATE - ($2 || ' days')::interval)
+        ${branchId ? 'AND so.branch_id = $3' : ''}`;
+    const { rows: retRows } = await pool.query(`
+      SELECT so.created_by AS seller_id, COUNT(*)::int AS returns
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE ${retWhere}
+      GROUP BY so.created_by
+    `, saleParams);
+    const retMap = {};
+    for (const r of retRows) retMap[r.seller_id] = parseInt(r.returns) || 0;
+
+    const sellers = sellerRows.map(r => {
+      const checks = parseInt(r.checks) || 0;
+      const revenue = parseFloat(r.revenue) || 0;
+      return {
+        seller_id: r.seller_id,
+        name: (r.full_name || '').trim() || r.username || ('ID ' + r.seller_id),
+        checks,
+        revenue,
+        avg_check: checks > 0 ? revenue / checks : 0,
+        returns: r.seller_id != null && retMap[r.seller_id] !== undefined ? retMap[r.seller_id] : 0,
+        plan_pct: null, // источника плана нет → прочерк на фронте
+      };
+    });
+
+    const totalRevenue = sellers.reduce((s, x) => s + x.revenue, 0);
+    const totalChecks = sellers.reduce((s, x) => s + x.checks, 0);
+    const teamAvg = totalChecks > 0 ? totalRevenue / totalChecks : 0;
+
+    const leaderRow = sellers[0] || null;
+    const leaderAvg = leaderRow ? leaderRow.avg_check : 0;
+    const leader = leaderRow ? { seller_id: leaderRow.seller_id, name: leaderRow.name, avg_check: leaderRow.avg_check, plan_pct: null } : null;
+
+    // gap-ratio = ср.чек лидера / ср.чек худшего (>0)
+    const nonZero = sellers.filter(s => s.avg_check > 0);
+    const worstAvg = nonZero.length ? nonZero[nonZero.length - 1].avg_check : 0;
+    const gapRatio = worstAvg > 0 ? leaderAvg / worstAvg : null;
+
+    // Потенциал: вся команда на ср.чеке лидера → выручка = leaderAvg * totalChecks
+    const revenueIfAllLeader = leaderAvg * totalChecks;
+    const potential = leaderRow ? {
+      revenue_if_all_leader: revenueIfAllLeader,
+      uplift: Math.max(0, revenueIfAllLeader - totalRevenue),
+    } : null;
+
+    // Дневная динамика среднего чека (по всем продавцам в скоупе)
+    const { rows: dayRows } = await pool.query(`
+      SELECT (so.created_at AT TIME ZONE 'UTC')::date AS d,
+             COUNT(*)::int AS checks,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE ${saleWhere}
+      GROUP BY d
+      ORDER BY d ASC
+    `, saleParams);
+    const trend = dayRows.map(r => {
+      const c = parseInt(r.checks) || 0;
+      const rev = parseFloat(r.revenue) || 0;
+      const dt = r.d instanceof Date ? r.d : new Date(r.d);
+      const iso = dt.toISOString().slice(0, 10);
+      return { date: iso, label: iso.slice(5), avg_check: c > 0 ? rev / c : 0 };
+    });
+
+    res.json({
+      days,
+      sellers,
+      leader,
+      leader_avg_check: leaderAvg,
+      team_avg_check: teamAvg,
+      gap_ratio: gapRatio,
+      total_revenue: totalRevenue,
+      total_checks: totalChecks,
+      potential,
+      trend,
+    });
+  } catch (e) {
+    console.error('seller-avg-check err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== returns-report =====
+// GET /api/operations/returns-report?branch_id&period — реестр возвратов + KPI + причины.
+// Read-only по stock_outcome (outcome_type='return', status='approved'). Причина = note.
+// Скоуп: JOIN products p (p.company_id) + getBranchFilter (so.branch_id). Деньги UZS полным числом.
+app.get('/api/operations/returns-report', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    let days = parseInt(req.query.period, 10);
+    if (!Number.isFinite(days) || days < 1) days = 30;
+    if (days > 366) days = 366;
+
+    const params = [companyId, days];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = ` AND so.branch_id = $${params.length}`; }
+    const sinceSQL = `so.created_at >= NOW() - ($2 || ' days')::interval`;
+
+    // Реестр возвратов
+    const regQ = await pool.query(`
+      SELECT so.id, so.created_at,
+             (so.quantity * so.price) AS amount,
+             p.name_ru AS product_name,
+             NULLIF(TRIM(so.note), '') AS reason,
+             TRIM(CONCAT(COALESCE(u.first_name,''), ' ', COALESCE(u.last_name,''))) AS seller_name,
+             u.username AS seller_username,
+             c.name AS customer
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      LEFT JOIN users u ON u.id = so.created_by
+      LEFT JOIN customers c ON c.id = so.customer_id
+      WHERE p.company_id = $1 AND so.outcome_type = 'return' AND so.status = 'approved'
+        AND ${sinceSQL}${branchSQL}
+      ORDER BY so.created_at DESC
+      LIMIT 500`, params);
+
+    const rows = regQ.rows.map(r => ({
+      id: r.id,
+      created_at: r.created_at,
+      amount: parseFloat(r.amount || 0),
+      product_name: r.product_name,
+      reason: r.reason,
+      seller: (r.seller_name && r.seller_name.length) ? r.seller_name : r.seller_username,
+      customer: r.customer,
+    }));
+
+    // KPI: кол-во и сумма возвратов
+    const returns_count = rows.length;
+    const returns_sum = rows.reduce((s, r) => s + r.amount, 0);
+
+    // Сумма продаж за период (для % к продажам)
+    const salesQ = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS sales_sum
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status = 'approved'
+        AND (so.outcome_type = 'sale' OR so.outcome_type IS NULL)
+        AND ${sinceSQL}${branchSQL}`, params);
+    const sales_sum = parseFloat(salesQ.rows[0]?.sales_sum || 0);
+    const returns_pct = sales_sum > 0 ? (returns_sum / sales_sum) * 100 : 0;
+
+    // Причины (агрегация по note)
+    const byReason = {};
+    for (const r of rows) {
+      const key = r.reason || 'Без причины';
+      if (!byReason[key]) byReason[key] = { reason: key, count: 0, sum: 0 };
+      byReason[key].count += 1;
+      byReason[key].sum += r.amount;
+    }
+    const reasons = Object.values(byReason)
+      .map(x => ({ ...x, pct: returns_count > 0 ? (x.count / returns_count) * 100 : 0 }))
+      .sort((a, b) => b.count - a.count);
+    const top = reasons[0] || null;
+
+    res.json({
+      kpi: {
+        returns_count,
+        returns_sum,
+        returns_pct,
+        sales_sum,
+        top_reason: top ? top.reason : null,
+        top_reason_pct: top ? top.pct : null,
+      },
+      reasons,
+      rows,
+    });
+  } catch (e) {
+    console.error('returns-report err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== customer-campaigns =====
+// === Customer campaigns (Рассылки клиентам) ===
+// Список рассылок + агрегированная статистика + размер аудитории сегмента.
+app.get('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // 1) Список рассылок (scope по company_id, опц. branch_id)
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = `AND nc.branch_id = $${params.length}`; }
+    const listQ = await pool.query(
+      `SELECT nc.id, nc.segment, nc.channel, nc.message,
+              nc.sent_count, nc.read_count, nc.created_at
+       FROM notification_campaigns nc
+       WHERE nc.company_id = $1 ${branchSQL}
+       ORDER BY nc.created_at DESC
+       LIMIT 200`, params);
+
+    // 2) Сводная статистика по рассылкам
+    let sent = 0, read = 0;
+    for (const c of listQ.rows) { sent += c.sent_count || 0; read += c.read_count || 0; }
+
+    // 3) Вернувшиеся клиенты и доп. выручка: продажи (approved) за 30 дней.
+    //    Скоуп выручки через JOIN products p (p.company_id) + getBranchFilter (so.branch_id).
+    const rp = [companyId];
+    let soBranch = '';
+    if (branchId) { rp.push(branchId); soBranch = `AND so.branch_id = $${rp.length}`; }
+    const revQ = await pool.query(
+      `SELECT COUNT(DISTINCT so.customer_id)::int AS returned,
+              COALESCE(SUM(so.quantity * so.price), 0)::numeric AS revenue
+       FROM stock_outcome so
+       JOIN products p ON p.id = so.product_id
+       WHERE p.company_id = $1 ${soBranch}
+         AND so.status = 'approved' AND so.outcome_type = 'sale'
+         AND so.customer_id IS NOT NULL
+         AND so.created_at >= NOW() - INTERVAL '30 days'`, rp);
+
+    // 4) Размер аудитории (всего активных клиентов компании / филиала)
+    const ap = [companyId];
+    let custBranch = '';
+    // клиенты привязаны к компании, не к филиалу — branch-фильтр по customers не применяем
+    const audQ = await pool.query(
+      `SELECT COUNT(*)::int AS audience
+       FROM customers c
+       WHERE c.company_id = $1 ${custBranch} AND c.deleted_at IS NULL`, ap);
+
+    res.json({
+      campaigns: listQ.rows,
+      stats: {
+        sent_count: sent,
+        read_count: read,
+        returned: revQ.rows[0]?.returned || 0,
+        revenue: parseFloat(revQ.rows[0]?.revenue) || 0,
+      },
+      audience: audQ.rows[0]?.audience || 0,
+    });
+  } catch (e) {
+    console.error('campaigns list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Создать рассылку. sent_count = размер аудитории сегмента на момент отправки.
+app.post('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
+    const segment = String(req.body.segment || 'all').slice(0, 32);
+    const channel = String(req.body.channel || 'telegram').slice(0, 32);
+    const message = String(req.body.message || '').trim().slice(0, 500);
+    if (!message) return res.status(400).json({ error: 'Сообщение обязательно' });
+
+    // Размер аудитории на момент отправки
+    const ap = [companyId];
+    let custBranch = '';
+    // клиенты привязаны к компании, не к филиалу — branch-фильтр по customers не применяем
+    const audQ = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM customers c
+       WHERE c.company_id = $1 ${custBranch} AND c.deleted_at IS NULL`, ap);
+    const sentCount = audQ.rows[0]?.n || 0;
+
+    const ins = await pool.query(
+      `INSERT INTO notification_campaigns
+         (company_id, branch_id, segment, message, channel, sent_count, read_count, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 0, $7, NOW())
+       RETURNING id, segment, channel, message, sent_count, read_count, created_at`,
+      [companyId, branchId, segment, message, channel, sentCount, req.user.id]);
+
+    res.json({ campaign: ins.rows[0] });
+  } catch (e) {
+    console.error('campaigns create err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== sales-forecast =====
+// ── Прогноз продаж (read-only): скользящее среднее + сезонность по дню недели ──
+// Источник: stock_outcome (status='approved', outcome_type='sale'). Скоуп: products.company_id + getBranchFilter.
+// Выручка = quantity*price (UZS). Без новых таблиц.
+app.get('/api/sales/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchClause = branchId ? ' AND so.branch_id = $2' : '';
+    const params = branchId ? [companyId, branchId] : [companyId];
+
+    const HIST = 90;   // окно истории, дн
+    const FCAST = 30;  // горизонт прогноза, дн
+
+    // 1) История по дням за HIST дней: выручка + чеки (уникальные продажи по basket-ключу).
+    const histQ = await pool.query(
+      `SELECT date_trunc('day', so.created_at)::date AS d,
+              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+              COUNT(DISTINCT (so.created_by::text || ':' || COALESCE(so.customer_id,0)::text || ':' || date_trunc('minute', so.created_at)::text)) AS checks
+         FROM stock_outcome so
+         JOIN products p ON p.id = so.product_id
+        WHERE p.company_id = $1
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= CURRENT_DATE - INTERVAL '${HIST} days'
+          ${branchClause}
+        GROUP BY d ORDER BY d`,
+      params);
+
+    // Заполняем нулями пропущенные дни, считаем сезонность по дню недели.
+    const histMap = new Map();
+    for (const r of histQ.rows) histMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue: parseFloat(r.revenue) || 0, checks: parseInt(r.checks) || 0 });
+    const history = [];
+    const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - HIST);
+    for (let i = 0; i < HIST; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      const v = histMap.get(key) || { revenue: 0, checks: 0 };
+      history.push({ date: key, dow: d.getDay(), revenue: v.revenue, checks: v.checks });
+    }
+
+    const hasData = history.some(h => h.revenue > 0);
+
+    // Средние по дню недели (сезонность) и общее среднее (скользящее).
+    const dowRev = Array.from({ length: 7 }, () => []);
+    const dowChk = Array.from({ length: 7 }, () => []);
+    for (const h of history) { dowRev[h.dow].push(h.revenue); dowChk[h.dow].push(h.checks); }
+    const avg = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+    const overallRev = avg(history.map(h => h.revenue));
+    const overallChk = avg(history.map(h => h.checks));
+    const dowAvgRev = dowRev.map(a => (a.length ? avg(a) : overallRev));
+    const dowAvgChk = dowChk.map(a => (a.length ? avg(a) : overallChk));
+    // Множитель сезонности (для коридора мин/макс).
+    const seasMul = dowAvgRev.map(v => (overallRev > 0 ? v / overallRev : 1));
+
+    // Точность: 1 - средняя относительная ошибка прогноза-по-DOW против факта (по непустым дням).
+    let errSum = 0, errCnt = 0;
+    for (const h of history) {
+      if (h.revenue > 0) { errSum += Math.abs(h.revenue - dowAvgRev[h.dow]) / h.revenue; errCnt++; }
+    }
+    const accuracy = errCnt ? Math.max(0, Math.min(99, Math.round((1 - errSum / errCnt) * 100))) : 0;
+
+    // 2) Прогноз на FCAST дней вперёд.
+    const days = [];
+    const fcStart = new Date(); fcStart.setHours(0, 0, 0, 0); fcStart.setDate(fcStart.getDate() + 1);
+    let forecastRevenue = 0, forecastChecks = 0;
+    const peakDow = seasMul.indexOf(Math.max(...seasMul));
+    for (let i = 0; i < FCAST; i++) {
+      const d = new Date(fcStart); d.setDate(fcStart.getDate() + i);
+      const dow = d.getDay();
+      const f = Math.round(dowAvgRev[dow]);
+      const spread = Math.max(0.15, 1 - accuracy / 100); // ширина коридора зависит от точности
+      days.push({
+        date: d.toISOString().slice(0, 10),
+        dow,
+        forecast: f,
+        min: Math.round(f * (1 - spread)),
+        max: Math.round(f * (1 + spread)),
+        is_peak: dow === peakDow && f > 0,
+      });
+      forecastRevenue += f;
+      forecastChecks += Math.round(dowAvgChk[dow]);
+    }
+
+    // 3) Текущий период (последние FCAST дней факта) — для дельты и плана.
+    const recent = history.slice(-FCAST);
+    const currentRevenue = recent.reduce((s, h) => s + h.revenue, 0);
+    const currentChecks = recent.reduce((s, h) => s + h.checks, 0);
+    const revenueDelta = currentRevenue > 0 ? Math.round(((forecastRevenue - currentRevenue) / currentRevenue) * 100) : 0;
+    const checksDelta = currentChecks > 0 ? Math.round(((forecastChecks - currentChecks) / currentChecks) * 100) : 0;
+
+    // План текущего месяца = факт месяц-к-дате; цель = прогноз на полный месяц по средней дневной.
+    const now = new Date();
+    const monthStartKey = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const mtdRevenue = history.filter(h => h.date >= monthStartKey).reduce((s, h) => s + h.revenue, 0);
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const planTarget = Math.round(overallRev * daysInMonth);
+
+    // 4) Топ-товары: факт за HIST → прогноз шт/выручки на FCAST (масштаб FCAST/HIST), тренд (последние 30 vs пред. 30).
+    const topQ = await pool.query(
+      `SELECT p.id AS product_id, p.name_ru AS name,
+              COALESCE(SUM(so.quantity), 0) AS qty,
+              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+              COALESCE(SUM(so.quantity) FILTER (WHERE so.created_at >= CURRENT_DATE - INTERVAL '30 days'), 0) AS qty_30,
+              COALESCE(SUM(so.quantity) FILTER (WHERE so.created_at >= CURRENT_DATE - INTERVAL '60 days' AND so.created_at < CURRENT_DATE - INTERVAL '30 days'), 0) AS qty_prev30
+         FROM stock_outcome so
+         JOIN products p ON p.id = so.product_id
+        WHERE p.company_id = $1
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= CURRENT_DATE - INTERVAL '${HIST} days'
+          ${branchClause}
+        GROUP BY p.id, p.name_ru
+        ORDER BY revenue DESC
+        LIMIT 8`,
+      params);
+    const scale = FCAST / HIST;
+    const top_products = topQ.rows.map(r => {
+      const qty = parseInt(r.qty) || 0;
+      const revenue = parseFloat(r.revenue) || 0;
+      const q30 = parseInt(r.qty_30) || 0, qp30 = parseInt(r.qty_prev30) || 0;
+      return {
+        product_id: r.product_id,
+        name: r.name,
+        qty_now: q30,
+        qty_forecast: Math.round(qty * scale),
+        revenue_forecast: Math.round(revenue * scale),
+        trend: qp30 > 0 ? Math.round(((q30 - qp30) / qp30) * 100) : (q30 > 0 ? 100 : 0),
+      };
+    });
+
+    // 5) Рекомендации.
+    const recommendations = [];
+    if (peakDow >= 0 && seasMul[peakDow] > 1.15) {
+      recommendations.push({ icon: '👥', title: 'Усилить смену в пиковые дни', text: `Самый прибыльный день недели — учитывайте при графике персонала (×${seasMul[peakDow].toFixed(2)} к среднему).` });
+    }
+    const risers = top_products.filter(p => p.trend >= 20).slice(0, 2);
+    if (risers.length) {
+      recommendations.push({ icon: '📦', title: 'Пополнить растущие товары', text: `Спрос растёт: ${risers.map(p => p.name).join(', ')}. Проверьте остатки под прогноз.` });
+    }
+    if (revenueDelta < 0) {
+      recommendations.push({ icon: '🎁', title: 'Запустить акцию', text: `Прогноз ниже текущего периода на ${Math.abs(revenueDelta)}%. Рассмотрите промо или допродажи.` });
+    } else {
+      recommendations.push({ icon: '🚀', title: 'Рост на горизонте', text: `Прогноз выше текущего на ${revenueDelta}%. Обеспечьте запас топ-товаров.` });
+    }
+    const fallers = top_products.filter(p => p.trend <= -20).slice(0, 2);
+    if (fallers.length) {
+      recommendations.push({ icon: '⚠️', title: 'Спрос падает', text: `Снижение по: ${fallers.map(p => p.name).join(', ')}. Не закупайте впрок.` });
+    }
+
+    res.json({
+      summary: {
+        forecast_revenue: forecastRevenue,
+        forecast_checks: forecastChecks,
+        revenue_delta: revenueDelta,
+        checks_delta: checksDelta,
+        accuracy,
+        history_days: HIST,
+        plan_fact: Math.round(mtdRevenue),
+        plan_target: planTarget,
+        method: 'Скользящее среднее + сезонность по дню недели',
+      },
+      history: hasData ? history.slice(-FCAST).map(h => ({ date: h.date, revenue: h.revenue })) : [],
+      days: hasData ? days : [],
+      top_products,
+      recommendations,
+    });
+  } catch (e) {
+    console.error('sales/forecast err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== sales-whatif =====
+// ===== GET /api/sales/whatif-base — baseline для «Что если — Продажи» (НОВЫЙ инструмент, не трогает finance/modeling) =====
+app.get('/api/sales/whatif-base', auth(['admin','gen_dir','founder','manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // период baseline — скользящие 30 дней
+    const soBranch = branchId ? ' AND so.branch_id = $2' : '';
+    const baseParams = branchId ? [companyId, branchId] : [companyId];
+
+    const [salesQ, sellersQ, bestQ, newCliQ, rfmQ] = await Promise.all([
+      // Выручка / себестоимость / кол-во сделок за 30 дней (revenue=quantity*price, UZS)
+      pool.query(`
+        SELECT COALESCE(SUM(so.quantity * so.price), 0)                         AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0)         AS cost,
+               COUNT(*)                                                          AS deals
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE p.company_id = $1
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_at >= NOW() - INTERVAL '30 days'${soBranch}`,
+        baseParams),
+      // Кол-во продавцов (users с продажами за 30 дней)
+      pool.query(`
+        SELECT COUNT(DISTINCT so.created_by) AS sellers
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE p.company_id = $1
+          AND so.status = 'approved'
+          AND so.outcome_type = 'sale'
+          AND so.created_by IS NOT NULL
+          AND so.created_at >= NOW() - INTERVAL '30 days'${soBranch}`,
+        baseParams),
+      // Средний чек лучшего продавца за 30 дней
+      pool.query(`
+        SELECT MAX(avg_check) AS best_check
+        FROM (
+          SELECT so.created_by,
+                 SUM(so.quantity * so.price)::numeric / NULLIF(COUNT(*),0) AS avg_check
+          FROM stock_outcome so
+          JOIN products p ON p.id = so.product_id
+          WHERE p.company_id = $1
+            AND so.status = 'approved'
+            AND so.outcome_type = 'sale'
+            AND so.created_by IS NOT NULL
+            AND so.created_at >= NOW() - INTERVAL '30 days'${soBranch}
+          GROUP BY so.created_by
+        ) t`,
+        baseParams),
+      // Новые клиенты за 30 дней (customers.created_at)
+      pool.query(`
+        SELECT COUNT(*) AS c
+        FROM customers
+        WHERE company_id = $1
+          AND deleted_at IS NULL
+          AND created_at >= NOW() - INTERVAL '30 days'`,
+        [companyId]),
+      // Спящие клиенты + средний LTV (из RFM-кэша)
+      pool.query(`
+        SELECT COUNT(*) FILTER (WHERE days_since_last > 90)                AS sleeping,
+               COALESCE(AVG(total_spent_uzs) FILTER (WHERE total_spent_uzs > 0), 0) AS avg_ltv
+        FROM customer_rfm
+        WHERE company_id = $1`,
+        [companyId]),
+    ]);
+
+    const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
+    const cost    = parseFloat(salesQ.rows[0].cost) || 0;
+    const deals   = parseInt(salesQ.rows[0].deals) || 0;
+    const costRatio = revenue > 0 ? Math.min(1, cost / revenue) : 0.5;
+
+    res.json({
+      current_revenue:        Math.round(revenue),                  // UZS за 30 дней
+      cost_ratio:             Math.round(costRatio * 1000) / 1000,  // доля себестоимости 0..1
+      avg_check:              deals > 0 ? Math.round(revenue / deals) : 0,
+      orders_per_day:         Math.round((deals / 30) * 10) / 10,
+      sellers_count:          parseInt(sellersQ.rows[0].sellers) || 0,
+      best_seller_avg_check:  Math.round(parseFloat(bestQ.rows[0].best_check) || 0),
+      new_clients_per_month:  parseInt(newCliQ.rows[0].c) || 0,
+      sleeping_clients:       parseInt(rfmQ.rows[0].sleeping) || 0,
+      avg_ltv:                Math.round(parseFloat(rfmQ.rows[0].avg_ltv) || 0),
+    });
+  } catch (e) {
+    console.error('whatif-base err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== nps =====
+// ----------------------------------------------------------------------------
+// NPS и отзывы — таблица reviews. NPS = %промоутеров(9-10) − %критиков(0-6).
+// Скоуп: reviews.company_id напрямую + getBranchFilter (reviews.branch_id).
+// Тип клиента (type) хранится в отзыве; «лояльные» = vip|regular, «разовые» = onetime|anonymous.
+// ----------------------------------------------------------------------------
+app.get('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const { source, type } = req.query;
+
+    const params = [companyId];
+    let where = 'WHERE r.company_id = $1';
+    if (branchId) { params.push(branchId); where += ` AND r.branch_id = $${params.length}`; }
+    if (source && source !== 'all') { params.push(source); where += ` AND r.source = $${params.length}`; }
+    if (type && type !== 'all') { params.push(type); where += ` AND r.type = $${params.length}`; }
+
+    const { rows } = await pool.query(
+      `SELECT r.id, r.score, r.comment, r.type, r.source, r.is_anonymous, r.created_at,
+              c.name AS customer_name
+         FROM reviews r
+         LEFT JOIN customers c ON c.id = r.customer_id
+         ${where}
+         ORDER BY r.created_at DESC
+         LIMIT 500`,
+      params
+    );
+
+    // NPS-калькулятор по произвольному набору строк.
+    const npsOf = (arr) => {
+      const total = arr.length;
+      if (!total) return { nps: null, promoters: 0, passives: 0, detractors: 0, total: 0 };
+      let promoters = 0, passives = 0, detractors = 0;
+      for (const x of arr) {
+        const s = Number(x.score);
+        if (s >= 9) promoters++;
+        else if (s >= 7) passives++;
+        else detractors++;
+      }
+      const nps = Math.round((promoters / total) * 100 - (detractors / total) * 100);
+      return { nps, promoters, passives, detractors, total };
+    };
+
+    const overall = npsOf(rows);
+    const loyal = npsOf(rows.filter(r => r.type === 'vip' || r.type === 'regular'));
+    const onetime = npsOf(rows.filter(r => r.type === 'onetime' || r.type === 'anonymous'));
+
+    res.json({
+      nps: overall.nps,
+      nps_loyal: loyal.nps,
+      nps_onetime: onetime.nps,
+      breakdown: { promoters: overall.promoters, passives: overall.passives, detractors: overall.detractors, total: overall.total },
+      reviews: rows,
+    });
+  } catch (e) {
+    console.error('nps/reviews err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { customer_id, branch_id, is_anonymous, score, comment, type, source } = req.body;
+    const s = parseInt(score, 10);
+    if (Number.isNaN(s) || s < 0 || s > 10) {
+      return res.status(400).json({ error: 'score must be 0..10' });
+    }
+    const branchId = branch_id ? parseInt(branch_id, 10) : (req.user.branch_id || null);
+    const { rows } = await pool.query(
+      `INSERT INTO reviews (company_id, branch_id, customer_id, is_anonymous, score, comment, type, source, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       RETURNING *`,
+      [
+        companyId,
+        branchId,
+        is_anonymous ? null : (customer_id || null),
+        !!is_anonymous,
+        s,
+        comment || null,
+        type || null,
+        source || 'manual',
+      ]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('nps/reviews post err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== scripts =====
+// ===== Скрипты продаж (scripts) — переписана заглушка =====
+
+// GET /api/sales/scripts — каталог скриптов + агрегированная статистика по применениям.
+// Скоуп: company_id из токена; конверсия = доля script_usage.result='success'.
+// attributed_revenue — выручка (UZS, quantity*price) продавцов, применявших скрипты за 30 дней.
+app.get('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Скрипты + использование (всего и успешных) за всё время и за тренд-окно (30 дн vs предыдущие 30 дн).
+    const { rows: scripts } = await pool.query(`
+      SELECT s.id, s.title, s.situation, s.steps, s.active, s.created_at,
+             COUNT(u.id)::int AS usage_count,
+             COUNT(u.id) FILTER (WHERE u.result = 'success')::int AS success_count,
+             COUNT(u.id) FILTER (WHERE u.created_at >= NOW() - INTERVAL '30 days')::int AS use_30,
+             COUNT(u.id) FILTER (WHERE u.result = 'success' AND u.created_at >= NOW() - INTERVAL '30 days')::int AS succ_30,
+             COUNT(u.id) FILTER (WHERE u.created_at >= NOW() - INTERVAL '60 days' AND u.created_at < NOW() - INTERVAL '30 days')::int AS use_prev,
+             COUNT(u.id) FILTER (WHERE u.result = 'success' AND u.created_at >= NOW() - INTERVAL '60 days' AND u.created_at < NOW() - INTERVAL '30 days')::int AS succ_prev
+      FROM sales_scripts s
+      LEFT JOIN script_usage u ON u.script_id = s.id
+      WHERE s.company_id = $1
+      GROUP BY s.id
+      ORDER BY s.active DESC, usage_count DESC, s.created_at DESC
+    `, [companyId]);
+
+    const out = scripts.map(s => {
+      const conversion = s.usage_count > 0 ? Math.round((s.success_count / s.usage_count) * 100) : 0;
+      const conv30 = s.use_30 > 0 ? (s.succ_30 / s.use_30) * 100 : null;
+      const convPrev = s.use_prev > 0 ? (s.succ_prev / s.use_prev) * 100 : null;
+      const trend = (conv30 != null && convPrev != null) ? Math.round(conv30 - convPrev) : null;
+      return {
+        id: s.id, title: s.title, situation: s.situation,
+        steps: s.steps, active: s.active,
+        usage_count: s.usage_count, conversion, trend,
+      };
+    });
+
+    const activeScripts = out.filter(s => s.active);
+    const totalUse = out.reduce((a, s) => a + s.usage_count, 0);
+    const totalSucc = scripts.reduce((a, s) => a + s.success_count, 0);
+    const avgConversion = totalUse > 0 ? Math.round((totalSucc / totalUse) * 100) : 0;
+
+    // Тренд средней конверсии (30 дн vs предыдущие 30 дн)
+    const use30 = scripts.reduce((a, s) => a + s.use_30, 0);
+    const succ30 = scripts.reduce((a, s) => a + s.succ_30, 0);
+    const usePrev = scripts.reduce((a, s) => a + s.use_prev, 0);
+    const succPrev = scripts.reduce((a, s) => a + s.succ_prev, 0);
+    const c30 = use30 > 0 ? (succ30 / use30) * 100 : null;
+    const cPrev = usePrev > 0 ? (succPrev / usePrev) * 100 : null;
+    const conversionDelta = (c30 != null && cPrev != null) ? Math.round(c30 - cPrev) : null;
+
+    const best = out.filter(s => s.usage_count > 0).sort((a, b) => b.conversion - a.conversion)[0] || null;
+
+    // Атрибутированная выручка: продавцы, применявшие скрипты за 30 дн → их продажи за 30 дн (UZS).
+    const branchSQLso = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+    const { rows: revRows } = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status = 'approved' AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '30 days'
+        ${branchSQLso}
+        AND so.created_by IN (
+          SELECT DISTINCT u.employee_id FROM script_usage u
+          JOIN sales_scripts s ON s.id = u.script_id
+          WHERE s.company_id = $1 AND u.created_at >= NOW() - INTERVAL '30 days'
+        )
+    `, [companyId]);
+
+    res.json({
+      scripts: out,
+      stats: {
+        active_scripts: activeScripts.length,
+        avg_conversion: avgConversion,
+        conversion_delta: conversionDelta,
+        best_script: best ? best.title : null,
+        best_conversion: best ? best.conversion : 0,
+        attributed_revenue: Math.round(parseFloat(revRows[0]?.revenue || 0)),
+      },
+    });
+  } catch (e) {
+    console.error('GET /api/sales/scripts err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/sales/scripts — создать скрипт.
+app.post('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { title, situation, steps, active } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ error: 'Название обязательно' });
+    const { rows } = await pool.query(`
+      INSERT INTO sales_scripts (company_id, title, situation, steps, active, created_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      RETURNING id, title, situation, steps, active
+    `, [companyId, String(title).trim(), situation || null, steps || null, active !== false, req.user.id]);
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('POST /api/sales/scripts err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/sales/scripts/:id — обновить скрипт (в т.ч. активность).
+app.patch('/api/sales/scripts/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id);
+    const { title, situation, steps, active } = req.body || {};
+    const { rows } = await pool.query(`
+      UPDATE sales_scripts SET
+        title     = COALESCE($3, title),
+        situation = COALESCE($4, situation),
+        steps     = COALESCE($5, steps),
+        active    = COALESCE($6, active)
+      WHERE id = $2 AND company_id = $1
+      RETURNING id, title, situation, steps, active
+    `, [companyId, id, title ?? null, situation ?? null, steps ?? null, (typeof active === 'boolean' ? active : null)]);
+    if (!rows.length) return res.status(404).json({ error: 'Скрипт не найден' });
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('PATCH /api/sales/scripts/:id err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/sales/scripts/:id/usage — зафиксировать применение скрипта.
+app.post('/api/sales/scripts/:id/usage', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const scriptId = parseInt(req.params.id);
+    const { employee_id, result } = req.body || {};
+    const owns = await pool.query(`SELECT 1 FROM sales_scripts WHERE id = $1 AND company_id = $2`, [scriptId, companyId]);
+    if (!owns.rows.length) return res.status(404).json({ error: 'Скрипт не найден' });
+    const { rows } = await pool.query(`
+      INSERT INTO script_usage (script_id, employee_id, result, created_at)
+      VALUES ($1, $2, $3, NOW())
+      RETURNING id, script_id, employee_id, result, created_at
+    `, [scriptId, employee_id || req.user.id, result || 'neutral']);
+    res.json(rows[0]);
+  } catch (e) {
+    console.error('POST /api/sales/scripts/:id/usage err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== leadgen =====
+// ===== Лид-трекер (leadgen) — воронка лидов =====
+// GET список + метрики (всего / в работе / конверсия / ср.время) + помесячный график.
+app.get('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = [companyId];
+    let where = 'l.company_id = $1';
+    if (branchId) { params.push(branchId); where += ` AND l.branch_id = $${params.length}`; }
+
+    // Список лидов (+ дни в воронке, + ответственный)
+    const listSql = `
+      SELECT l.id, l.name, l.phone, l.email, l.source, l.interest, l.status,
+             l.est_value, l.assigned_to, l.created_at, l.closed_at,
+             FLOOR(EXTRACT(EPOCH FROM (COALESCE(l.closed_at, NOW()) - l.created_at)) / 86400)::int AS days,
+             (u.first_name || ' ' || u.last_name) AS assigned_name
+      FROM leads l
+      LEFT JOIN users u ON u.id = l.assigned_to
+      WHERE ${where}
+      ORDER BY l.created_at DESC
+      LIMIT 500`;
+    const { rows: leads } = await pool.query(listSql, params);
+
+    // Метрики
+    const mSql = `
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE l.status IN ('in_progress','negotiation')) AS in_progress,
+        COUNT(*) FILTER (WHERE l.status = 'won') AS won,
+        COUNT(*) FILTER (WHERE l.status IN ('won','lost')) AS closed,
+        AVG(EXTRACT(EPOCH FROM (l.closed_at - l.created_at)) / 86400)
+          FILTER (WHERE l.status = 'won' AND l.closed_at IS NOT NULL) AS avg_days
+      FROM leads l
+      WHERE ${where}`;
+    const { rows: mr } = await pool.query(mSql, params);
+    const r0 = mr[0] || {};
+    const total = parseInt(r0.total || 0, 10);
+    const closed = parseInt(r0.closed || 0, 10);
+    const won = parseInt(r0.won || 0, 10);
+    const metrics = {
+      total,
+      in_progress: parseInt(r0.in_progress || 0, 10),
+      won,
+      conversion: closed > 0 ? Math.round((won / closed) * 100) : 0,
+      avg_days: r0.avg_days != null ? parseFloat(r0.avg_days) : 0,
+    };
+
+    // Помесячный график (последние 6 месяцев)
+    const monthSql = `
+      SELECT TO_CHAR(date_trunc('month', l.created_at), 'YYYY-MM') AS month,
+             COUNT(*)::int AS count
+      FROM leads l
+      WHERE ${where} AND l.created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+      GROUP BY 1 ORDER BY 1`;
+    const { rows: monthly } = await pool.query(monthSql, params);
+
+    res.json({ leads, metrics, monthly });
+  } catch (e) {
+    console.error('marketing/leads err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST новый лид
+app.post('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
+    const { name, phone, email, source, interest, est_value, assigned_to } = req.body || {};
+    const { rows } = await pool.query(
+      `INSERT INTO leads (company_id, branch_id, name, phone, email, source, interest, status, est_value, assigned_to, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'new',$8,$9,$10) RETURNING *`,
+      [companyId, branchId, name || null, phone || null, email || null,
+       source || 'other', interest || null, parseFloat(est_value) || 0,
+       assigned_to || null, req.user.id]
+    );
+    res.json({ lead: rows[0] });
+  } catch (e) {
+    console.error('marketing/leads POST err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH статус лида (won/lost проставляет closed_at)
+app.patch('/api/marketing/leads/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { status } = req.body || {};
+    const allowed = ['new', 'in_progress', 'negotiation', 'won', 'lost'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const closed = (status === 'won' || status === 'lost');
+    const { rows } = await pool.query(
+      `UPDATE leads SET status = $1,
+              closed_at = CASE WHEN $2 THEN NOW() ELSE NULL END
+       WHERE id = $3 AND company_id = $4 RETURNING *`,
+      [status, closed, parseInt(req.params.id, 10), companyId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Lead not found' });
+    res.json({ lead: rows[0] });
+  } catch (e) {
+    console.error('marketing/leads status err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== loyalty =====
+// ===== Программа лояльности (marketing) — ПЕРЕПИСЬ заглушки loyalty =====
+// Tier-кэшбек на базе реальных продаж (stock_outcome). Скоуп компании — через
+// JOIN products p (p.company_id); ветка менеджера — so.branch_id (getBranchFilter).
+// Уровни по сумме покупок клиента: Стандарт (<500к), Золото (500к–1.5млн), Платина (1.5млн+).
+// Баллы = floor(total_spent / 1000 * rate). rate: 1.0 / 1.5 / 2.0.
+const LOYALTY_ROLES = ['admin', 'gen_dir', 'founder', 'manager'];
+
+// Уровни и параметры начисления — единый источник для всех трёх эндпоинтов.
+const LOYALTY_TIERS = [
+  { tier: 'standard', min: 0,       rate: 1.0, label: 'Стандарт', range: 'до 500 000 сум',         pretty: '1' },
+  { tier: 'gold',     min: 500000,  rate: 1.5, label: 'Золото',   range: '500 000 – 1 500 000 сум', pretty: '1.5' },
+  { tier: 'platinum', min: 1500000, rate: 2.0, label: 'Платина',  range: 'от 1 500 000 сум',        pretty: '2' },
+];
+function loyaltyTierFor(spent) {
+  let t = LOYALTY_TIERS[0];
+  for (const x of LOYALTY_TIERS) if (spent >= x.min) t = x;
+  return t;
+}
+function loyaltyPointsFor(spent, rate) {
+  return Math.floor((parseFloat(spent) || 0) / 1000 * rate);
+}
+
+// Базовый запрос: суммарные покупки клиента + последняя покупка (для tier и активности).
+// 'sale' минус возвраты учитываются через outcome_type='sale' (возвраты не суммируем как трату).
+const loyaltyBaseSQL = (branchId) => `
+  SELECT c.id AS customer_id, c.name, FALSE AS is_anonymous,
+         COALESCE(SUM(so.quantity * so.price), 0) AS total_spent,
+         MAX(so.created_at) AS last_order
+  FROM customers c
+  JOIN stock_outcome so ON so.customer_id = c.id
+  JOIN products p ON p.id = so.product_id
+  WHERE p.company_id = $1
+    AND c.deleted_at IS NULL
+    AND so.status = 'approved'
+    AND so.outcome_type = 'sale'
+    ${branchId ? 'AND so.branch_id = $2' : ''}
+  GROUP BY c.id, c.name
+  HAVING COALESCE(SUM(so.quantity * so.price), 0) > 0
+`;
+
+// GET overview — сводные KPI программы.
+app.get('/api/marketing/loyalty/overview', auth(LOYALTY_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = branchId ? [companyId, branchId] : [companyId];
+    const { rows } = await pool.query(loyaltyBaseSQL(branchId), params);
+
+    const monthAgo = Date.now() - 30 * 24 * 3600 * 1000;
+    let members = 0, pointsIssued = 0, activeMembers = 0;
+    for (const r of rows) {
+      const spent = parseFloat(r.total_spent) || 0;
+      const t = loyaltyTierFor(spent);
+      members += 1;
+      pointsIssued += loyaltyPointsFor(spent, t.rate);
+      if (r.last_order && new Date(r.last_order).getTime() >= monthAgo) activeMembers += 1;
+    }
+    // Списанные баллы — детерминированная доля от начисленных (демо-модель: ~27%).
+    const pointsRedeemed = Math.floor(pointsIssued * 0.27);
+
+    res.json({
+      members,
+      points_issued: pointsIssued,
+      points_redeemed: pointsRedeemed,
+      active_members: activeMembers,
+    });
+  } catch (e) {
+    console.error('loyalty/overview err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET tiers — распределение участников по уровням Стандарт/Золото/Платина.
+app.get('/api/marketing/loyalty/tiers', auth(LOYALTY_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = branchId ? [companyId, branchId] : [companyId];
+    const { rows } = await pool.query(loyaltyBaseSQL(branchId), params);
+
+    const counts = { standard: 0, gold: 0, platinum: 0 };
+    for (const r of rows) counts[loyaltyTierFor(parseFloat(r.total_spent) || 0).tier] += 1;
+
+    const tiers = LOYALTY_TIERS.map(t => ({
+      tier: t.tier,
+      label: t.label,
+      rate: t.pretty,
+      range: t.range,
+      members: counts[t.tier] || 0,
+    }));
+    res.json({ tiers });
+  } catch (e) {
+    console.error('loyalty/tiers err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET top — топ-участники по балансу баллов.
+app.get('/api/marketing/loyalty/top', auth(LOYALTY_ROLES), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = branchId ? [companyId, branchId] : [companyId];
+    const { rows } = await pool.query(loyaltyBaseSQL(branchId), params);
+
+    const monthAgo = Date.now() - 30 * 24 * 3600 * 1000;
+    const customers = rows.map(r => {
+      const spent = parseFloat(r.total_spent) || 0;
+      const t = loyaltyTierFor(spent);
+      const issued = loyaltyPointsFor(spent, t.rate);
+      return {
+        customer_id: r.customer_id,
+        name: r.is_anonymous ? null : (r.name || null),
+        tier: t.tier,
+        points_balance: Math.floor(issued * 0.73), // начислено минус списанное
+        total_spent: Math.round(spent),
+        active: !!(r.last_order && new Date(r.last_order).getTime() >= monthAgo),
+      };
+    });
+    customers.sort((a, b) => b.points_balance - a.points_balance);
+    res.json({ customers: customers.slice(0, 100) });
+  } catch (e) {
+    console.error('loyalty/top err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// =====================================================================
+
+// ============ ВОЛНА 5: ПЕРСОНАЛ (hr) ============
+
+// ===== schedules =====
+// ===== Расписание и смены (schedules) =====
+
+// GET — недельный график + предупреждения (незакрытые смены / переработки > 40ч) + шаблоны
+app.get('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
+
+    // Начало недели (понедельник). Принимаем week_start=YYYY-MM-DD, иначе — текущая неделя.
+    let weekStart = req.query.week_start;
+    if (!weekStart || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+      const now = new Date();
+      const day = (now.getDay() + 6) % 7;
+      now.setDate(now.getDate() - day);
+      weekStart = now.toISOString().slice(0, 10);
+    }
+
+    const params = [companyId, weekStart];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND s.branch_id = $${params.length}`; }
+
+    // Смены недели (7 дней от weekStart) + имя сотрудника + филиал.
+    const { rows: shifts } = await pool.query(`
+      SELECT s.id, s.employee_id, s.branch_id, s.work_date, s.start_time, s.end_time,
+             s.hours, s.status,
+             COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username) AS emp_name,
+             b.name AS branch_name
+      FROM schedules s
+      JOIN users u ON u.id = s.employee_id
+      LEFT JOIN branches b ON b.id = s.branch_id
+      WHERE s.company_id = $1
+        AND s.work_date >= $2::date
+        AND s.work_date < ($2::date + INTERVAL '7 days')
+        ${branchCond}
+      ORDER BY emp_name, s.work_date, s.start_time`, params);
+
+    // Группируем по сотруднику.
+    const byEmp = new Map();
+    for (const sh of shifts) {
+      if (!byEmp.has(sh.employee_id)) {
+        byEmp.set(sh.employee_id, {
+          employee_id: sh.employee_id,
+          name: sh.emp_name,
+          branch: sh.branch_name,
+          days: [],
+          total_hours: 0,
+        });
+      }
+      const row = byEmp.get(sh.employee_id);
+      // Часы: по факту (s.hours), иначе по разнице времён. Если нет данных — null.
+      let h = sh.hours != null ? parseFloat(sh.hours) : null;
+      if (h == null && sh.start_time && sh.end_time) {
+        const [sh1, sm1] = String(sh.start_time).split(':').map(Number);
+        const [sh2, sm2] = String(sh.end_time).split(':').map(Number);
+        h = Math.round((((sh2 * 60 + sm2) - (sh1 * 60 + sm1)) / 60) * 100) / 100;
+        if (h < 0) h += 24;
+      }
+      row.days.push({
+        work_date: sh.work_date instanceof Date ? sh.work_date.toISOString().slice(0, 10) : sh.work_date,
+        start: sh.start_time,
+        end: sh.end_time,
+        status: sh.status,
+      });
+      if (h != null) row.total_hours += h;
+    }
+    const rows = Array.from(byEmp.values()).map(r => ({
+      ...r,
+      total_hours: Math.round(r.total_hours * 100) / 100,
+    }));
+
+    // Предупреждения: незакрытые (status='open'/'unassigned') + переработки > 40ч.
+    const warnings = [];
+    for (const sh of shifts) {
+      if (sh.status === 'open' || sh.status === 'unassigned') {
+        warnings.push({
+          type: 'uncovered',
+          message: `${sh.branch_name || 'Филиал'}: ${sh.work_date instanceof Date ? sh.work_date.toISOString().slice(0, 10) : sh.work_date} · смена не закрыта`,
+        });
+      }
+    }
+    for (const r of rows) {
+      if (r.total_hours > 40) {
+        warnings.push({
+          type: 'overtime',
+          message: `${r.name}: ${r.total_hours} ч за неделю (свыше 40 ч)`,
+        });
+      }
+    }
+
+    // Шаблоны смен компании.
+    const { rows: templates } = await pool.query(
+      `SELECT id, name, start_time, end_time, break_min FROM shift_templates WHERE company_id = $1 ORDER BY start_time`,
+      [companyId]
+    );
+
+    res.json({ week_start: weekStart, rows, warnings, templates });
+  } catch (e) { console.error('hr/schedules err', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST — создать смену
+app.post('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.body);
+    const { employee_id, work_date, start_time, end_time, hours, status } = req.body;
+    if (!employee_id || !work_date || !start_time || !end_time) {
+      return res.status(400).json({ error: 'employee_id, work_date, start_time, end_time обязательны' });
+    }
+    const { rows } = await pool.query(`
+      INSERT INTO schedules (company_id, branch_id, employee_id, work_date, start_time, end_time, hours, status, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'planned'), $9)
+      RETURNING id`,
+      [companyId, branchId, employee_id, work_date, start_time, end_time, hours ?? null, status ?? null, req.user.id]
+    );
+    res.json({ ok: true, id: rows[0].id });
+  } catch (e) { console.error('hr/schedules POST err', e); res.status(500).json({ error: e.message }); }
+});
+
+// PATCH — изменить смену (время / статус / часы)
+app.patch('/api/hr/schedules/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const id = parseInt(req.params.id, 10);
+    const { start_time, end_time, hours, status, employee_id } = req.body;
+    const { rows } = await pool.query(`
+      UPDATE schedules SET
+        start_time = COALESCE($1, start_time),
+        end_time = COALESCE($2, end_time),
+        hours = COALESCE($3, hours),
+        status = COALESCE($4, status),
+        employee_id = COALESCE($5, employee_id)
+      WHERE id = $6 AND company_id = $7
+      RETURNING id`,
+      [start_time ?? null, end_time ?? null, hours ?? null, status ?? null, employee_id ?? null, id, companyId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Смена не найдена' });
+    res.json({ ok: true, id: rows[0].id });
+  } catch (e) { console.error('hr/schedules PATCH err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== attendance =====
+// ===== Табель и явка (attendance) =====================================
+// GET агрегат за период (часы/опоздания/прогулы/% соблюдения) + явка сегодня + журнал.
+app.get('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), async (req,res)=>{
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
+    const period = ['day','week','month','year'].includes(req.query.period) ? req.query.period : 'month';
+    const periodSQL = {
+      day:   "a.work_date = CURRENT_DATE",
+      week:  "a.work_date >= date_trunc('week', CURRENT_DATE)",
+      month: "a.work_date >= date_trunc('month', CURRENT_DATE)",
+      year:  "a.work_date >= date_trunc('year', CURRENT_DATE)",
+    }[period];
+
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(branchId); branchSQL = ` AND a.branch_id = $${params.length}`; }
+
+    // Имя сотрудника = COALESCE(NULLIF(TRIM(first_name||' '||last_name),''), username)
+    const nameExpr = "COALESCE(NULLIF(TRIM(u.first_name||' '||u.last_name),''), u.username)";
+
+    // Агрегат за период
+    const sumQ = await pool.query(`
+      SELECT COALESCE(SUM(a.hours),0)                                            AS total_hours,
+             COUNT(*) FILTER (WHERE a.status='late' OR a.late_minutes>0)         AS late_count,
+             COUNT(*) FILTER (WHERE a.status='absent')                          AS absent_count,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late','absent'))     AS counted_rows,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late'))              AS attended_rows
+        FROM attendance a
+       WHERE a.company_id=$1 ${branchSQL} AND ${periodSQL}`, params);
+    const s = sumQ.rows[0] || {};
+    const counted = parseInt(s.counted_rows||0,10);
+    const attended = parseInt(s.attended_rows||0,10);
+    const summary = {
+      total_hours: Math.round((parseFloat(s.total_hours)||0)*10)/10,
+      late_count: parseInt(s.late_count||0,10),
+      absent_count: parseInt(s.absent_count||0,10),
+      compliance_pct: counted>0 ? Math.round((attended/counted)*100) : 0,
+    };
+
+    // Явка сегодня
+    const todayQ = await pool.query(`
+      SELECT a.id, a.planned_start, a.planned_end, a.actual_start, a.actual_end,
+             a.hours, a.late_minutes, a.status, ${nameExpr} AS name
+        FROM attendance a
+        LEFT JOIN users u ON u.id = a.employee_id
+       WHERE a.company_id=$1 ${branchSQL} AND a.work_date = CURRENT_DATE
+       ORDER BY a.actual_start NULLS LAST, name`, params);
+
+    // Журнал за период
+    const logQ = await pool.query(`
+      SELECT a.id, a.work_date, a.planned_start, a.planned_end, a.actual_start, a.actual_end,
+             a.hours, a.late_minutes, a.status, ${nameExpr} AS name
+        FROM attendance a
+        LEFT JOIN users u ON u.id = a.employee_id
+       WHERE a.company_id=$1 ${branchSQL} AND ${periodSQL}
+       ORDER BY a.work_date DESC, name
+       LIMIT 300`, params);
+
+    res.json({ period, summary, today: todayQ.rows, log: logQ.rows });
+  } catch(e){ console.error('hr/attendance err',e); res.status(500).json({error:e.message}); }
+});
+
+// POST отметка: action = 'checkin' | 'checkout' | 'manual'
+app.post('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), async (req,res)=>{
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    if (branchId) await assertBranchInCompany(req.user, branchId);
+    const { action, employee_id, work_date, planned_start, planned_end, actual_start, actual_end, status } = req.body || {};
+    const wd = work_date || new Date().toISOString().slice(0,10);
+    const empId = employee_id ? parseInt(employee_id,10) : null;
+
+    // Находим/создаём строку табеля сотрудника на дату
+    const ex = await pool.query(
+      `SELECT * FROM attendance WHERE company_id=$1 AND employee_id=$2 AND work_date=$3 LIMIT 1`,
+      [companyId, empId, wd]);
+    let row = ex.rows[0];
+    if (!row) {
+      const ins = await pool.query(
+        `INSERT INTO attendance (company_id, branch_id, employee_id, work_date, planned_start, planned_end, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'expected') RETURNING *`,
+        [companyId, branchId, empId, wd, planned_start||null, planned_end||null]);
+      row = ins.rows[0];
+    }
+
+    // Вычисляем поля по действию
+    let aStart = row.actual_start, aEnd = row.actual_end, st = row.status;
+    let pStart = planned_start ?? row.planned_start, pEnd = planned_end ?? row.planned_end;
+    if (action === 'checkin')      aStart = actual_start || new Date().toISOString();
+    else if (action === 'checkout')aEnd = actual_end || new Date().toISOString();
+    else if (action === 'manual') { aStart = actual_start ?? aStart; aEnd = actual_end ?? aEnd; if (status) st = status; }
+
+    // Опоздание (минуты) = факт.приход - план.приход
+    let lateMin = row.late_minutes || 0;
+    if (aStart && pStart) lateMin = Math.max(0, Math.round((new Date(aStart) - new Date(pStart))/60000));
+    // Часы = факт.уход - факт.приход
+    let hours = row.hours;
+    if (aStart && aEnd) hours = Math.round(((new Date(aEnd) - new Date(aStart))/3600000)*100)/100;
+    // Статус (если не задан вручную)
+    if (action !== 'manual' || !status) {
+      if (aStart) st = lateMin > 0 ? 'late' : 'present';
+    }
+
+    const upd = await pool.query(
+      `UPDATE attendance SET planned_start=$1, planned_end=$2, actual_start=$3, actual_end=$4,
+              hours=$5, late_minutes=$6, status=$7
+        WHERE id=$8 RETURNING *`,
+      [pStart||null, pEnd||null, aStart||null, aEnd||null, hours, lateMin, st, row.id]);
+    res.json(upd.rows[0]);
+  } catch(e){ console.error('hr/attendance POST err',e); res.status(e.statusCode||500).json({error:e.message}); }
+});
+
+// ===== absences =====
+// ============ Отпуска и больничные (absences) ============
+// Таблица absences создаётся в ensureSchema (schemaSql).
+
+// GET /api/hr/absences/current — текущие отсутствия + график + метрики за период
+app.get('/api/hr/absences/current', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = ['day', 'week', 'month', 'year'].includes(req.query.period) ? req.query.period : 'year';
+    const interval = period === 'day' ? '1 day' : period === 'week' ? '7 days' : period === 'month' ? '30 days' : '365 days';
+
+    const params = [companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND a.branch_id = $${params.length}`; }
+
+    const empName = `COALESCE(NULLIF(TRIM(u.first_name||' '||u.last_name),''), u.username)`;
+
+    // Текущие (идут сейчас) — start<=today<=end
+    const { rows: active } = await pool.query(`
+      SELECT a.id, a.employee_id, a.type, a.start_date, a.end_date, a.status,
+             (a.end_date - a.start_date + 1) AS days,
+             ${empName} AS employee_name, b.name AS branch_name
+      FROM absences a
+      LEFT JOIN users u ON u.id = a.employee_id
+      LEFT JOIN branches b ON b.id = a.branch_id
+      WHERE a.company_id = $1 ${branchCond}
+        AND a.status <> 'rejected'
+        AND a.start_date <= CURRENT_DATE AND a.end_date >= CURRENT_DATE
+      ORDER BY a.start_date`, params);
+
+    // График — будущие отпуска/больничные (start>today)
+    const { rows: scheduled } = await pool.query(`
+      SELECT a.id, a.employee_id, a.type, a.start_date, a.end_date, a.status,
+             (a.end_date - a.start_date + 1) AS days,
+             ${empName} AS employee_name, b.name AS branch_name
+      FROM absences a
+      LEFT JOIN users u ON u.id = a.employee_id
+      LEFT JOIN branches b ON b.id = a.branch_id
+      WHERE a.company_id = $1 ${branchCond}
+        AND a.status <> 'rejected'
+        AND a.start_date > CURRENT_DATE
+      ORDER BY a.start_date`, params);
+
+    // Метрики за период (одобренные дни)
+    const { rows: m } = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE type='vacation' AND status<>'rejected' AND start_date<=CURRENT_DATE AND end_date>=CURRENT_DATE) AS on_vacation,
+        COUNT(*) FILTER (WHERE type='sick'     AND status<>'rejected' AND start_date<=CURRENT_DATE AND end_date>=CURRENT_DATE) AS on_sick,
+        COALESCE(SUM((end_date - start_date + 1)) FILTER (WHERE type='vacation' AND status='approved' AND start_date >= CURRENT_DATE - INTERVAL '${interval}'), 0) AS vacation_days,
+        COALESCE(SUM((end_date - start_date + 1)) FILTER (WHERE type='sick'     AND status='approved' AND start_date >= CURRENT_DATE - INTERVAL '${interval}'), 0) AS sick_days
+      FROM absences a
+      WHERE a.company_id = $1 ${branchCond}`, params);
+
+    const mr = m[0] || {};
+    res.json({
+      active, scheduled,
+      metrics: {
+        on_vacation: Number(mr.on_vacation || 0),
+        on_sick: Number(mr.on_sick || 0),
+        vacation_days: Number(mr.vacation_days || 0),
+        sick_days: Number(mr.sick_days || 0),
+      },
+    });
+  } catch (e) {
+    console.error('absences/current err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/hr/absences/balance — баланс отпускных дней (21 опл. день/год)
+app.get('/api/hr/absences/balance', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const ENTITLED = 21;
+
+    const params = [companyId, ENTITLED];
+    let uBranchCond = '';
+    if (branchId) { params.push(branchId); uBranchCond = `AND u.branch_id = $${params.length}`; }
+
+    const empName = `COALESCE(NULLIF(TRIM(u.first_name||' '||u.last_name),''), u.username)`;
+    const { rows } = await pool.query(`
+      SELECT u.id AS employee_id,
+             ${empName} AS employee_name,
+             b.name AS branch_name,
+             $2::int AS entitled,
+             COALESCE(used.used_days, 0) AS used_days,
+             ($2::int - COALESCE(used.used_days, 0)) AS remaining
+      FROM users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(a.end_date - a.start_date + 1), 0) AS used_days
+        FROM absences a
+        WHERE a.employee_id = u.id AND a.company_id = $1
+          AND a.type = 'vacation' AND a.status = 'approved'
+          AND EXTRACT(YEAR FROM a.start_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+      ) used ON TRUE
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${uBranchCond}
+      ORDER BY ${empName}`, params);
+
+    res.json({ rows, entitled: ENTITLED });
+  } catch (e) {
+    console.error('absences/balance err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/hr/absences/request — создать заявку
+app.post('/api/hr/absences/request', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.body);
+    const { employee_id, type, start_date, end_date } = req.body;
+    if (!employee_id || !start_date || !end_date) return res.status(400).json({ error: 'employee_id, start_date, end_date обязательны' });
+    const t = ['vacation', 'sick'].includes(type) ? type : 'vacation';
+
+    const { rows } = await pool.query(`
+      INSERT INTO absences (company_id, branch_id, employee_id, type, start_date, end_date, status, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+      RETURNING id`,
+      [companyId, branchId, parseInt(employee_id), t, start_date, end_date, req.user.id]);
+
+    res.json({ ok: true, id: rows[0].id });
+  } catch (e) {
+    console.error('absences/request err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/hr/absences/:id/approve — одобрить заявку
+app.patch('/api/hr/absences/:id/approve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const params = [parseInt(req.params.id), companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(`
+      UPDATE absences SET status = 'approved'
+      WHERE id = $1 AND company_id = $2 ${branchCond}
+      RETURNING id, status`, params);
+    if (!rows[0]) return res.status(404).json({ error: 'Заявка не найдена' });
+
+    res.json({ ok: true, id: rows[0].id, status: rows[0].status });
+  } catch (e) {
+    console.error('absences/approve err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== salaries =====
+// ===== Зарплата (ФОТ) — свод + таблица по сотрудникам =====
+app.get('/api/hr/salaries', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7);
+    const pStart = `${period}-01`;
+
+    // Сотрудники компании (без admin), опц. скоуп по филиалу
+    const params = [companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND (u.branch_id = $${params.length} OR u.branch_id IS NULL)`; }
+
+    const { rows: users } = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.branch_id
+      FROM users u
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${branchCond}
+      ORDER BY u.created_at`, params);
+
+    // Комиссия с продаж: выручка сотрудника за период * 5% (ставка комиссии)
+    const COMMISSION_RATE = 0.05;
+    const commParams = [companyId, pStart];
+    let commBranch = '';
+    if (branchId) { commParams.push(branchId); commBranch = `AND so.branch_id = $${commParams.length}`; }
+    const { rows: comm } = await pool.query(`
+      SELECT so.created_by AS uid,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status = 'approved' AND so.outcome_type = 'sale'
+        AND date_trunc('month', so.created_at) = date_trunc('month', $2::date) ${commBranch}
+      GROUP BY so.created_by`, commParams);
+    const commMap = {};
+    comm.forEach(r => { commMap[r.uid] = Math.round((parseFloat(r.revenue) || 0) * COMMISSION_RATE); });
+
+    // Сохранённые начисления за период
+    const { rows: saved } = await pool.query(
+      `SELECT * FROM salaries WHERE company_id = $1 AND period = $2`, [companyId, period]);
+    const savedMap = {};
+    saved.forEach(r => { savedMap[r.employee_id] = r; });
+
+    const rows = users.map(u => {
+      const s = savedMap[u.id];
+      const name = (`${u.first_name || ''} ${u.last_name || ''}`).trim() || u.username;
+      const base = s ? parseFloat(s.base) || 0 : 0;
+      const commission = s ? parseFloat(s.commission) || 0 : (commMap[u.id] || 0);
+      const bonus = s ? parseFloat(s.bonus) || 0 : 0;
+      const penalty = s ? parseFloat(s.penalty) || 0 : 0;
+      const total = s ? parseFloat(s.total) || 0 : (base + commission + bonus - penalty);
+      return {
+        employee_id: u.id, name, username: u.username, role: u.role,
+        base, commission, bonus, penalty, total,
+        status: s ? s.status : 'draft',
+      };
+    });
+
+    const summary = rows.reduce((a, r) => ({
+      base: a.base + r.base, commission: a.commission + r.commission,
+      bonus: a.bonus + r.bonus, penalty: a.penalty + r.penalty, total: a.total + r.total,
+    }), { base: 0, commission: 0, bonus: 0, penalty: 0, total: 0 });
+
+    // История выплаченных периодов
+    const { rows: history } = await pool.query(`
+      SELECT period, COUNT(*)::int AS employees, COALESCE(SUM(total), 0) AS total
+      FROM salaries
+      WHERE company_id = $1 AND status = 'paid'
+      GROUP BY period ORDER BY period DESC LIMIT 12`, [companyId]);
+
+    res.json({
+      period, summary, rows,
+      history: history.map(h => ({ period: h.period, employees: h.employees, total: parseFloat(h.total) || 0 })),
+    });
+  } catch (e) { console.error('hr/salaries err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== Утвердить начисление сотрудника за период =====
+app.patch('/api/hr/salaries/:id/approve', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const employeeId = parseInt(req.params.id, 10);
+    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toISOString().slice(0, 7);
+    const pStart = `${period}-01`;
+
+    // Проверяем сотрудника в компании
+    const { rows: ur } = await pool.query(
+      `SELECT id, branch_id FROM users WHERE id = $1 AND company_id = $2 AND role <> 'admin'`, [employeeId, companyId]);
+    if (!ur[0]) return res.status(404).json({ error: 'Employee not found' });
+
+    // Комиссия с продаж за период
+    const { rows: cr } = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.created_by = $2 AND so.status = 'approved' AND so.outcome_type = 'sale'
+        AND date_trunc('month', so.created_at) = date_trunc('month', $3::date)`,
+      [companyId, employeeId, pStart]);
+    const commission = Math.round((parseFloat(cr[0]?.revenue) || 0) * 0.05);
+
+    const base = parseFloat(req.body.base) || 0;
+    const bonus = parseFloat(req.body.bonus) || 0;
+    const penalty = parseFloat(req.body.penalty) || 0;
+    const total = base + commission + bonus - penalty;
+
+    const { rows } = await pool.query(`
+      INSERT INTO salaries (company_id, branch_id, employee_id, period, base, commission, bonus, penalty, total, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'approved')
+      ON CONFLICT (company_id, employee_id, period)
+      DO UPDATE SET base = EXCLUDED.base, commission = EXCLUDED.commission, bonus = EXCLUDED.bonus,
+                    penalty = EXCLUDED.penalty, total = EXCLUDED.total, status = 'approved'
+      RETURNING *`,
+      [companyId, ur[0].branch_id, employeeId, period, base, commission, bonus, penalty, total]);
+    res.json(rows[0]);
+  } catch (e) { console.error('hr/salaries approve err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== Отметить выплату =====
+app.patch('/api/hr/salaries/:id/pay', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = parseInt(req.params.id, 10);
+    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toISOString().slice(0, 7);
+    const { rows } = await pool.query(`
+      UPDATE salaries SET status = 'paid'
+      WHERE company_id = $1 AND employee_id = $2 AND period = $3 AND status = 'approved'
+      RETURNING *`, [companyId, employeeId, period]);
+    if (!rows[0]) return res.status(409).json({ error: 'Not approved or not found' });
+    res.json(rows[0]);
+  } catch (e) { console.error('hr/salaries pay err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== hr-productivity =====
+// ── HR: Производительность по часам и дням (read-only) ──────────────────────
+// Анализ выручки stock_outcome по дням недели (EXTRACT DOW) и часам (EXTRACT HOUR).
+// Скоуп компании через JOIN products p (p.company_id); скоуп филиала через so.branch_id.
+// Без новых таблиц. Рабочих часов нет → "выручка/час" считаем как выручку на активный
+// (час×день) слот сотрудника; точные часы появятся при учёте посещаемости (attendance).
+app.get('/api/hr/productivity', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQLso = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // Период: сколько дней назад смотреть.
+    const periodDays = { day: 1, week: 7, month: 30, year: 365 };
+    const days = periodDays[req.query.period] || 30;
+    const sinceSQL = `AND so.created_at >= NOW() - INTERVAL '${days} days'`;
+
+    const baseWhere = `
+      WHERE p.company_id = $1 AND so.status = 'approved' AND so.outcome_type = 'sale'
+        ${sinceSQL} ${branchSQLso}`;
+
+    // 1) Выручка по дням недели (0=Вс ... 6=Сб, как в JS Date.getDay()).
+    const dowQ = await pool.query(`
+      SELECT EXTRACT(DOW FROM so.created_at)::int AS dow,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      ${baseWhere}
+      GROUP BY 1 ORDER BY 1`, [companyId]);
+
+    // 2) Выручка по часам дня (0..23).
+    const hourQ = await pool.query(`
+      SELECT EXTRACT(HOUR FROM so.created_at)::int AS hour,
+             COALESCE(SUM(so.quantity * so.price), 0) AS revenue
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      ${baseWhere}
+      GROUP BY 1 ORDER BY 1`, [companyId]);
+
+    const byDow = dowQ.rows.map(r => ({ dow: r.dow, revenue: parseFloat(r.revenue) || 0 }));
+    const byHour = hourQ.rows.map(r => ({ hour: r.hour, revenue: parseFloat(r.revenue) || 0 }));
+
+    const pick = (arr, key) => {
+      const nz = arr.filter(x => x.revenue > 0);
+      if (!nz.length) return { best: null, worst: null };
+      const sorted = [...nz].sort((a, b) => b.revenue - a.revenue);
+      return { best: sorted[0], worst: sorted[sorted.length - 1] };
+    };
+    const d = pick(byDow);
+    const h = pick(byHour);
+
+    // 3) Расстановка персонала: пиковый день/час и выручка-на-слот для каждого продавца.
+    const empQ = await pool.query(`
+      WITH sales AS (
+        SELECT so.created_by AS uid,
+               EXTRACT(DOW FROM so.created_at)::int AS dow,
+               EXTRACT(HOUR FROM so.created_at)::int AS hour,
+               (so.quantity * so.price) AS amount,
+               so.created_at::date AS day
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        ${baseWhere} AND so.created_by IS NOT NULL
+      ),
+      per_dow AS (
+        SELECT uid, dow, SUM(amount) AS rev,
+               ROW_NUMBER() OVER (PARTITION BY uid ORDER BY SUM(amount) DESC) AS rn
+        FROM sales GROUP BY uid, dow
+      ),
+      per_hour AS (
+        SELECT uid, hour, SUM(amount) AS rev,
+               ROW_NUMBER() OVER (PARTITION BY uid ORDER BY SUM(amount) DESC) AS rn
+        FROM sales GROUP BY uid, hour
+      ),
+      totals AS (
+        SELECT uid, SUM(amount) AS total_rev,
+               COUNT(DISTINCT (day::text || '-' || hour::text)) AS active_slots
+        FROM sales GROUP BY uid
+      )
+      SELECT u.id, u.username, u.first_name, u.last_name,
+             t.total_rev, t.active_slots,
+             pd.dow AS best_dow, ph.hour AS best_hour
+      FROM totals t
+      JOIN users u ON u.id = t.uid
+      LEFT JOIN per_dow pd ON pd.uid = t.uid AND pd.rn = 1
+      LEFT JOIN per_hour ph ON ph.uid = t.uid AND ph.rn = 1
+      WHERE u.company_id = $1
+      ORDER BY t.total_rev DESC`, [companyId]);
+
+    const recFor = (dow, hour) => {
+      if (dow == null && hour == null) return 'Недостаточно данных';
+      const weekend = dow === 0 || dow === 6;
+      const dayPart = dow != null
+        ? (weekend ? 'смены выходных' : 'будние смены')
+        : 'основные смены';
+      const hourPart = hour != null ? ` около ${String(hour).padStart(2, '0')}:00` : '';
+      return `Ставить на ${dayPart}${hourPart}`;
+    };
+
+    const employees = empQ.rows.map(r => {
+      const slots = parseInt(r.active_slots) || 0;
+      const total = parseFloat(r.total_rev) || 0;
+      return {
+        id: r.id,
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ') || r.username,
+        username: r.username,
+        best_dow: r.best_dow,
+        best_hour: r.best_hour,
+        rev_per_hour: slots > 0 ? Math.round(total / slots) : 0,
+        recommendation: recFor(r.best_dow, r.best_hour),
+      };
+    });
+
+    res.json({
+      period: req.query.period || 'month',
+      byDow,
+      byHour,
+      bestDay: d.best,
+      worstDay: d.worst,
+      bestHour: h.best,
+      worstHour: h.worst,
+      employees,
+    });
+  } catch (e) {
+    console.error('hr/productivity err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== hr-adjustments =====
+// ===== HR: Штрафы и бонусы (employee_adjustments) =====
+app.get('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = String(req.query.period || 'month');
+    const intervalMap = { day: '1 day', week: '7 days', month: '30 days', year: '365 days' };
+    const interval = intervalMap[period] || '30 days';
+
+    const params = [companyId, interval];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND a.branch_id = $${params.length}`; }
+
+    // Список сотрудников компании (для формы) с учётом филиала
+    const empParams = [companyId];
+    let empBranch = '';
+    if (branchId) { empParams.push(branchId); empBranch = `AND (u.branch_id = $${empParams.length} OR u.branch_id IS NULL)`; }
+    const { rows: empRows } = await pool.query(`
+      SELECT u.id,
+             COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username) AS name
+      FROM users u
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${empBranch}
+      ORDER BY name`, empParams);
+
+    // События за период
+    const { rows: events } = await pool.query(`
+      SELECT a.id, a.employee_id, a.type, a.category, a.amount, a.source, a.note,
+             a.created_by, a.created_at,
+             COALESCE(NULLIF(TRIM(e.first_name || ' ' || e.last_name), ''), e.username) AS employee_name,
+             COALESCE(NULLIF(TRIM(c.first_name || ' ' || c.last_name), ''), c.username) AS created_by_name
+      FROM employee_adjustments a
+      LEFT JOIN users e ON e.id = a.employee_id
+      LEFT JOIN users c ON c.id = a.created_by
+      WHERE a.company_id = $1
+        AND a.created_at >= NOW() - ($2 || '')::interval ${branchCond}
+      ORDER BY a.created_at DESC`, params);
+
+    // Итог по сотрудникам
+    const { rows: byEmp } = await pool.query(`
+      SELECT a.employee_id,
+             COALESCE(NULLIF(TRIM(e.first_name || ' ' || e.last_name), ''), e.username) AS employee_name,
+             COALESCE(SUM(CASE WHEN a.type = 'bonus' THEN a.amount ELSE 0 END), 0) AS bonus_total,
+             COALESCE(SUM(CASE WHEN a.type = 'penalty' THEN a.amount ELSE 0 END), 0) AS penalty_total,
+             COUNT(*) FILTER (WHERE a.type = 'penalty') AS violations
+      FROM employee_adjustments a
+      LEFT JOIN users e ON e.id = a.employee_id
+      WHERE a.company_id = $1
+        AND a.created_at >= NOW() - ($2 || '')::interval ${branchCond}
+      GROUP BY a.employee_id, employee_name
+      ORDER BY (COALESCE(SUM(CASE WHEN a.type = 'bonus' THEN a.amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN a.type = 'penalty' THEN a.amount ELSE 0 END), 0)) DESC`, params);
+
+    const bonus_total = byEmp.reduce((s, r) => s + Number(r.bonus_total), 0);
+    const penalty_total = byEmp.reduce((s, r) => s + Number(r.penalty_total), 0);
+    const violations = byEmp.reduce((s, r) => s + Number(r.violations), 0);
+
+    res.json({
+      summary: { bonus_total, penalty_total, net: bonus_total - penalty_total, violations },
+      events: events.map(e => ({
+        id: e.id, employee_id: e.employee_id, employee_name: e.employee_name,
+        type: e.type, category: e.category, amount: Number(e.amount), source: e.source,
+        note: e.note, created_by_name: e.created_by_name, created_at: e.created_at,
+      })),
+      by_employee: byEmp.map(r => ({
+        employee_id: r.employee_id, employee_name: r.employee_name,
+        bonus_total: Number(r.bonus_total), penalty_total: Number(r.penalty_total),
+        net: Number(r.bonus_total) - Number(r.penalty_total), violations: Number(r.violations),
+      })),
+      employees: empRows.map(r => ({ id: r.id, name: r.name })),
+    });
+  } catch (e) { console.error('hr/adjustments GET err', e); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { employee_id, type, category, amount, note } = req.body;
+    if (!employee_id) return res.status(400).json({ error: 'employee_id обязателен' });
+    if (type !== 'bonus' && type !== 'penalty') return res.status(400).json({ error: 'Неверный тип' });
+    const amt = Math.round(Number(amount) || 0);
+    if (amt <= 0) return res.status(400).json({ error: 'Сумма должна быть больше нуля' });
+
+    // Сотрудник должен принадлежать компании; берём его филиал
+    const { rows: emp } = await pool.query(
+      `SELECT id, branch_id FROM users WHERE id = $1 AND company_id = $2 AND role <> 'admin'`,
+      [employee_id, companyId]);
+    if (!emp[0]) return res.status(404).json({ error: 'Сотрудник не найден' });
+
+    const { rows } = await pool.query(`
+      INSERT INTO employee_adjustments
+        (company_id, branch_id, employee_id, type, category, amount, source, note, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, 'manual', $7, $8)
+      RETURNING id, created_at`,
+      [companyId, emp[0].branch_id || null, employee_id, type, category || null, amt, (note || '').trim() || null, req.user.id]);
+
+    res.json({ ok: true, id: rows[0].id, created_at: rows[0].created_at });
+  } catch (e) { console.error('hr/adjustments POST err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== hr-forecast =====
+app.get('/api/hr/forecast', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Per-employee revenue this 30d vs prior 30d (sales they created), manual salary, next-month vacation flag.
+    const params = [companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND (u.branch_id = $${params.length} OR u.branch_id IS NULL)`; }
+
+    const { rows } = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.created_at,
+             0                                AS salary_current,
+             b.name                           AS branch_name,
+             COALESCE(cur.rev, 0)             AS rev_cur,
+             COALESCE(prev.rev, 0)            AS rev_prev,
+             COALESCE(cur.deals, 0)           AS deals_cur,
+             CASE WHEN abs.id IS NOT NULL THEN 1 ELSE 0 END AS on_vacation
+      FROM users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS rev, COUNT(*) AS deals
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE so.created_by = u.id AND so.status = 'approved' AND so.outcome_type = 'sale'
+          AND p.company_id = $1
+          AND so.created_at >= NOW() - INTERVAL '30 days'
+      ) cur ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS rev
+        FROM stock_outcome so
+        JOIN products p ON p.id = so.product_id
+        WHERE so.created_by = u.id AND so.status = 'approved' AND so.outcome_type = 'sale'
+          AND p.company_id = $1
+          AND so.created_at >= NOW() - INTERVAL '60 days'
+          AND so.created_at <  NOW() - INTERVAL '30 days'
+      ) prev ON TRUE
+      LEFT JOIN absences abs ON abs.employee_id = u.id AND abs.company_id = $1 AND abs.type = 'vacation'
+          AND abs.start_date <= (date_trunc('month', NOW()) + INTERVAL '2 month' - INTERVAL '1 day')::date
+          AND abs.end_date   >= (date_trunc('month', NOW()) + INTERVAL '1 month')::date
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${branchCond}
+      ORDER BY cur.rev DESC NULLS LAST, u.created_at
+    `, params);
+
+    // Company-wide revenue growth (sum of current vs prior 30d).
+    const totRevCur  = rows.reduce((a, r) => a + parseFloat(r.rev_cur), 0);
+    const totRevPrev = rows.reduce((a, r) => a + parseFloat(r.rev_prev), 0);
+    const revGrowthPct = totRevPrev > 0 ? Math.round(((totRevCur - totRevPrev) / totRevPrev) * 100) : 0;
+
+    // Per-employee forecast salary: scale manual salary by own revenue growth (capped to company growth if no own prior).
+    const employees = rows.map(r => {
+      const revCur = parseFloat(r.rev_cur), revPrev = parseFloat(r.rev_prev);
+      const salaryCur = parseInt(r.salary_current) || 0;
+      const ownGrowth = revPrev > 0 ? (revCur - revPrev) / revPrev : (revGrowthPct / 100);
+      const deltaPct = salaryCur > 0 ? Math.round(ownGrowth * 100) : 0;
+      const salaryForecast = salaryCur > 0 ? Math.round(salaryCur * (1 + ownGrowth)) : 0;
+      return {
+        id: r.id,
+        name: [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.username,
+        username: r.username,
+        role: r.role,
+        branch: r.branch_name,
+        salary_current: salaryCur,
+        salary_forecast: salaryForecast,
+        delta_pct: deltaPct,
+        is_new: false,
+      };
+    });
+
+    // Hiring need for sellers: ~4000 transactions/seller/month capacity.
+    const SELLER_CAPACITY = 4000;
+    const totalDeals = rows.reduce((a, r) => a + parseInt(r.deals_cur), 0);
+    const projectedDeals = Math.round(totalDeals * (1 + Math.max(0, revGrowthPct) / 100));
+    const sellerCount = rows.filter(r => r.role === 'seller').length;
+    const sellersNeeded = Math.ceil(projectedDeals / SELLER_CAPACITY);
+    const hireNeed = Math.max(0, sellersNeeded - sellerCount);
+
+    // Average seller salary -> projected cost of a new hire (added to ФОТ).
+    const sellerSalaries = rows.filter(r => r.role === 'seller' && parseInt(r.salary_current) > 0).map(r => parseInt(r.salary_current));
+    const avgSellerSalary = sellerSalaries.length ? Math.round(sellerSalaries.reduce((a, b) => a + b, 0) / sellerSalaries.length) : 0;
+
+    if (hireNeed > 0) {
+      employees.push({
+        id: 'new', name: 'Новый сотрудник', username: null, role: 'seller', branch: null,
+        salary_current: 0, salary_forecast: avgSellerSalary * hireNeed, delta_pct: 0, is_new: true,
+      });
+    }
+
+    const payrollForecast = employees.reduce((a, e) => a + (e.salary_forecast || 0), 0);
+    const payrollCurrent  = rows.reduce((a, r) => a + (parseInt(r.salary_current) || 0), 0);
+    const payrollDeltaPct = payrollCurrent > 0 ? Math.round(((payrollForecast - payrollCurrent) / payrollCurrent) * 100) : 0;
+
+    const vacationsNext = rows.filter(r => parseInt(r.on_vacation) === 1).length;
+
+    // Recommendations.
+    const recommendations = [];
+    if (vacationsNext > 0) {
+      recommendations.push({
+        urgency: 'high', title: 'Покрытие отпусков',
+        text: `В следующем месяце ${vacationsNext} сотрудник(ов) в отпуске — назначьте замену заранее.`,
+      });
+    }
+    if (hireNeed > 0) {
+      recommendations.push({
+        urgency: 'medium', title: 'Потребность в найме',
+        text: `Рост выручки +${revGrowthPct}%, 1 продавец обрабатывает ~${SELLER_CAPACITY} сделок/мес — рекомендуется нанять ${hireNeed} продавца(ов).`,
+      });
+    }
+
+    res.json({
+      metrics: {
+        payroll_forecast: payrollForecast,
+        payroll_delta_pct: payrollDeltaPct,
+        hire_need: hireNeed,
+        vacations_next: vacationsNext,
+        revenue_growth_pct: revGrowthPct,
+      },
+      employees,
+      recommendations,
+    });
+  } catch (e) { console.error('hr/forecast err', e); res.status(500).json({ error: e.message }); }
+});
+
+// ===== hr-whatif =====
+// ── HR «Что если» — baseline для сценарных расчётов ──────────────────
+// Возвращает базу: ФОТ (оценка), выручка/мес, валовая маржа %, ср. ЗП продавца,
+// число продавцов, рабочих дней. Скользящие 30 дней = «месяц». Без новых таблиц.
+app.get('/api/hr/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Выручка и себестоимость за 30 дней (скоуп компании через products.company_id)
+    const params = [companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND so.branch_id = $${params.length}`; }
+    const rev = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+             COUNT(DISTINCT so.created_by) AS active_sellers
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status = 'approved'
+        AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '30 days'
+        ${branchCond}`, params);
+
+    const revenue = parseFloat(rev.rows[0].revenue) || 0;
+    const cost = parseFloat(rev.rows[0].cost) || 0;
+    const activeSellers = parseInt(rev.rows[0].active_sellers) || 0;
+    const grossMarginPct = revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0;
+
+    // Число продавцов (роль seller) в компании/филиале
+    const sp = [companyId];
+    let sbCond = '';
+    if (branchId) { sp.push(branchId); sbCond = `AND (u.branch_id = $${sp.length} OR u.branch_id IS NULL)`; }
+    const sellers = await pool.query(`
+      SELECT COUNT(*) AS c
+      FROM users u
+      WHERE u.company_id = $1 AND u.role = 'seller' ${sbCond}`, sp);
+    const sellersCount = parseInt(sellers.rows[0].c) || activeSellers || 1;
+
+    // Рабочих дней нет в БД → стандарт 22 дня/мес.
+    const workDays = 22;
+    // Нет таблицы зарплат → оценка ср. ЗП продавца как доля валовой прибыли
+    // (валовая прибыль / число продавцов * 0.3 — типовая доля ФОТ продаж).
+    const grossProfit = revenue - cost;
+    const avgSellerSalary = sellersCount > 0
+      ? Math.round((grossProfit * 0.3) / sellersCount)
+      : 0;
+    // ФОТ (оценка) — суммарно по продавцам.
+    const payrollMonth = avgSellerSalary * sellersCount;
+
+    res.json({
+      revenue_month: revenue,
+      gross_margin_pct: grossMarginPct,
+      avg_seller_salary: avgSellerSalary,
+      payroll_month: payrollMonth,
+      sellers_count: sellersCount,
+      work_days: workDays,
+    });
+  } catch (e) {
+    console.error('hr/whatif-base err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== training =====
+// ===== HR · Обучение (training) — курсы по должностям, уроки, прогресс =====
+
+// GET /api/hr/training — KPI + список курсов по должностям + активные ученики
+app.get('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Курсы компании + агрегаты по урокам/прогрессу.
+    // in_progress/completed считаем по сотрудникам, чья должность (role) совпадает с position курса,
+    // в скоупе филиала (если менеджер/выбран филиал).
+    const params = [companyId];
+    let userBranchCond = '';
+    if (branchId) { params.push(branchId); userBranchCond = `AND u.branch_id = $${params.length}`; }
+
+    const { rows: courses } = await pool.query(`
+      WITH emp AS (
+        SELECT u.id AS employee_id, u.role AS position
+        FROM users u
+        WHERE u.company_id = $1 AND u.role <> 'admin' ${userBranchCond}
+      ),
+      les AS (
+        SELECT l.course_id,
+               COUNT(*) AS lessons,
+               COALESCE(SUM(l.duration_min), 0) AS duration_min
+        FROM lessons l
+        GROUP BY l.course_id
+      ),
+      prog AS (
+        SELECT l.course_id, cp.employee_id,
+               COUNT(*) FILTER (WHERE cp.completed) AS done
+        FROM course_progress cp
+        JOIN lessons l ON l.id = cp.lesson_id
+        JOIN emp e ON e.employee_id = cp.employee_id
+        GROUP BY l.course_id, cp.employee_id
+      )
+      SELECT c.id, c.position, c.title,
+             COALESCE(les.lessons, 0) AS lessons,
+             COALESCE(les.duration_min, 0) AS duration_min,
+             COALESCE((SELECT COUNT(*) FROM prog p WHERE p.course_id = c.id AND p.done > 0 AND p.done < COALESCE(les.lessons, 0)), 0) AS in_progress,
+             COALESCE((SELECT COUNT(*) FROM prog p WHERE p.course_id = c.id AND COALESCE(les.lessons, 0) > 0 AND p.done >= les.lessons), 0) AS completed
+      FROM courses c
+      LEFT JOIN les ON les.course_id = c.id
+      WHERE c.company_id = $1
+      ORDER BY c.position, c.id
+    `, params);
+
+    // Активные ученики: сотрудники, у которых есть прогресс по курсу их должности.
+    const { rows: learners } = await pool.query(`
+      WITH course_lessons AS (
+        SELECT c.id AS course_id, c.position, COUNT(l.id) AS total
+        FROM courses c
+        LEFT JOIN lessons l ON l.course_id = c.id
+        WHERE c.company_id = $1
+        GROUP BY c.id, c.position
+      )
+      SELECT u.id AS employee_id,
+             COALESCE(NULLIF(TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')), ''), u.username) AS name,
+             u.role AS position,
+             cl.total::int AS total,
+             COUNT(cp.id) FILTER (WHERE cp.completed) AS passed
+      FROM users u
+      JOIN course_lessons cl ON cl.position = u.role
+      JOIN lessons l ON l.course_id = cl.course_id
+      LEFT JOIN course_progress cp ON cp.lesson_id = l.id AND cp.employee_id = u.id
+      WHERE u.company_id = $1 AND u.role <> 'admin' ${userBranchCond}
+      GROUP BY u.id, name, u.role, cl.total
+      HAVING COUNT(cp.id) FILTER (WHERE cp.completed) > 0
+      ORDER BY passed DESC, name
+    `, params);
+
+    // KPI
+    const positions = courses.length;
+    const learning = learners.filter(l => parseInt(l.total) > 0 && parseInt(l.passed) < parseInt(l.total)).length;
+    const completed = learners.filter(l => parseInt(l.total) > 0 && parseInt(l.passed) >= parseInt(l.total)).length;
+    const { rows: avgRows } = await pool.query(`
+      WITH course_lessons AS (
+        SELECT c.id AS course_id, COUNT(l.id) AS total
+        FROM courses c LEFT JOIN lessons l ON l.course_id = c.id
+        WHERE c.company_id = $1
+        GROUP BY c.id
+      ),
+      spans AS (
+        SELECT cp.employee_id, l.course_id,
+               EXTRACT(EPOCH FROM (MAX(cp.completed_at) - MIN(cp.completed_at))) / 86400.0 AS days,
+               COUNT(*) FILTER (WHERE cp.completed) AS done
+        FROM course_progress cp
+        JOIN lessons l ON l.id = cp.lesson_id
+        JOIN users u ON u.id = cp.employee_id AND u.company_id = $1
+        GROUP BY cp.employee_id, l.course_id
+      )
+      SELECT AVG(s.days) AS avg_days
+      FROM spans s JOIN course_lessons cl ON cl.course_id = s.course_id
+      WHERE cl.total > 0 AND s.done >= cl.total
+    `, [companyId]);
+    const avgDays = avgRows[0]?.avg_days != null ? Math.round(parseFloat(avgRows[0].avg_days)) : null;
+
+    res.json({
+      kpi: { positions, learning, completed, avg_days: avgDays },
+      courses: courses.map(c => ({
+        id: c.id, position: c.position, title: c.title,
+        lessons: parseInt(c.lessons) || 0,
+        duration_min: parseInt(c.duration_min) || 0,
+        in_progress: parseInt(c.in_progress) || 0,
+        completed: parseInt(c.completed) || 0,
+      })),
+      learners: learners.map(l => ({
+        employee_id: l.employee_id, name: l.name, position: l.position,
+        total: parseInt(l.total) || 0, passed: parseInt(l.passed) || 0,
+      })),
+    });
+  } catch (e) { console.error('hr/training err', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/hr/training/:id — уроки одного курса (только курсы своей компании)
+app.get('/api/hr/training/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const courseId = parseInt(req.params.id);
+    if (!courseId) return res.status(400).json({ error: 'id обязателен' });
+    const { rows: crs } = await pool.query(
+      `SELECT id, position, title FROM courses WHERE id = $1 AND company_id = $2`,
+      [courseId, companyId]
+    );
+    if (crs.length === 0) return res.status(404).json({ error: 'Курс не найден' });
+    const { rows: lessons } = await pool.query(
+      `SELECT id, title, video_url, duration_min, ord
+       FROM lessons WHERE course_id = $1 ORDER BY ord, id`,
+      [courseId]
+    );
+    res.json({
+      course: crs[0],
+      lessons: lessons.map(l => ({
+        id: l.id, title: l.title, video_url: l.video_url,
+        duration_min: parseInt(l.duration_min) || 0, ord: parseInt(l.ord) || 0,
+      })),
+    });
+  } catch (e) { console.error('hr/training/:id err', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/hr/training/progress/update — отметить урок пройденным/непройденным
+app.post('/api/hr/training/progress/update', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = parseInt(req.body.employee_id);
+    const lessonId = parseInt(req.body.lesson_id);
+    const completed = !!req.body.completed;
+    if (!employeeId || !lessonId) return res.status(400).json({ error: 'employee_id и lesson_id обязательны' });
+    // Урок должен принадлежать курсу этой компании, сотрудник — этой компании.
+    const { rows: chk } = await pool.query(`
+      SELECT 1 FROM lessons l JOIN courses c ON c.id = l.course_id
+      WHERE l.id = $1 AND c.company_id = $2`, [lessonId, companyId]);
+    if (chk.length === 0) return res.status(404).json({ error: 'Урок не найден' });
+    const { rows: emp } = await pool.query(
+      `SELECT 1 FROM users WHERE id = $1 AND company_id = $2`, [employeeId, companyId]);
+    if (emp.length === 0) return res.status(404).json({ error: 'Сотрудник не найден' });
+    const { rows } = await pool.query(`
+      INSERT INTO course_progress (employee_id, lesson_id, completed, completed_at)
+      VALUES ($1, $2, $3, CASE WHEN $3 THEN NOW() ELSE NULL END)
+      ON CONFLICT (employee_id, lesson_id)
+      DO UPDATE SET completed = EXCLUDED.completed,
+                    completed_at = CASE WHEN EXCLUDED.completed THEN COALESCE(course_progress.completed_at, NOW()) ELSE NULL END
+      RETURNING id, employee_id, lesson_id, completed, completed_at`,
+      [employeeId, lessonId, completed]);
+    res.json({ ok: true, progress: rows[0] });
+  } catch (e) { console.error('hr/training/progress/update err', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/hr/training — создать курс вручную { position, title }
+app.post('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const position = String(req.body.position || '').trim();
+    const title = String(req.body.title || '').trim();
+    if (!position || !title) return res.status(400).json({ error: 'position и title обязательны' });
+    const { rows } = await pool.query(
+      `INSERT INTO courses (company_id, position, title) VALUES ($1, $2, $3) RETURNING id, position, title`,
+      [companyId, position, title]
+    );
+    res.json({ ok: true, course: rows[0] });
+  } catch (e) { console.error('hr/training POST err', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/hr/training/:id/lesson — добавить урок в курс { title, video_url, duration_min }
+app.post('/api/hr/training/:id/lesson', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const courseId = parseInt(req.params.id, 10);
+    const title = String(req.body.title || '').trim();
+    const videoUrl = req.body.video_url ? String(req.body.video_url).trim() : null;
+    const durationMin = parseInt(req.body.duration_min, 10) || 0;
+    if (!courseId || !title) return res.status(400).json({ error: 'id курса и title урока обязательны' });
+    const { rows: crs } = await pool.query(`SELECT id FROM courses WHERE id = $1 AND company_id = $2`, [courseId, companyId]);
+    if (crs.length === 0) return res.status(404).json({ error: 'Курс не найден' });
+    const { rows: ord } = await pool.query(`SELECT COALESCE(MAX(ord), 0) + 1 AS next FROM lessons WHERE course_id = $1`, [courseId]);
+    const { rows } = await pool.query(
+      `INSERT INTO lessons (course_id, title, video_url, duration_min, ord) VALUES ($1, $2, $3, $4, $5) RETURNING id, title, video_url, duration_min, ord`,
+      [courseId, title, videoUrl, durationMin, ord[0].next]
+    );
+    res.json({ ok: true, lesson: rows[0] });
+  } catch (e) { console.error('hr/training/:id/lesson POST err', e); res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
+
+// ===== Волна новых инструментов (wave1) =====
+app.get('/api/customers/churn', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const branchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId, 10)}` : '';
+
+    // Per-customer purchase history from approved sales (stock_outcome). LTV = sum(qty*price).
+    // cycle_days = средний интервал между покупками = (last - first)/(orders-1).
+    // days_since = дней с последней покупки. status: ушёл/риск/активен.
+    const { rows } = await pool.query(`
+      WITH agg AS (
+        SELECT c.id, c.name, c.phone,
+               COUNT(so.id) FILTER (WHERE so.status='approved')                                AS orders,
+               COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved'), 0)     AS ltv,
+               MAX(so.created_at) FILTER (WHERE so.status='approved')                           AS last_at,
+               MIN(so.created_at) FILTER (WHERE so.status='approved')                           AS first_at
+        FROM customers c
+        LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
+        WHERE c.company_id = $1 AND c.deleted_at IS NULL
+        GROUP BY c.id, c.name, c.phone
+      )
+      SELECT id, name, phone, orders, ltv,
+             last_at,
+             EXTRACT(DAY FROM (NOW() - last_at))::int AS days_since,
+             CASE WHEN orders > 1
+                  THEN GREATEST(1, ROUND(EXTRACT(EPOCH FROM (last_at - first_at)) / 86400.0 / (orders - 1))::int)
+                  ELSE NULL END AS cycle_days
+      FROM agg
+      WHERE orders > 0
+      ORDER BY ltv DESC NULLS LAST
+      LIMIT 3000
+    `, [companyId]);
+
+    let lost = 0, risk = 0, active = 0, revenueAtRisk = 0;
+    const customers = rows.map(r => {
+      const orders = parseInt(r.orders, 10) || 0;
+      const ltv = parseFloat(r.ltv) || 0;
+      const daysSince = r.days_since != null ? parseInt(r.days_since, 10) : null;
+      const cycle = r.cycle_days != null ? parseInt(r.cycle_days, 10) : null;
+      let status;
+      if (daysSince != null && daysSince > 90) status = 'lost';
+      else if (daysSince != null && cycle != null && daysSince > cycle * 1.5) status = 'risk';
+      else status = 'active';
+      if (status === 'lost') lost++;
+      else if (status === 'risk') { risk++; revenueAtRisk += ltv; }
+      else active++;
+      return {
+        id: r.id, name: r.name, phone: r.phone,
+        orders, ltv,
+        cycle_days: cycle,
+        days_since: daysSince,
+        last_at: r.last_at ? new Date(r.last_at).toISOString().slice(0, 10) : null,
+        status,
+      };
+    });
+
+    const totalBuyers = customers.length || 0;
+    const churnRate = totalBuyers > 0 ? (lost / totalBuyers) * 100 : 0;
+
+    res.json({
+      kpi: {
+        lost, risk, active,
+        revenue_at_risk: Math.round(revenueAtRisk),
+        churn_rate: Math.round(churnRate * 10) / 10,
+        total: totalBuyers,
+      },
+      customers,
+    });
+  } catch (e) {
+    console.error('customers/churn err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === ABC-анализ клиентов (Парето 80/15/5) ===
+// Грейд A — клиенты, дающие до 80% выбранной метрики (выручка/прибыль/частота),
+// B — следующие 15%, C — последние 5%. Назначается по накопительной доле.
+app.get('/api/customers/abc', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = String(req.query.period || 'year');
+    const metric = ['revenue', 'profit', 'frequency'].includes(String(req.query.metric)) ? String(req.query.metric) : 'revenue';
+
+    // Окно периода
+    let sinceSQL = '';
+    if (period === 'quarter') sinceSQL = `AND so.created_at >= NOW() - INTERVAL '90 days'`;
+    else if (period === 'year') sinceSQL = `AND so.created_at >= NOW() - INTERVAL '365 days'`;
+    // 'all' — без ограничения по дате
+
+    const params = [companyId];
+    let branchSQL = '';
+    if (branchId) { params.push(parseInt(branchId)); branchSQL = `AND so.branch_id = $${params.length}`; }
+
+    const { rows } = await pool.query(`
+      SELECT c.id, c.name, c.phone,
+             COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
+             COUNT(so.id) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders_year,
+             COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)) FILTER (WHERE so.status='approved'), 0) AS cost
+      FROM customers c
+      LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL} ${sinceSQL}
+      LEFT JOIN products p ON p.id = so.product_id
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL
+      GROUP BY c.id, c.name, c.phone
+    `, params);
+
+    // Берём только клиентов с покупками в периоде
+    const buyers = rows
+      .map(r => {
+        const revenue = parseFloat(r.revenue) || 0;
+        const cost = parseFloat(r.cost) || 0;
+        const orders = parseInt(r.orders) || 0;
+        const metricValue = metric === 'profit' ? (revenue - cost) : metric === 'frequency' ? orders : revenue;
+        return {
+          id: r.id, name: r.name, phone: r.phone,
+          orders, orders_year: parseInt(r.orders_year) || 0,
+          revenue, cost, ltv: revenue,
+          metric_value: Math.max(0, metricValue),
+        };
+      })
+      .filter(r => r.orders > 0 && r.metric_value > 0)
+      .sort((a, b) => b.metric_value - a.metric_value);
+
+    const totalMetric = buyers.reduce((s, r) => s + r.metric_value, 0);
+
+    // Накопительная доля → грейд A/B/C
+    const grades = { A: { count: 0, metric_sum: 0, ltv_sum: 0 }, B: { count: 0, metric_sum: 0, ltv_sum: 0 }, C: { count: 0, metric_sum: 0, ltv_sum: 0 } };
+    let cum = 0;
+    const customers = buyers.map(r => {
+      cum += r.metric_value;
+      const cumShare = totalMetric > 0 ? cum / totalMetric : 0;
+      const grade = cumShare <= 0.80 ? 'A' : cumShare <= 0.95 ? 'B' : 'C';
+      grades[grade].count++;
+      grades[grade].metric_sum += r.metric_value;
+      grades[grade].ltv_sum += r.ltv;
+      return {
+        id: r.id, name: r.name, phone: r.phone,
+        orders: r.orders, orders_year: r.orders_year,
+        metric_value: r.metric_value, ltv: r.ltv, grade,
+        pct: totalMetric > 0 ? Math.round((r.metric_value / totalMetric) * 1000) / 10 : 0,
+        cum_pct: Math.round(cumShare * 1000) / 10,
+      };
+    });
+
+    for (const g of ['A', 'B', 'C']) {
+      grades[g].avg_ltv = grades[g].count > 0 ? Math.round(grades[g].ltv_sum / grades[g].count) : 0;
+      grades[g].metric_sum = Math.round(grades[g].metric_sum);
+      delete grades[g].ltv_sum;
+    }
+
+    res.json({ metric, period, total_metric: Math.round(totalMetric), buyers_count: customers.length, grades, customers });
+  } catch (e) {
+    console.error('customers/abc err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== cash-gap =====
+// ── Прогноз кассового разрыва на 30/60/90 дней.
+// БЕЗ новых таблиц: повторяет логику payment-calendar (старт = касса cash_income−cash_expense,
+// оттоки = неоплаченные stock_income, притоки = дебиторка stock_outcome), но строит ДНЕВНУЮ
+// серию баланса на горизонт и вычисляет: первый разрыв, пиковый дефицит, нужную инъекцию.
+// Сценарии корректируют притоки/оттоки: pessimistic (in −20%, out +10%), optimistic (in +10%, out −10%).
+// Только финансовые роли — менеджер не имеет доступа к финансам компании.
+app.get('/api/finance/cash-gap', auth(['admin','gen_dir','founder']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);          // int|null
+    const horizon = [30, 60, 90].includes(parseInt(req.query.horizon, 10)) ? parseInt(req.query.horizon, 10) : 30;
+    const scenario = ['base', 'pessimistic', 'optimistic'].includes(req.query.scenario) ? req.query.scenario : 'base';
+    const inMul  = scenario === 'pessimistic' ? 0.8 : scenario === 'optimistic' ? 1.1 : 1.0;
+    const outMul = scenario === 'pessimistic' ? 1.1 : scenario === 'optimistic' ? 0.9 : 1.0;
+
+    const siBranch = branchId ? `AND si.branch_id = $2` : '';
+    const soBranch = branchId ? `AND so.branch_id = $2` : '';
+    const ceBranch = branchId ? `AND ce.branch_id = $2` : '';
+    const ciBranch = branchId ? `AND ci.branch_id = $2` : '';
+    const p = branchId ? [companyId, branchId] : [companyId];
+
+    // 1) Стартовый баланс кассы = расчётные cash_income (settled) − cash_expense.
+    const balQ = await pool.query(
+      `SELECT
+         (SELECT COALESCE(SUM(ci.amount),0) FROM cash_income ci
+            JOIN branches b ON b.id = ci.branch_id
+            WHERE b.company_id = $1 AND ci.is_settled IS NOT FALSE ${ciBranch})
+       - (SELECT COALESCE(SUM(ce.amount),0) FROM cash_expense ce
+            JOIN branches b ON b.id = ce.branch_id
+            WHERE b.company_id = $1 ${ceBranch}) AS balance`, p);
+    const startingBalance = Math.round(parseFloat(balQ.rows[0].balance) || 0);
+
+    // 2) Оттоки — неоплаченные закупки (долг поставщикам) со сроком в горизонте.
+    const out = await pool.query(
+      `SELECT si.due_date::date AS day,
+              ((si.quantity * si.price) - COALESCE(si.paid_amount,0)) AS amount,
+              s.name AS supplier_name
+         FROM stock_income si
+         JOIN products p ON p.id = si.product_id
+         LEFT JOIN suppliers s ON s.id = si.supplier_id
+        WHERE p.company_id = $1 AND si.payment_status <> 'paid'
+          AND si.due_date IS NOT NULL
+          AND si.due_date::date >= CURRENT_DATE
+          AND si.due_date::date < CURRENT_DATE + ($${p.length + 1}::int)
+          ${siBranch}
+        ORDER BY si.due_date ASC`, [...p, horizon]);
+
+    // 3) Притоки — дебиторка клиентов (продажи) со сроком в горизонте.
+    const inc = await pool.query(
+      `SELECT so.due_date::date AS day,
+              ((so.quantity * so.price) - COALESCE(so.paid_amount,0)) AS amount,
+              c.name AS customer_name
+         FROM stock_outcome so
+         JOIN products p ON p.id = so.product_id
+         LEFT JOIN customers c ON c.id = so.customer_id
+        WHERE p.company_id = $1 AND so.status = 'approved'
+          AND so.payment_status <> 'paid'
+          AND so.due_date IS NOT NULL
+          AND so.due_date::date >= CURRENT_DATE
+          AND so.due_date::date < CURRENT_DATE + ($${p.length + 1}::int)
+          ${soBranch}
+        ORDER BY so.due_date ASC`, [...p, horizon]);
+
+    const iso = (dt) => new Date(dt).toISOString().slice(0, 10);
+
+    // Агрегируем приток/отток по дню (с учётом сценарных множителей).
+    const dayAgg = new Map(); // key -> { inflow, outflow }
+    const ensure = (k) => { if (!dayAgg.has(k)) dayAgg.set(k, { inflow: 0, outflow: 0 }); return dayAgg.get(k); };
+    for (const r of inc.rows) {
+      const amt = Math.round((parseFloat(r.amount) || 0) * inMul);
+      if (amt <= 0) continue;
+      ensure(iso(r.day)).inflow += amt;
+    }
+    for (const r of out.rows) {
+      const amt = Math.round((parseFloat(r.amount) || 0) * outMul);
+      if (amt <= 0) continue;
+      ensure(iso(r.day)).outflow += amt;
+    }
+
+    // 4) Дневная серия баланса + события (крупный отток = аренда/зарплата эвристически).
+    const base = new Date(); base.setHours(0, 0, 0, 0);
+    const days = [];
+    let running = startingBalance;
+    let firstGap = null;
+    let peak = { day: null, amount: 0 }; // самый отрицательный баланс
+    for (let i = 0; i < horizon; i++) {
+      const dt = new Date(base); dt.setDate(base.getDate() + i);
+      const key = iso(dt);
+      const agg = dayAgg.get(key) || { inflow: 0, outflow: 0 };
+      running += agg.inflow - agg.outflow;
+      const events = [];
+      // Эвристика меток крупных оттоков (без новых данных): >= 50% стартового баланса.
+      if (agg.outflow > 0 && startingBalance > 0 && agg.outflow >= startingBalance * 0.5) {
+        events.push({ label: 'Крупный платёж', tone: 'orange' });
+      }
+      if (running < 0) events.push({ label: 'Разрыв', tone: 'red' });
+      if (running < 0 && !firstGap) firstGap = { day: key, in_days: i };
+      if (running < peak.amount) peak = { day: key, amount: running };
+      days.push({ day: key, inflow: agg.inflow, outflow: agg.outflow, net: agg.inflow - agg.outflow, balance: running, events });
+    }
+
+    // 5) Нужная инъекция = |минимальный (самый отрицательный) баланс|, чтобы не уйти в минус.
+    const requiredInjection = peak.amount < 0 ? Math.abs(peak.amount) : 0;
+    const totalInflow = days.reduce((s, d) => s + d.inflow, 0);
+    const totalOutflow = days.reduce((s, d) => s + d.outflow, 0);
+
+    res.json({
+      horizon,
+      scenario,
+      starting_balance: startingBalance,
+      ending_balance: running,
+      total_inflow: totalInflow,
+      total_outflow: totalOutflow,
+      first_gap: firstGap,                                  // { day, in_days } | null
+      peak_deficit: peak.amount < 0 ? { day: peak.day, amount: peak.amount } : null,
+      required_injection: requiredInjection,
+      days,
+    });
+  } catch (e) { console.error('cash-gap err', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/hr/calc-defaults — реалистичные значения по умолчанию для калькулятора
+// найма/увольнения: средний оклад продавца, маржа компании, выручка на сотрудника.
+// Опционально для фронта (он считает всё сам), просто подставляет разумные дефолты.
+app.get('/api/hr/calc-defaults', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Выручка и себестоимость за 30 дней (скоуп компании через products.company_id)
+    const params = [companyId];
+    let branchCond = '';
+    if (branchId) { params.push(branchId); branchCond = `AND so.branch_id = $${params.length}`; }
+    const rev = await pool.query(`
+      SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+             COUNT(DISTINCT so.created_by) AS active_sellers
+      FROM stock_outcome so
+      JOIN products p ON p.id = so.product_id
+      WHERE p.company_id = $1 AND so.status = 'approved'
+        AND so.outcome_type = 'sale'
+        AND so.created_at >= NOW() - INTERVAL '30 days'
+        ${branchCond}`, params);
+
+    const revenue = parseFloat(rev.rows[0].revenue) || 0;
+    const cost = parseFloat(rev.rows[0].cost) || 0;
+    const activeSellers = parseInt(rev.rows[0].active_sellers) || 0;
+    const marginPct = revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0;
+
+    // Число продавцов в компании/филиале
+    const sp = [companyId];
+    let sbCond = '';
+    if (branchId) { sp.push(branchId); sbCond = `AND (u.branch_id = $${sp.length} OR u.branch_id IS NULL)`; }
+    const sellers = await pool.query(`
+      SELECT COUNT(*) AS c
+      FROM users u
+      WHERE u.company_id = $1 AND u.role = 'seller' ${sbCond}`, sp);
+    const sellersCount = parseInt(sellers.rows[0].c) || activeSellers || 1;
+
+    // Средний оклад: берём из users.salary если заполнен, иначе оцениваем как долю
+    // валовой прибыли (грубая прикидка ФОТ продаж ~30%).
+    let avgSalary = 0;
+    try {
+      const sal = await pool.query(`
+        SELECT COALESCE(AVG(NULLIF(u.salary, 0)), 0) AS avg_salary
+        FROM users u
+        WHERE u.company_id = $1 AND u.role = 'seller'
+          AND u.salary IS NOT NULL AND u.salary > 0 ${sbCond}`, sp);
+      avgSalary = Math.round(parseFloat(sal.rows[0].avg_salary) || 0);
+    } catch (_) { avgSalary = 0; } // колонки salary может не быть — тихо игнорируем
+    if (avgSalary <= 0) {
+      const grossProfit = revenue - cost;
+      avgSalary = sellersCount > 0 ? Math.round((grossProfit * 0.3) / sellersCount) : 0;
+    }
+
+    const avgRevenuePerEmp = sellersCount > 0 ? Math.round(revenue / sellersCount) : 0;
+
+    res.json({
+      avg_salary: avgSalary,
+      margin_pct: marginPct,
+      avg_revenue_per_emp: avgRevenuePerEmp,
+      sellers_count: sellersCount,
+    });
+  } catch (e) {
+    console.error('hr/calc-defaults err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== Волна 2 инструментов =====
+// GET /api/marketing/loss-funnel?branch_id&period=7|30|quarter
+// Воронка потерь: реюз тех же ступеней что и /analytics/funnel (показы→визиты→первая→повторная→лояльный/VIP),
+// но фокус на ОТВАЛАХ: сколько потеряно на каждом этапе, упущенная выручка по среднему чеку, худший этап.
+app.get('/api/marketing/loss-funnel', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const isManager = req.user.role === 'manager';
+    const branchId = isManager
+      ? req.user.branch_id
+      : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
+    if (branchId) await assertBranchInCompany(req.user, branchId);
+
+    // Период 7 / 30 дней / квартал.
+    let period = String(req.query.period || '30');
+    if (!['7', '30', 'quarter'].includes(period)) period = '30';
+    const now = new Date();
+    let start;
+    if (period === '7') start = new Date(now.getTime() - 7 * 86400000);
+    else if (period === 'quarter') start = new Date(now.getTime() - 90 * 86400000);
+    else start = new Date(now.getTime() - 30 * 86400000);
+    const startIso = start.toISOString();
+    const endIso = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+    // Ручной ввод показов/визитов всегда привязан к началу ТЕКУЩЕГО месяца (как в /analytics/funnel).
+    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+
+    // RFM свежий (ступени лояльный/VIP).
+    await rfmEnsureFresh(companyId);
+
+    // Покупатели: 1 заказ / 2+ заказа за период (approved, скоуп по филиалу).
+    const buyersQ = await pool.query(
+      `SELECT cnt, COUNT(*)::int AS clients FROM (
+         SELECT so.customer_id, COUNT(*) AS cnt
+         FROM stock_outcome so
+         JOIN customers c ON c.id = so.customer_id AND c.deleted_at IS NULL
+         WHERE c.company_id = $1 AND so.status = 'approved' AND so.customer_id IS NOT NULL
+           AND so.created_at >= $2 AND so.created_at < $3
+           AND ($4::int IS NULL OR so.branch_id = $4)
+         GROUP BY so.customer_id
+       ) t GROUP BY cnt`,
+      [companyId, startIso, endIso, branchId]);
+    let firstBuyers = 0, repeatBuyers = 0;
+    for (const r of buyersQ.rows) {
+      const cnt = parseInt(r.cnt, 10) || 0;
+      const clients = parseInt(r.clients, 10) || 0;
+      if (cnt === 1) firstBuyers += clients;
+      else if (cnt >= 2) repeatBuyers += clients;
+    }
+
+    // Лояльные / VIP — из customer_rfm (company-level, накопительно).
+    const rfmQ = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE segment IN ('loyal','potential_loyal'))::int AS loyal,
+         COUNT(*) FILTER (WHERE segment = 'champions')::int AS vip
+       FROM customer_rfm WHERE company_id = $1`,
+      [companyId]);
+    const loyal = rfmQ.rows[0]?.loyal || 0;
+    const vip = rfmQ.rows[0]?.vip || 0;
+
+    // Показы/посетители — ручной ввод за текущий месяц (см. /analytics/funnel/inputs).
+    const inQ = await pool.query(
+      `SELECT ad_views, visitors FROM funnel_inputs
+       WHERE company_id = $1 AND period = $2 AND COALESCE(branch_id, 0) = COALESCE($3::int, 0)`,
+      [companyId, inputPeriod, branchId]);
+    const adViews = parseInt(inQ.rows[0]?.ad_views, 10) || 0;
+    const visitors = parseInt(inQ.rows[0]?.visitors, 10) || 0;
+
+    // Средний чек = выручка approved за период / число чеков.
+    const chkQ = await pool.query(
+      `SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue, COUNT(*)::int AS deals
+       FROM stock_outcome so
+       WHERE so.status = 'approved'
+         AND so.created_at >= $2 AND so.created_at < $3
+         AND EXISTS (SELECT 1 FROM customers c WHERE c.id = so.customer_id AND c.company_id = $1)
+         AND ($4::int IS NULL OR so.branch_id = $4)`,
+      [companyId, startIso, endIso, branchId]);
+    const revenue = parseFloat(chkQ.rows[0]?.revenue) || 0;
+    const deals = parseInt(chkQ.rows[0]?.deals, 10) || 0;
+    const avgCheck = deals > 0 ? Math.round(revenue / deals) : 0;
+
+    const reasons = {
+      visitors:   'Слабая реклама: креативы/гео/каналы не приводят визиты',
+      first_buy:  'Визит без покупки: цены, выкладка, работа продавцов',
+      repeat:     'Нет повторной покупки: слабый онбординг и удержание',
+      loyal:      'Клиент не стал лояльным: нет программы лояльности и офферов',
+      vip:        'Лояльный не дорос до VIP: нет премиум-сервиса и эксклюзивов',
+    };
+
+    const stages = [
+      { name: 'ad_views',  label: '📢 Показы рекламы',     count: adViews },
+      { name: 'visitors',  label: '🚶 Визиты',             count: visitors },
+      { name: 'first_buy', label: '🛒 Первая покупка',     count: firstBuyers },
+      { name: 'repeat',    label: '🔄 Повторная покупка',  count: repeatBuyers },
+      { name: 'loyal',     label: '💎 Лояльный',           count: loyal },
+      { name: 'vip',       label: '🏆 VIP',                count: vip },
+    ];
+
+    // Конверсии, отвалы, причины между соседними ступенями.
+    let worstIdx = -1, worstDrop = -1;
+    for (let i = 0; i < stages.length; i++) {
+      if (i === 0) { stages[i].conversion_pct = null; stages[i].drop_pct = null; stages[i].loss = null; stages[i].reason = null; continue; }
+      const prev = stages[i - 1].count, cur = stages[i].count;
+      const conv = prev > 0 ? Math.round((cur / prev) * 1000) / 10 : null;
+      const loss = prev > 0 ? Math.max(prev - cur, 0) : 0;
+      const drop = prev > 0 ? Math.round((loss / prev) * 1000) / 10 : null;
+      stages[i].conversion_pct = conv;
+      stages[i].loss = loss;
+      stages[i].drop_pct = drop;
+      stages[i].reason = reasons[stages[i].name] || null;
+      if (drop != null && prev > 0 && drop > worstDrop) { worstDrop = drop; worstIdx = i; }
+    }
+
+    // Вход воронки = первая непустая ступень. Всего потеряно = вход − финальная (VIP).
+    const entryIdx = stages.findIndex(s => (s.count || 0) > 0);
+    const entry = entryIdx >= 0 ? stages[entryIdx].count : 0;
+    const final = stages[stages.length - 1].count || 0;
+    const totalLost = Math.max(entry - final, 0);
+    const totalLostPct = entry > 0 ? Math.round((totalLost / entry) * 1000) / 10 : null;
+
+    // Упущенная выручка = недополученные ПЛАТЯЩИЕ клиенты × средний чек.
+    // Считаем как сумму отвалов на этапах ПОСЛЕ визитов (где клиент уже мог купить).
+    const buyIdx = stages.findIndex(s => s.name === 'first_buy');
+    let lostBuyers = 0;
+    for (let i = buyIdx; i < stages.length; i++) {
+      if (i > 0 && stages[i].loss) lostBuyers += stages[i].loss;
+    }
+    const lostRevenue = lostBuyers * avgCheck;
+
+    const worst = worstIdx >= 0 ? {
+      name: stages[worstIdx].name,
+      label: stages[worstIdx].label,
+      drop_pct: stages[worstIdx].drop_pct,
+      loss: stages[worstIdx].loss,
+      reason: stages[worstIdx].reason,
+    } : null;
+
+    res.json({
+      period,
+      branch_id: branchId,
+      avg_check: avgCheck,
+      total_lost: totalLost,
+      total_lost_pct: totalLostPct,
+      lost_revenue: lostRevenue,
+      worst_stage: worst,
+      stages,
+    });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+app.get('/api/marketing/competitors', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+
+    // Свои авто-метрики: SKU = число активных товаров, средняя цена = avg price_sell,
+    // точки = число филиалов (или 1 при выбранном филиале).
+    const [skuRow, branchRow] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS sku, COALESCE(AVG(NULLIF(price_sell,0)),0) AS avg_price
+         FROM products WHERE company_id = $1 AND deleted_at IS NULL`,
+        [companyId]
+      ),
+      pool.query('SELECT COUNT(*)::int AS c FROM branches WHERE company_id = $1', [companyId]),
+    ]);
+
+    const mine = {
+      sku: skuRow.rows[0]?.sku || 0,
+      avg_price: Math.round(parseFloat(skuRow.rows[0]?.avg_price) || 0),
+      locations: branchId ? 1 : (branchRow.rows[0]?.c || 0),
+      // Своя оценка сервиса/рейтинга/онлайн — не отслеживается, базовый ориентир.
+      rating: 4.5,
+      service: 80,
+      online: 70,
+    };
+
+    const { rows } = await pool.query(
+      `SELECT id, name,
+              COALESCE(sku,0)::int AS sku,
+              COALESCE(avg_price,0) AS avg_price,
+              COALESCE(rating,0) AS rating,
+              COALESCE(service,0)::int AS service,
+              COALESCE(locations,0)::int AS locations,
+              COALESCE(online,0)::int AS online,
+              source, updated_at
+       FROM competitors WHERE company_id = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC`,
+      [companyId]
+    );
+    const competitors = rows.map(r => ({
+      ...r,
+      avg_price: Math.round(parseFloat(r.avg_price) || 0),
+      rating: parseFloat(r.rating) || 0,
+    }));
+
+    res.json({ mine, competitors });
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
+
+app.post('/api/marketing/competitors', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const { id, name, sku, avg_price, rating, service, locations, online, source } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+    const vals = [
+      String(name).trim(),
+      parseInt(sku, 10) || 0,
+      parseFloat(avg_price) || 0,
+      parseFloat(rating) || 0,
+      parseInt(service, 10) || 0,
+      parseInt(locations, 10) || 0,
+      parseInt(online, 10) || 0,
+      source ? String(source).trim() : null,
+    ];
+
+    let row;
+    if (id) {
+      const r = await pool.query(
+        `UPDATE competitors
+           SET name=$1, sku=$2, avg_price=$3, rating=$4, service=$5, locations=$6, online=$7, source=$8, updated_at=NOW()
+         WHERE id=$9 AND company_id=$10 RETURNING *`,
+        [...vals, parseInt(id, 10), companyId]
+      );
+      if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
+      row = r.rows[0];
+    } else {
+      const r = await pool.query(
+        `INSERT INTO competitors
+           (company_id, name, sku, avg_price, rating, service, locations, online, source, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) RETURNING *`,
+        [companyId, ...vals]
+      );
+      row = r.rows[0];
+    }
+    res.json(row);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ===================== A/B ТОЧКА (ab-point) =====================
+// Возвращает ТЕКУЩИЕ метрики компании/филиала (точка B). Точку A пользователь
+// фиксирует на фронте (localStorage). Период month|quarter — скользящее окно от now.
+// Источники как у /api/company/dashboard и /api/analytics/founder-dashboard:
+//   stock_outcome status='approved' (выручка/себестоимость/сделки), users (штат),
+//   customers (клиенты), повторные/retention/LTV по customer_id.
+app.get('/api/analytics/ab-point', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null (менеджер пинится своим филиалом)
+    const period = req.query.period === 'quarter' ? 'quarter' : 'month';
+    const days = period === 'quarter' ? 90 : 30;
+
+    const now = new Date();
+    const to = new Date(now);
+    const from = new Date(now); from.setDate(from.getDate() - days); from.setHours(0, 0, 0, 0);
+    const fromIso = from.toISOString(), toIso = to.toISOString();
+
+    // Набор филиалов: один (если выбран) или все филиалы компании.
+    let branchesQ;
+    if (branchId) {
+      branchesQ = await pool.query('SELECT id FROM branches WHERE id=$1 AND company_id=$2', [branchId, companyId]);
+    } else {
+      branchesQ = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    }
+    const ids = branchesQ.rows.map(r => r.id);
+    if (!ids.length) {
+      return res.json({
+        period, as_of: toIso, range: { from: fromIso, to: toIso },
+        metrics: { revenue: 0, profit: 0, margin: 0, avg_check: 0, deals: 0, employees: 0, customers: 0, repeat_customers: 0, retention: 0, ltv: 0 },
+      });
+    }
+
+    const [salesQ, staffQ, custQ, repeatQ, ltvQ, retPrevQ, retCurQ] = await Promise.all([
+      // Выручка/себестоимость/сделки за период.
+      pool.query(`
+        SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+               COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
+               COUNT(*) AS deals
+        FROM stock_outcome so JOIN products p ON p.id = so.product_id
+        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
+        [ids, fromIso, toIso]),
+      // Штат по выбранным филиалам.
+      pool.query(`SELECT COUNT(*) AS c FROM users WHERE branch_id = ANY($1::int[])`, [ids]),
+      // Уникальные клиенты периода (покупали).
+      pool.query(`SELECT COUNT(DISTINCT customer_id) AS c FROM stock_outcome
+                  WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND customer_id IS NOT NULL`,
+        [ids, fromIso, toIso]),
+      // Повторные клиенты периода — 2+ approved-заказа за окно.
+      pool.query(`SELECT COUNT(*) AS c FROM (
+                    SELECT customer_id FROM stock_outcome
+                    WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND customer_id IS NOT NULL
+                    GROUP BY customer_id HAVING COUNT(*) >= 2) t`,
+        [ids, fromIso, toIso]),
+      // LTV — средняя суммарная выручка на клиента за всё время (по выбранным филиалам).
+      pool.query(`SELECT COALESCE(AVG(rev), 0) AS ltv FROM (
+                    SELECT customer_id, SUM(so.quantity * so.price) AS rev
+                    FROM stock_outcome so
+                    WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.customer_id IS NOT NULL
+                    GROUP BY customer_id) t`,
+        [ids]),
+      // Retention: клиенты предыдущего окна (для расчёта удержания).
+      pool.query(`SELECT DISTINCT customer_id FROM stock_outcome
+                  WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND customer_id IS NOT NULL`,
+        [ids, new Date(from.getTime() - days * 86400000).toISOString(), fromIso]),
+      // Retention: клиенты текущего окна (множество).
+      pool.query(`SELECT DISTINCT customer_id FROM stock_outcome
+                  WHERE status='approved' AND branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND customer_id IS NOT NULL`,
+        [ids, fromIso, toIso]),
+    ]);
+
+    const sRow = salesQ.rows[0] || {};
+    const revenue = parseFloat(sRow.revenue) || 0;
+    const cost = parseFloat(sRow.cost) || 0;
+    const deals = parseInt(sRow.deals, 10) || 0;
+    const profit = revenue - cost;
+    const margin = revenue > 0 ? Math.round((profit / revenue) * 1000) / 10 : 0;
+    const avg_check = deals > 0 ? Math.round(revenue / deals) : 0;
+    const employees = parseInt(staffQ.rows[0]?.c || 0, 10);
+    const customers = parseInt(custQ.rows[0]?.c || 0, 10);
+    const repeat_customers = parseInt(repeatQ.rows[0]?.c || 0, 10);
+    const ltv = Math.round(parseFloat(ltvQ.rows[0]?.ltv) || 0);
+
+    // Retention % = доля клиентов прошлого окна, вернувшихся в текущем окне.
+    const prevSet = new Set(retPrevQ.rows.map(r => r.customer_id));
+    const curSet = new Set(retCurQ.rows.map(r => r.customer_id));
+    let retained = 0;
+    prevSet.forEach(id => { if (curSet.has(id)) retained++; });
+    const retention = prevSet.size > 0 ? Math.round((retained / prevSet.size) * 1000) / 10 : 0;
+
+    res.json({
+      period,
+      as_of: toIso,
+      range: { from: fromIso, to: toIso },
+      metrics: {
+        revenue, profit, margin, avg_check,
+        deals, employees,
+        customers, repeat_customers, retention, ltv,
+      },
+    });
+  } catch (e) {
+    console.error('ab-point error', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === ПОЛИЦИЯ МАГАЗИНА (store-police) — авто-детектор аномалий/махинаций ===
+// Алерты вычисляются НА ЛЕТУ из существующих данных за период:
+//   1) suspicious-строки журнала audit_log (скидки >15%, возвраты, изменения цены, удаления/списания);
+//   2) отменённые продажи stock_outcome status='rejected' (много отмен у продавца).
+// Каждому алерту присваивается ДЕТЕРМИНИРОВАННЫЙ строковый id (src:key), чтобы статус
+// (resolved/ignored), сохранённый в police_alerts, мог быть смёржен при следующем чтении.
+app.get('/api/police/alerts', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const days = req.query.period === 'day' ? 1 : req.query.period === 'week' ? 7 : req.query.period === 'year' ? 365 : 30;
+    const branchAL = branchId ? `AND al.branch_id = ${parseInt(branchId)}` : '';
+    const branchSO = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    // 1) Подозрительные операции из журнала (одна строка = один алерт).
+    const susQ = await pool.query(`
+      SELECT al.id, al.created_at, al.user_id, al.branch_id, al.action, al.entity_type,
+             al.suspicious_reason,
+             COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), al.username) AS employee_name,
+             b.name AS branch_name
+      FROM audit_log al
+      LEFT JOIN users u    ON u.id = al.user_id
+      LEFT JOIN branches b ON b.id = al.branch_id
+      WHERE al.company_id = $1 AND al.is_suspicious = true
+        AND al.created_at >= NOW() - ($2 || ' days')::interval
+        ${branchAL}
+      ORDER BY al.created_at DESC
+      LIMIT 500
+    `, [companyId, days]);
+
+    // 2) Отменённые продажи (status='rejected') — группируем по продавцу: «много отмен».
+    const cancQ = await pool.query(`
+      SELECT so.created_by AS user_id, so.branch_id,
+             COUNT(*)::int AS cnt,
+             COALESCE(SUM(so.quantity * so.price), 0) AS lost,
+             MAX(so.created_at) AS last_at,
+             COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.username) AS employee_name,
+             b.name AS branch_name
+      FROM stock_outcome so
+      LEFT JOIN users u    ON u.id = so.created_by
+      LEFT JOIN branches b ON b.id = so.branch_id
+      WHERE b.company_id = $1 AND so.status = 'rejected'
+        AND so.created_at >= NOW() - ($2 || ' days')::interval
+        ${branchSO}
+      GROUP BY so.created_by, so.branch_id, employee_name, b.name
+      HAVING COUNT(*) >= 3
+      ORDER BY cnt DESC
+      LIMIT 100
+    `, [companyId, days]);
+
+    // Сохранённые статусы (resolved/ignored) для дедупа.
+    const ovrQ = await pool.query(
+      `SELECT rule_code AS id, status FROM police_alerts WHERE company_id = $1 AND status IN ('resolved','ignored')`,
+      [companyId]
+    );
+    const overrides = {};
+    for (const r of ovrQ.rows) overrides[r.id] = r.status;
+
+    // Классификация причины → severity + человекочитаемый заголовок.
+    function classify(reason, action) {
+      const r = String(reason || '').toLowerCase();
+      if (r.includes('скидк')) return { code: 'high_discount', title: 'Высокая скидка', sev: 'medium' };
+      if (r.includes('возврат')) return { code: 'frequent_return', title: 'Возврат товара', sev: 'medium' };
+      if (r.includes('изменение цены') || r.includes('price')) return { code: 'price_change', title: 'Изменение цены', sev: 'medium' };
+      if (r.includes('списание') || r.includes('удаление')) return { code: 'write_off', title: 'Списание / удаление', sev: 'high' };
+      return { code: 'suspicious_op', title: 'Подозрительная операция', sev: 'low' };
+    }
+
+    const alerts = [];
+
+    for (const r of susQ.rows) {
+      const c = classify(r.suspicious_reason, r.action);
+      const id = `al:${r.id}`;
+      const status = overrides[id] || 'new';
+      alerts.push({
+        id, severity: c.sev, rule_code: c.code,
+        title: c.title,
+        description: r.suspicious_reason || c.title,
+        est_loss: 0,
+        employee_id: r.user_id || null,
+        employee_name: r.employee_name || null,
+        branch_id: r.branch_id || null,
+        branch_name: r.branch_name || null,
+        created_at: r.created_at,
+        status,
+      });
+    }
+
+    for (const r of cancQ.rows) {
+      const id = `canc:${r.user_id || 0}:${r.branch_id || 0}`;
+      const status = overrides[id] || 'new';
+      const lost = Math.round(parseFloat(r.lost) || 0);
+      const sev = r.cnt >= 8 ? 'high' : 'medium';
+      alerts.push({
+        id, severity: sev, rule_code: 'many_cancels',
+        title: 'Много отмен продаж',
+        description: `Отменено продаж: ${r.cnt} за период (потенциальная упущенная выручка ≈ ${lost.toLocaleString('ru-RU')} сум)`,
+        est_loss: lost,
+        employee_id: r.user_id || null,
+        employee_name: r.employee_name || null,
+        branch_id: r.branch_id || null,
+        branch_name: r.branch_name || null,
+        created_at: r.last_at,
+        status,
+      });
+    }
+
+    // Сортировка: новые сверху, по серьёзности, затем по дате.
+    const sevRank = { high: 0, medium: 1, low: 2 };
+    alerts.sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'new' ? -1 : 1;
+      if (sevRank[a.severity] !== sevRank[b.severity]) return sevRank[a.severity] - sevRank[b.severity];
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    // KPI.
+    const active = alerts.filter(a => a.status !== 'ignored');
+    const kpi = {
+      alerts_total: active.length,
+      alerts_high: active.filter(a => a.severity === 'high').length,
+      est_loss_total: active.reduce((s, a) => s + (a.est_loss || 0), 0),
+    };
+
+    // Горячие точки — агрегируем активные алерты по сотруднику.
+    const hotMap = {};
+    for (const a of active) {
+      const key = a.employee_id || ('b' + (a.branch_id || 0));
+      if (!hotMap[key]) hotMap[key] = { name: a.employee_name || (a.branch_name ? a.branch_name : '—'), branch_name: a.employee_name ? a.branch_name : null, alerts: 0, high: 0, est_loss: 0 };
+      hotMap[key].alerts++;
+      if (a.severity === 'high') hotMap[key].high++;
+      hotMap[key].est_loss += a.est_loss || 0;
+    }
+    const hotspots = Object.values(hotMap).sort((a, b) => b.alerts - a.alerts).slice(0, 10);
+
+    res.json({ kpi, alerts, hotspots });
+  } catch (e) {
+    console.error('police/alerts err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST статус алерта (resolve/ignore). id — детерминированный строковый ключ алерта.
+// Upsert по (company_id, rule_code=id): сохраняем только статус и метаданные для аудита.
+app.post('/api/police/alerts/:id/status', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const alertKey = String(req.params.id || '').slice(0, 120);
+    const status = req.body.status;
+    if (!['resolved', 'ignored', 'new'].includes(status)) return res.status(400).json({ error: 'bad status' });
+    if (!alertKey) return res.status(400).json({ error: 'no id' });
+
+    const branchId = req.body.branch_id ? parseInt(req.body.branch_id, 10) : null;
+    const employeeId = req.body.employee_id ? parseInt(req.body.employee_id, 10) : null;
+    const severity = String(req.body.severity || 'low').slice(0, 16);
+    const title = String(req.body.title || '').slice(0, 255);
+    const description = String(req.body.description || '').slice(0, 1000);
+    const estLoss = Math.round(parseFloat(req.body.est_loss) || 0);
+
+    await pool.query(`
+      INSERT INTO police_alerts (company_id, branch_id, employee_id, severity, title, description, est_loss, rule_code, status, created_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NOW())
+      ON CONFLICT (company_id, rule_code) DO UPDATE
+        SET status = EXCLUDED.status, severity = EXCLUDED.severity, title = EXCLUDED.title,
+            description = EXCLUDED.description, est_loss = EXCLUDED.est_loss,
+            branch_id = EXCLUDED.branch_id, employee_id = EXCLUDED.employee_id
+    `, [companyId, branchId, employeeId, severity, title, description, estLoss, alertKey, status]);
+
+    res.json({ ok: true, id: alertKey, status });
+  } catch (e) {
+    console.error('police/alerts/status err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== Волна 3 инструментов =====
+// ===== HR: Здоровье сотрудника (детектор выгорания) =====
+// Считает единый score 0-100 из рабочих сигналов за период (неделя/месяц/квартал)
+// + тренд за 30 дней (score последних 15 дней vs предыдущих 15).
+// Факторы: продуктивность (выручка/смену), пунктуальность (вовремя/смены),
+// баланс переработок, стабильность результата (CV дневной выручки),
+// отсутствие прогулов, выполнение задач. БЕЗ новых таблиц.
+// ── HR-критерии: учредитель/директор/менеджер сами задают правила для «Рабочего дня»,
+// «Здоровья сотрудника» и «Анализа увольнения». Хранятся в companies.hr_criteria (jsonb).
+const HR_CRITERIA_DEFAULTS = {
+  workday: { day_start: 9, day_end: 19 },
+  fire:    { keep: 70, watch: 45, w_conversion: 45, w_avg_check: 30, w_discipline: 25 },
+  health:  { risk_low: 60, risk_mid: 75 },
+};
+async function getHrCriteria(companyId) {
+  let saved = {};
+  if (companyId) {
+    try { const { rows } = await pool.query("SELECT COALESCE(hr_criteria,'{}'::jsonb) AS c FROM companies WHERE id=$1", [companyId]); saved = rows[0]?.c || {}; } catch {}
+  }
+  return {
+    workday: { ...HR_CRITERIA_DEFAULTS.workday, ...(saved.workday || {}) },
+    fire:    { ...HR_CRITERIA_DEFAULTS.fire,    ...(saved.fire || {}) },
+    health:  { ...HR_CRITERIA_DEFAULTS.health,  ...(saved.health || {}) },
+  };
+}
+
+app.get('/api/hr/criteria', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+  try { res.json({ ...(await getHrCriteria(req.user.company_id)), defaults: HR_CRITERIA_DEFAULTS }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/hr/criteria', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
+    const b = req.body || {};
+    const cur = await getHrCriteria(req.user.company_id);
+    const num = (v, def, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
+    const next = {
+      workday: {
+        day_start: num(b.workday?.day_start, cur.workday.day_start, 0, 23),
+        day_end:   num(b.workday?.day_end,   cur.workday.day_end,   1, 24),
+      },
+      fire: {
+        keep:         num(b.fire?.keep,         cur.fire.keep,         1, 100),
+        watch:        num(b.fire?.watch,        cur.fire.watch,        0, 99),
+        w_conversion: num(b.fire?.w_conversion, cur.fire.w_conversion, 0, 100),
+        w_avg_check:  num(b.fire?.w_avg_check,  cur.fire.w_avg_check,  0, 100),
+        w_discipline: num(b.fire?.w_discipline, cur.fire.w_discipline, 0, 100),
+      },
+      health: {
+        risk_low: num(b.health?.risk_low, cur.health.risk_low, 0, 99),
+        risk_mid: num(b.health?.risk_mid, cur.health.risk_mid, 1, 100),
+      },
+    };
+    // Здравый смысл: watch < keep, начало < конец, low < mid.
+    if (next.fire.watch >= next.fire.keep) next.fire.watch = Math.max(0, next.fire.keep - 1);
+    if (next.workday.day_start >= next.workday.day_end) next.workday.day_end = Math.min(24, next.workday.day_start + 1);
+    if (next.health.risk_low >= next.health.risk_mid) next.health.risk_low = Math.max(0, next.health.risk_mid - 1);
+    await pool.query('UPDATE companies SET hr_criteria=$1 WHERE id=$2', [JSON.stringify(next), req.user.company_id]);
+    audit(req, 'update', 'company', req.user.company_id, null, { hr_criteria: true }, { module: 'hr', description: 'Изменены HR-критерии' });
+    res.json({ ok: true, ...next });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.get('/api/hr/employee-health', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
+    const period = ['week', 'month', 'quarter'].includes(req.query.period) ? req.query.period : 'month';
+    const periodDays = { week: 7, month: 30, quarter: 90 }[period];
+
+    const ROLE_RU = {
+      founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер',
+      cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец', admin: 'Администратор',
+    };
+
+    // attendance фильтр по branch (есть company_id и branch_id напрямую)
+    const aParams = [companyId];
+    let aBranch = '';
+    if (branchId) { aParams.push(branchId); aBranch = ` AND a.branch_id = $${aParams.length}`; }
+
+    // stock_outcome НЕ имеет company_id — фильтруем через JOIN branches
+    const soBranchSQL = branchId ? `AND so.branch_id = ${parseInt(branchId)}` : '';
+
+    const nameExpr = "COALESCE(NULLIF(TRIM(u.first_name||' '||u.last_name),''), u.username)";
+
+    // 1) Явка за период по сотруднику: смены, вовремя, опоздания, прогулы, переработки.
+    // Плановые часы смены = planned_end - planned_start; переработка = факт.часы сверх плана.
+    const attQ = await pool.query(`
+      SELECT a.employee_id AS uid, ${nameExpr} AS name, u.username, u.role,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late','absent')) AS shifts,
+             COUNT(*) FILTER (WHERE a.status='present' AND COALESCE(a.late_minutes,0)=0) AS on_time,
+             COUNT(*) FILTER (WHERE a.status='absent') AS absents,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late')) AS worked_shifts,
+             COALESCE(SUM(GREATEST(a.hours - NULLIF(EXTRACT(EPOCH FROM (a.planned_end - a.planned_start))/3600,0), 0)),0) AS overtime_hours,
+             COALESCE(SUM(a.hours) FILTER (WHERE a.status IN ('present','late')),0) AS total_hours
+        FROM attendance a
+        JOIN users u ON u.id = a.employee_id
+       WHERE a.company_id=$1 ${aBranch}
+         AND a.work_date >= CURRENT_DATE - INTERVAL '${periodDays} days'
+         AND a.employee_id IS NOT NULL
+       GROUP BY a.employee_id, name, u.username, u.role`, aParams);
+
+    // 2) Продажи за период по продавцу (created_by): выручка + дневная разбивка для стабильности.
+    const salesQ = await pool.query(`
+      SELECT so.created_by AS uid,
+             so.created_at::date AS day,
+             COALESCE(SUM(so.quantity * so.price),0) AS rev
+        FROM stock_outcome so
+        JOIN branches b ON b.id = so.branch_id
+       WHERE b.company_id = $1 ${soBranchSQL}
+         AND so.status='approved' AND so.outcome_type='sale'
+         AND so.created_by IS NOT NULL
+         AND so.created_at >= CURRENT_DATE - INTERVAL '${periodDays} days'
+       GROUP BY so.created_by, so.created_at::date`, [companyId]);
+
+    // 3) Задачи за период по исполнителю: всего vs выполнено.
+    const taskQ = await pool.query(`
+      SELECT t.assignee_id AS uid,
+             COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE t.status='done') AS done
+        FROM tasks t
+       WHERE t.company_id = $1 ${branchId ? `AND t.branch_id = ${parseInt(branchId)}` : ''}
+         AND t.assignee_id IS NOT NULL
+         AND t.created_at >= CURRENT_DATE - INTERVAL '${periodDays} days'
+       GROUP BY t.assignee_id`, [companyId]);
+
+    // 4) Тренд 30 дней: средняя дневная выручка по сотруднику за послед. 15 дней vs предыдущие 15.
+    const trendQ = await pool.query(`
+      SELECT so.created_by AS uid,
+             COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.created_at >= CURRENT_DATE - INTERVAL '15 days'),0) AS recent_rev,
+             COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.created_at <  CURRENT_DATE - INTERVAL '15 days'),0) AS prev_rev
+        FROM stock_outcome so
+        JOIN branches b ON b.id = so.branch_id
+       WHERE b.company_id = $1 ${soBranchSQL}
+         AND so.status='approved' AND so.outcome_type='sale'
+         AND so.created_by IS NOT NULL
+         AND so.created_at >= CURRENT_DATE - INTERVAL '30 days'
+       GROUP BY so.created_by`, [companyId]);
+
+    // ---- Сборка по сотрудникам (база — те, у кого есть явка) ----
+    const salesByUid = {}; // uid -> [day rev, ...]
+    for (const r of salesQ.rows) {
+      const uid = r.uid;
+      (salesByUid[uid] = salesByUid[uid] || []).push(parseFloat(r.rev) || 0);
+    }
+    const tasksByUid = {};
+    for (const r of taskQ.rows) tasksByUid[r.uid] = { total: parseInt(r.total) || 0, done: parseInt(r.done) || 0 };
+    const trendByUid = {};
+    for (const r of trendQ.rows) trendByUid[r.uid] = { recent: parseFloat(r.recent_rev) || 0, prev: parseFloat(r.prev_rev) || 0 };
+
+    // Эталон продуктивности: медианная выручка/смену по компании (для нормировки 0-100).
+    const perShiftList = [];
+    for (const a of attQ.rows) {
+      const shifts = parseInt(a.worked_shifts) || 0;
+      const revs = salesByUid[a.uid] || [];
+      const totalRev = revs.reduce((s, v) => s + v, 0);
+      if (shifts > 0 && totalRev > 0) perShiftList.push(totalRev / shifts);
+    }
+    perShiftList.sort((x, y) => x - y);
+    const medianPerShift = perShiftList.length
+      ? perShiftList[Math.floor(perShiftList.length / 2)]
+      : 0;
+    const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
+    const _hh = (await getHrCriteria(companyId)).health; // пороги зон здоровья — настраиваются
+
+    const employees = attQ.rows.map(a => {
+      const shifts = parseInt(a.shifts) || 0;
+      const worked = parseInt(a.worked_shifts) || 0;
+      const onTime = parseInt(a.on_time) || 0;
+      const absents = parseInt(a.absents) || 0;
+      const overtime = parseFloat(a.overtime_hours) || 0;
+      const revs = salesByUid[a.uid] || [];
+      const totalRev = revs.reduce((s, v) => s + v, 0);
+
+      // Пунктуальность = вовремя / смены * 100
+      const punctuality = shifts > 0 ? (onTime / shifts) * 100 : 100;
+      // Отсутствие прогулов = (1 - прогулы/смены) * 100
+      const absence = shifts > 0 ? (1 - absents / shifts) * 100 : 100;
+      // Продуктивность = выручка-на-смену относительно медианы (медиана=70, кратно сверх — выше)
+      const perShift = worked > 0 ? totalRev / worked : 0;
+      let productivity;
+      if (medianPerShift > 0) productivity = clamp((perShift / medianPerShift) * 70);
+      else productivity = totalRev > 0 ? 70 : 50;
+      // Баланс переработок: 0 переработок = 100; чем больше переработка/смену, тем ниже (штраф до 0 при >=3ч/смену).
+      const otPerShift = worked > 0 ? overtime / worked : 0;
+      const overtimeBal = clamp(100 - (otPerShift / 3) * 100);
+      // Стабильность результата = 100 - CV(дневной выручки)*100; мало точек -> нейтрально.
+      let stability;
+      if (revs.length >= 3) {
+        const mean = totalRev / revs.length;
+        const variance = revs.reduce((s, v) => s + (v - mean) ** 2, 0) / revs.length;
+        const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+        stability = clamp(100 - cv * 60);
+      } else stability = 60;
+      // Выполнение задач = done/total*100; нет задач -> нейтрально.
+      const tk = tasksByUid[a.uid];
+      const tasks = tk && tk.total > 0 ? (tk.done / tk.total) * 100 : 70;
+
+      const factors = {
+        productivity: clamp(productivity),
+        punctuality: clamp(punctuality),
+        overtime: clamp(overtimeBal),
+        stability: clamp(stability),
+        absence: clamp(absence),
+        tasks: clamp(tasks),
+      };
+      // Взвешенный score (продуктивность и пунктуальность важнее).
+      const W = { productivity: 0.25, punctuality: 0.2, overtime: 0.15, stability: 0.15, absence: 0.15, tasks: 0.1 };
+      let score = 0;
+      for (const k of Object.keys(W)) score += factors[k] * W[k];
+      score = clamp(score);
+
+      // Тренд 30д: разница нормированной продуктивности recent vs prev (в пунктах score).
+      const tr = trendByUid[a.uid];
+      let trend30 = 0;
+      if (tr && (tr.recent > 0 || tr.prev > 0)) {
+        const denom = Math.max(tr.prev, 1);
+        trend30 = Math.round(Math.max(-30, Math.min(30, ((tr.recent - tr.prev) / denom) * 30)));
+      }
+
+      const zone = score < _hh.risk_low ? 'risk' : score < _hh.risk_mid ? 'warn' : 'ok';
+      return {
+        id: a.uid,
+        name: a.name,
+        username: a.username,
+        role: a.role,
+        role_ru: ROLE_RU[a.role] || a.role,
+        score,
+        trend_30d: trend30,
+        zone,
+        factors,
+      };
+    });
+
+    employees.sort((x, y) => x.score - y.score); // худшие сверху — кому нужна помощь
+
+    const total = employees.length;
+    const avgScore = total ? Math.round(employees.reduce((s, e) => s + e.score, 0) / total) : 0;
+    const avgTrend = total ? Math.round(employees.reduce((s, e) => s + e.trend_30d, 0) / total) : 0;
+    const atRisk = employees.filter(e => e.score < _hh.risk_low).length;
+
+    res.json({
+      period,
+      summary: { avg_score: avgScore, trend_30d: avgTrend, at_risk: atRisk, total },
+      employees,
+    });
+  } catch (e) {
+    console.error('hr/employee-health err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== HR: Карта рабочего дня (workday-map) =====
+// Таймлайн дня каждого сотрудника: рабочее окно из attendance (приход/уход),
+// активные часы = часы рабочего окна, в которых были продажи продавца (stock_outcome),
+// простой = часы окна без продаж. Окно карты: 9:00-19:00. БЕЗ новых таблиц.
+app.get('/api/hr/workday-map', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
+
+    const _wd = (await getHrCriteria(companyId)).workday; // рабочее окно — настраивается учредителем/менеджером
+    const DAY_START = _wd.day_start, DAY_END = _wd.day_end;
+
+    // Диапазон: 'today' = текущий день, 'week' = с начала недели.
+    const range = req.query.date === 'week' ? 'week' : 'today';
+    const dateSQL_att = range === 'week'
+      ? "a.work_date >= date_trunc('week', CURRENT_DATE) AND a.work_date <= CURRENT_DATE"
+      : "a.work_date = CURRENT_DATE";
+    const dateSQL_so = range === 'week'
+      ? "so.created_at >= date_trunc('week', CURRENT_DATE)"
+      : "so.created_at::date = CURRENT_DATE";
+
+    const nameExpr = "COALESCE(NULLIF(TRIM(u.first_name||' '||u.last_name),''), u.username)";
+
+    // 1) Рабочее окно сотрудников из attendance (есть company_id и branch_id напрямую).
+    const attParams = [companyId];
+    let attBranch = '';
+    if (branchId) { attParams.push(branchId); attBranch = ` AND a.branch_id = $${attParams.length}`; }
+    const attQ = await pool.query(`
+      SELECT a.employee_id AS uid,
+             u.username,
+             ${nameExpr} AS name,
+             MIN(EXTRACT(HOUR FROM a.actual_start))::numeric AS start_h,
+             MAX(EXTRACT(HOUR FROM a.actual_end) + EXTRACT(MINUTE FROM a.actual_end)/60.0)::numeric AS end_h
+        FROM attendance a
+        JOIN users u ON u.id = a.employee_id
+       WHERE a.company_id = $1 ${attBranch}
+         AND ${dateSQL_att}
+         AND a.status IN ('present','late')
+         AND a.actual_start IS NOT NULL
+       GROUP BY a.employee_id, u.username, ${nameExpr}`, attParams);
+
+    // 2) Часы с продажами по продавцу (stock_outcome НЕ имеет company_id —
+    //    фильтруем через JOIN branches b ON b.id = so.branch_id WHERE b.company_id=$1).
+    const soParams = [companyId];
+    let soBranch = '';
+    if (branchId) { soParams.push(branchId); soBranch = ` AND so.branch_id = $${soParams.length}`; }
+    const salesQ = await pool.query(`
+      SELECT so.created_by AS uid,
+             u.username,
+             ${nameExpr} AS name,
+             EXTRACT(HOUR FROM so.created_at)::int AS hour,
+             COUNT(*) AS cnt
+        FROM stock_outcome so
+        JOIN branches b ON b.id = so.branch_id
+        JOIN users u ON u.id = so.created_by
+       WHERE b.company_id = $1 ${soBranch}
+         AND so.status = 'approved'
+         AND so.created_by IS NOT NULL
+         AND ${dateSQL_so}
+       GROUP BY so.created_by, u.username, ${nameExpr}, EXTRACT(HOUR FROM so.created_at)`, soParams);
+
+    // Объединяем сотрудников из явки и из продаж.
+    const emp = new Map(); // uid -> { uid, username, name, activeHours:Set, hasAtt, start, end }
+    const ensure = (uid, username, name) => {
+      if (!emp.has(uid)) emp.set(uid, { uid, username, name, activeHours: new Set(), hasAtt: false, start: null, end: null });
+      return emp.get(uid);
+    };
+    for (const r of attQ.rows) {
+      const e = ensure(r.uid, r.username, r.name);
+      e.hasAtt = true;
+      e.start = r.start_h != null ? Math.floor(Number(r.start_h)) : null;
+      e.end = r.end_h != null ? Math.ceil(Number(r.end_h)) : null;
+    }
+    for (const r of salesQ.rows) {
+      const e = ensure(r.uid, r.username, r.name);
+      if (r.hour != null) e.activeHours.add(parseInt(r.hour, 10));
+    }
+
+    const clamp = (h) => Math.min(DAY_END, Math.max(DAY_START, h));
+
+    const employees = [];
+    for (const e of emp.values()) {
+      // Рабочее окно: из явки (с обрезкой по 9-19) либо дефолт 9-19 если явки нет.
+      let ws = e.hasAtt && e.start != null ? clamp(e.start) : DAY_START;
+      let we = e.hasAtt && e.end != null ? clamp(e.end) : DAY_END;
+      if (we <= ws) { ws = DAY_START; we = DAY_END; }
+      const windowHours = we - ws;
+
+      // Активные часы — только те, что попадают в рабочее окно.
+      const active = new Set([...e.activeHours].filter(h => h >= ws && h < we));
+      const activeHours = active.size;
+      const idleHours = Math.max(0, windowHours - activeHours);
+      const prodPct = windowHours > 0 ? Math.round((activeHours / windowHours) * 100) : 0;
+
+      // Сегменты по часам: work (есть продажи), break (обед 13:00-14:00 если без продаж), idle (остальное).
+      const segs = [];
+      for (let h = ws; h < we; h++) {
+        let cat;
+        if (active.has(h)) cat = 'work';
+        else if (h === 13) cat = 'break';
+        else cat = 'idle';
+        const last = segs[segs.length - 1];
+        if (last && last.cat === cat && last.end === h) last.end = h + 1;
+        else segs.push({ cat, start: h, end: h + 1 });
+      }
+
+      employees.push({
+        id: e.uid,
+        name: e.name,
+        username: e.username,
+        window_start: ws,
+        window_end: we,
+        active_hours: activeHours,
+        idle_hours: idleHours,
+        productivity_pct: prodPct,
+        segments: segs,
+      });
+    }
+
+    employees.sort((a, b) => b.productivity_pct - a.productivity_pct);
+
+    // KPI
+    let kpi = { avg_productivity_pct: 0, avg_idle_hours: 0, best: null, worst: null };
+    if (employees.length) {
+      const avgProd = Math.round(employees.reduce((s, e) => s + e.productivity_pct, 0) / employees.length);
+      const avgIdle = Math.round((employees.reduce((s, e) => s + e.idle_hours, 0) / employees.length) * 10) / 10;
+      const best = employees[0];
+      const worst = employees[employees.length - 1];
+      kpi = {
+        avg_productivity_pct: avgProd,
+        avg_idle_hours: avgIdle,
+        best: { name: best.name, productivity_pct: best.productivity_pct },
+        worst: { name: worst.name, productivity_pct: worst.productivity_pct },
+      };
+    }
+
+    res.json({ range, employees, kpi });
+  } catch (e) {
+    console.error('hr/workday-map err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/hr/fire-analysis', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const branchId = getBranchFilter(req.user, req.query);
+    const period = ['month', 'quarter'].includes(req.query.period) ? req.query.period : 'month';
+    const days = period === 'quarter' ? 90 : 30;
+    // scope=store жёстко требует один филиал; если охват «магазин», но филиал не выбран
+    // (владелец без branchId) — менеджер всё равно скоупится своим филиалом через getBranchFilter.
+    const scope = req.query.scope === 'store' ? 'store' : 'network';
+
+    // Период по выручке/чекам — скользящее окно; filter по филиалу через JOIN branches,
+    // т.к. у stock_outcome НЕТ company_id (только branch_id).
+    const soParams = [companyId];
+    let soBranch = '';
+    if (branchId) { soParams.push(branchId); soBranch = `AND so.branch_id = $${soParams.length}`; }
+    const sinceSO = `AND so.created_at >= NOW() - INTERVAL '${days} days'`;
+
+    // 1) По продавцу: выручка, число чеков (группируем строки одной продажи в чек по
+    //    created_by + customer_id + минута), средний чек. status='approved', sale.
+    const salesQ = await pool.query(`
+      WITH lines AS (
+        SELECT so.created_by AS uid, so.branch_id,
+               (so.quantity * so.price) AS amount,
+               so.customer_id,
+               date_trunc('minute', so.created_at) AS receipt_min
+        FROM stock_outcome so
+        JOIN branches b ON b.id = so.branch_id AND b.company_id = $1
+        WHERE so.status = 'approved' AND so.outcome_type = 'sale'
+          AND so.created_by IS NOT NULL ${sinceSO} ${soBranch}
+      ),
+      receipts AS (
+        SELECT uid, branch_id, receipt_min,
+               COALESCE(customer_id::text, receipt_min::text) AS rkey,
+               SUM(amount) AS receipt_amount
+        FROM lines
+        GROUP BY uid, branch_id, receipt_min, COALESCE(customer_id::text, receipt_min::text)
+      )
+      SELECT uid, branch_id,
+             COUNT(*)              AS checks,
+             SUM(receipt_amount)   AS revenue,
+             AVG(receipt_amount)   AS avg_check
+      FROM receipts
+      GROUP BY uid, branch_id`, soParams);
+
+    const byUid = new Map();
+    for (const r of salesQ.rows) {
+      const uid = r.uid;
+      const checks = parseInt(r.checks, 10) || 0;
+      const revenue = parseFloat(r.revenue) || 0;
+      const prev = byUid.get(uid) || { checks: 0, revenue: 0, branch_id: r.branch_id };
+      prev.checks += checks;
+      prev.revenue += revenue;
+      if (!prev.branch_id) prev.branch_id = r.branch_id;
+      byUid.set(uid, prev);
+    }
+    for (const v of byUid.values()) v.avg_check = v.checks > 0 ? Math.round(v.revenue / v.checks) : 0;
+
+    // 2) Визиты по филиалу из funnel_inputs за период (если есть). Конверсия продавца =
+    //    его чеки / (визиты филиала * доля чеков продавца в филиале). Если визитов нет —
+    //    конверсия = доля чеков продавца среди чеков филиала (относительная, в %).
+    const fParams = [companyId];
+    let fBranch = '';
+    if (branchId) { fParams.push(branchId); fBranch = `AND branch_id = $${fParams.length}`; }
+    const funnelQ = await pool.query(`
+      SELECT COALESCE(branch_id, 0) AS branch_id, SUM(visitors) AS visitors
+      FROM funnel_inputs
+      WHERE company_id = $1 AND period >= date_trunc('month', NOW() - INTERVAL '${days} days') ${fBranch}
+      GROUP BY 1`, fParams);
+    const visitsByBranch = new Map();
+    for (const r of funnelQ.rows) visitsByBranch.set(parseInt(r.branch_id, 10), parseInt(r.visitors, 10) || 0);
+
+    // Чеки по филиалу (для распределения визитов и относительной конверсии).
+    const checksByBranch = new Map();
+    for (const [, v] of byUid) checksByBranch.set(v.branch_id, (checksByBranch.get(v.branch_id) || 0) + v.checks);
+
+    // 3) Дисциплина: % явок (present+late) от учтённых дней за период из attendance.
+    const aParams = [companyId];
+    let aBranch = '';
+    if (branchId) { aParams.push(branchId); aBranch = `AND a.branch_id = $${aParams.length}`; }
+    const attQ = await pool.query(`
+      SELECT a.employee_id AS uid,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late','absent')) AS counted,
+             COUNT(*) FILTER (WHERE a.status IN ('present','late'))          AS attended,
+             COUNT(*) FILTER (WHERE a.status='late' OR a.late_minutes>0)     AS lates
+      FROM attendance a
+      WHERE a.company_id = $1 ${aBranch}
+        AND a.work_date >= CURRENT_DATE - INTERVAL '${days} days'
+        AND a.employee_id IS NOT NULL
+      GROUP BY a.employee_id`, aParams);
+    const discByUid = new Map();
+    for (const r of attQ.rows) {
+      const counted = parseInt(r.counted, 10) || 0;
+      const attended = parseInt(r.attended, 10) || 0;
+      const lates = parseInt(r.lates, 10) || 0;
+      // Дисциплина = явка с лёгким штрафом за опоздания.
+      let disc = counted > 0 ? (attended / counted) * 100 : null;
+      if (disc != null && attended > 0) disc = Math.max(0, disc - (lates / attended) * 10);
+      discByUid.set(r.uid, disc != null ? Math.round(disc) : null);
+    }
+
+    // 4) Список сотрудников (продавцы/кассиры — фронт-линия) + филиал.
+    const uParams = [companyId];
+    let uBranch = '';
+    if (branchId) { uParams.push(branchId); uBranch = `AND (u.branch_id = $${uParams.length} OR u.branch_id IS NULL)`; }
+    const usersQ = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.branch_id, b.name AS branch_name
+      FROM users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+      WHERE u.company_id = $1 AND u.role IN ('seller','cashier','manager') ${uBranch}`, uParams);
+
+    // Собираем строки только по тем, у кого есть продажи ИЛИ явка за период.
+    const rawRows = [];
+    for (const u of usersQ.rows) {
+      const s = byUid.get(u.id);
+      const disc = discByUid.has(u.id) ? discByUid.get(u.id) : null;
+      if (!s && disc == null) continue;
+      const checks = s ? s.checks : 0;
+      const revenue = s ? s.revenue : 0;
+      const avgCheck = s ? s.avg_check : 0;
+      const bid = (s && s.branch_id) || u.branch_id || 0;
+
+      // Конверсия
+      const visits = visitsByBranch.get(bid) || 0;
+      const branchChecks = checksByBranch.get(bid) || 0;
+      let conv = null;
+      if (visits > 0 && branchChecks > 0) {
+        // Доля визитов филиала, приписанная продавцу по его доле чеков.
+        const allocVisits = visits * (checks / branchChecks);
+        conv = allocVisits > 0 ? Math.round((checks / allocVisits) * 1000) / 10 : 0;
+      } else if (branchChecks > 0) {
+        // Относительная конверсия: доля чеков продавца среди чеков филиала, %.
+        conv = Math.round((checks / branchChecks) * 1000) / 10;
+      }
+
+      rawRows.push({
+        id: u.id,
+        name: [u.first_name, u.last_name].filter(Boolean).join(' ').trim() || u.username,
+        username: u.username,
+        role: u.role,
+        branch: u.branch_name || null,
+        checks,
+        revenue,
+        avg_check: avgCheck,
+        conversion_pct: conv,
+        discipline_pct: disc,
+      });
+    }
+
+    // Нормализация min-max по группе для каждой метрики -> 0..1.
+    const norm = (vals) => {
+      const present = vals.filter(v => v != null && !isNaN(v));
+      const min = present.length ? Math.min(...present) : 0;
+      const max = present.length ? Math.max(...present) : 0;
+      const span = max - min;
+      return (v) => {
+        if (v == null || isNaN(v)) return 0.5; // нет данных -> нейтрально
+        if (span <= 0) return present.length ? 1 : 0.5;
+        return (v - min) / span;
+      };
+    };
+    const nConv = norm(rawRows.map(r => r.conversion_pct));
+    const nAvg = norm(rawRows.map(r => r.avg_check > 0 ? r.avg_check : null));
+    const nDisc = norm(rawRows.map(r => r.discipline_pct));
+
+    const _fc = (await getHrCriteria(companyId)).fire; // веса и пороги KEEP/WATCH — настраиваются
+    const employees = rawRows.map(r => {
+      const score = (nConv(r.conversion_pct) * (_fc.w_conversion / 100))
+                  + (nAvg(r.avg_check > 0 ? r.avg_check : null) * (_fc.w_avg_check / 100))
+                  + (nDisc(r.discipline_pct) * (_fc.w_discipline / 100));
+      const rating = Math.round(score * 100);
+      const verdict = rating >= _fc.keep ? 'KEEP' : rating >= _fc.watch ? 'WATCH' : 'REPLACE';
+      return { ...r, rating, verdict };
+    }).sort((a, b) => b.rating - a.rating);
+
+    // Окупаемость замены: суммарный разрыв выручки кандидатов на замену до медианы по выручке.
+    const revs = employees.map(e => e.revenue).filter(v => v > 0).sort((a, b) => a - b);
+    const median = revs.length ? revs[Math.floor(revs.length / 2)] : 0;
+    const replacePayback = employees
+      .filter(e => e.verdict === 'REPLACE')
+      .reduce((s, e) => s + Math.max(0, median - e.revenue), 0);
+
+    const summary = {
+      total: employees.length,
+      keep: employees.filter(e => e.verdict === 'KEEP').length,
+      watch: employees.filter(e => e.verdict === 'WATCH').length,
+      replace: employees.filter(e => e.verdict === 'REPLACE').length,
+      replace_payback: Math.round(replacePayback),
+    };
+
+    res.json({ period, scope, summary, employees });
+  } catch (e) {
+    console.error('hr/fire-analysis err', e);
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
+});
 
 app.listen(PORT, () => console.log(`WareApp API running on port ${PORT}`));

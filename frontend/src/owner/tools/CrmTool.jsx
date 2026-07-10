@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
+import { Card, Tile, Badge, PageHeader, fmtMoneyFull } from '../ui.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { CLIENTS, fmt } from '../data.js';
 import { useTt } from '../tt.js';
@@ -17,10 +17,10 @@ export default function CrmTool() {
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Форма добавления — клик ✕ в карточке клиента → «Создать на основе»'), 'info')}>+ {tt('Клиент')}</button>} />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="👥" label={tt('Активных')} value={list.filter(c => c.status === 'active').length} color="#5B4FE8" />
-        <Tile icon="💎" label="VIP" value={list.filter(c => c.tag === 'VIP').length} color="#FF6B2B" />
-        <Tile icon="😴" label={tt('Спящих')} value={list.filter(c => c.status === 'sleeping').length} color="#F59E0B" />
-        <Tile icon="💰" label={tt('Общий LTV')} value={(list.reduce((s, c) => s + c.ltv, 0) / 1e6).toFixed(0) + 'M'} color="#22C55E" />
+        <Tile icon="👥" label={tt('Активных')} value={list.filter(c => c.status === 'active').length} color="#1D4ED8" />
+        <Tile icon="💎" label="VIP" value={list.filter(c => c.tag === 'VIP').length} color="#D97706" />
+        <Tile icon="😴" label={tt('Спящих')} value={list.filter(c => c.status === 'sleeping').length} color="#D97706" />
+        <Tile icon="💰" label={tt('Общий LTV')} value={fmtMoneyFull(list.reduce((s, c) => s + c.ltv, 0))} color="#16A34A" />
       </div>
 
       <Card>
@@ -48,9 +48,9 @@ export default function CrmTool() {
         {open && (
           <>
             <div className="grid-3" style={{ marginBottom: 18 }}>
-              <Tile icon="💰" label="LTV" value={fmt(open.ltv)} sub="UZS" color="#5B4FE8" />
-              <Tile icon="🧾" label={tt('Сделок')} value={open.deals} color="#FF6B2B" />
-              <Tile icon="📅" label={tt('Посл. покупка')} value={open.lastDate.slice(5)} color="#22C55E" />
+              <Tile icon="💰" label="LTV" value={fmt(open.ltv)} sub="UZS" color="#1D4ED8" />
+              <Tile icon="🧾" label={tt('Сделок')} value={open.deals} color="#D97706" />
+              <Tile icon="📅" label={tt('Посл. покупка')} value={open.lastDate.slice(5)} color="#16A34A" />
             </div>
             <div style={{ background: 'var(--bg-2)', borderRadius: 10, padding: 14, marginBottom: 14 }}>
               <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8, fontSize: 13 }}>
@@ -62,10 +62,10 @@ export default function CrmTool() {
             </div>
             <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5 }}>{tt('История взаимодействий')}</div>
             {[
-              { d: open.lastDate, e: tt('Покупка'), n: tt('Бейсболка синяя × 2, Шахматы × 1 · 580K UZS') },
+              { d: open.lastDate, e: tt('Покупка'), n: tt('Бейсболка синяя × 2, Шахматы × 1 · 580 000 UZS') },
               { d: '2026-04-12', e: tt('Звонок'),   n: tt('Уточнение по доставке · 6 мин') },
               { d: '2026-04-10', e: 'NPS',      n: tt('9/10 — «Доставка быстрая, ассортимент богатый»') },
-              { d: '2026-03-28', e: tt('Покупка'),  n: tt('Латун шамдон × 1 · 580K UZS') },
+              { d: '2026-03-28', e: tt('Покупка'),  n: tt('Латун шамдон × 1 · 580 000 UZS') },
               { d: '2026-03-15', e: 'Email',    n: tt('Отправлена акция «Весна-2026»') },
             ].map((h, i) => (
               <div key={i} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>

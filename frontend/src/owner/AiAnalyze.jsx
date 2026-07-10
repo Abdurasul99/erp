@@ -52,7 +52,7 @@ export default function AiAnalyze({ topic, branchId }) {
               <RichText text={analysis} />
             </div>
           )}
-          <style>{`.ai-spinner{width:16px;height:16px;border:2px solid var(--border,#e6e8f2);border-top-color:var(--primary,#5B4FE8);border-radius:50%;display:inline-block;animation:aispin .7s linear infinite}@keyframes aispin{to{transform:rotate(360deg)}}`}</style>
+          <style>{`.ai-spinner{width:16px;height:16px;border:2px solid var(--border,#E3EAF3);border-top-color:var(--primary,#1D4ED8);border-radius:50%;display:inline-block;animation:aispin .7s linear infinite}@keyframes aispin{to{transform:rotate(360deg)}}`}</style>
         </Card>
       )}
     </div>

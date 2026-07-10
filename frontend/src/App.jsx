@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, Suspense, lazy } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import InterfaceSelect from './pages/InterfaceSelect.jsx';
 import SellerBranchPicker from './pages/SellerBranchPicker.jsx';
@@ -61,6 +61,9 @@ function RequireNonSeller({ children }) {
 function RequireNotOwner({ children }) {
   const { user } = useContext(AuthContext);
   if (['founder', 'gen_dir', 'manager'].includes(user?.role)) return <Navigate to="/owner" replace />;
+  // Admin now has a single, dedicated shell at /admin (dashboard + company/staff
+  // management + features + audit). Keep them out of the staff /desktop shell.
+  if (user?.role === 'admin') return <Navigate to="/admin" replace />;
   return children;
 }
 
@@ -68,7 +71,7 @@ function Splash() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(160deg, #1e1b4b 0%, #3730a3 50%, #4338ca 100%)',
+      background: 'linear-gradient(160deg, #0B1640 0%, #16307A 50%, #1E40AF 100%)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: "'Nunito', sans-serif",
     }}>
@@ -78,9 +81,37 @@ function Splash() {
           border: '4px solid rgba(255,255,255,.2)', borderTopColor: '#fff',
           borderRadius: '50%', animation: 'spin 1s linear infinite',
         }} />
-        <div style={{ fontSize: '14px', fontWeight: 700, opacity: .8 }}>ERP System</div>
+        <div style={{ fontSize: '14px', fontWeight: 700, opacity: .8 }}>Wave ERP</div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// Плашка режима «войти как» (WoW). Видна во всех оболочках, пока активна impersonation.
+const IMP_ROLE_LABEL = {
+  founder: 'Учредитель', gen_dir: 'Директор сети', manager: 'Менеджер',
+  cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
+};
+function ImpersonationBanner() {
+  const { user, stopImpersonate } = useContext(AuthContext);
+  const navigate = useNavigate();
+  if (!user?.act_as) return null;
+  const back = () => { stopImpersonate(); navigate('/admin'); };
+  const where = [user.company_name, user.branch_name].filter(Boolean).join(' / ');
+  return (
+    <div style={{
+      position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 99999,
+      background: 'linear-gradient(90deg, #7C3AED 0%, #EC4899 100%)', color: '#fff',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, flexWrap: 'wrap',
+      padding: '9px 16px', fontFamily: "'Nunito', sans-serif", fontWeight: 700, fontSize: 13,
+      boxShadow: '0 -4px 18px rgba(0,0,0,.28)',
+    }}>
+      <span>👁 Режим WoW — вы вошли как <b>{IMP_ROLE_LABEL[user.role] || user.role}</b>{where ? <> · {where}</> : null}</span>
+      <button onClick={back} style={{
+        background: '#fff', color: '#7C3AED', border: 'none', borderRadius: 8,
+        padding: '5px 14px', fontWeight: 800, cursor: 'pointer', fontSize: 12,
+      }}>← Вернуться в WoW</button>
     </div>
   );
 }
@@ -152,7 +183,39 @@ export default function App() {
     localStorage.removeItem('seller_branch_id');
     localStorage.removeItem('seller_branch_name');
     localStorage.removeItem('seller_branch_picked_date');
+    localStorage.removeItem('wow_admin_token');
+    localStorage.removeItem('wow_admin_user');
     setUser(null);
+  };
+
+  // WoW «войти как»: подменяем активную сессию scoped-токеном компании, сохранив
+  // админ-сессию, чтобы можно было вернуться. Бэкенд минтит токен с act_as.
+  const impersonate = (userData, token) => {
+    if (!localStorage.getItem('wow_admin_token')) {
+      localStorage.setItem('wow_admin_token', localStorage.getItem('token') || '');
+      localStorage.setItem('wow_admin_user', localStorage.getItem('user') || '');
+    }
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setUser(userData);
+  };
+
+  // Возврат из режима «войти как» обратно в WoW-админку.
+  const stopImpersonate = () => {
+    const t = localStorage.getItem('wow_admin_token');
+    const u = localStorage.getItem('wow_admin_user');
+    localStorage.removeItem('wow_admin_token');
+    localStorage.removeItem('wow_admin_user');
+    localStorage.removeItem('seller_branch_id');
+    localStorage.removeItem('seller_branch_name');
+    localStorage.removeItem('seller_branch_picked_date');
+    if (t) {
+      localStorage.setItem('token', t);
+      localStorage.setItem('user', u || 'null');
+      setUser(u ? JSON.parse(u) : null);
+    } else {
+      logout();
+    }
   };
 
   const changeLang = (l) => {
@@ -164,9 +227,10 @@ export default function App() {
   if (authChecking) return <Splash />;
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, impersonate, stopImpersonate }}>
       <LangContext.Provider value={{ lang, changeLang }}>
         <BrowserRouter>
+          <ImpersonationBanner />
           <Suspense fallback={<Splash />}>
             <Routes>
               <Route path="/login" element={user ? <RootRedirect /> : <Login />} />

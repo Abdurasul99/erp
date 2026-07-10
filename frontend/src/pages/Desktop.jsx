@@ -122,7 +122,7 @@ export default function Desktop() {
     <div style={{ height: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <Navbar activeView="desktop" onViewChange={() => {}} />
 
-      <div style={{ maxWidth: '1300px', width: '100%', margin: '0 auto', padding: '20px 16px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, boxSizing: 'border-box' }}>
+      <div style={{ width: '100%', margin: '0 auto', padding: '20px clamp(16px, 2.2vw, 40px)', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, boxSizing: 'border-box' }}>
         {/* Section tabs — responsive wrap */}
         <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' }}>
           {sections.map(s => (

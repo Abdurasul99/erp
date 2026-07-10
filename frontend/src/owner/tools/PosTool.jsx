@@ -10,7 +10,7 @@ import { useTt } from '../tt.js';
 const PM_LABEL = {
   cash: '💵 Наличные', card: '💳 Карта', transfer: '🏦 Перевод', wire: '🏛 Перечисление', debt: '📋 В долг',
 };
-const PM_COLOR = { cash: '#22C55E', card: '#5B4FE8', transfer: '#0EA5E9', wire: '#7c3aed', debt: '#FF6B2B' };
+const PM_COLOR = { cash: '#16A34A', card: '#1D4ED8', transfer: '#0EA5E9', wire: '#1D4ED8', debt: '#D97706' };
 
 export default function PosTool() {
   const { tt } = useTt();
@@ -61,10 +61,10 @@ export default function PosTool() {
       </Card>
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={tt('за смену')} color="#5B4FE8" />
-        <Tile icon="💰" label={tt('Выручка сегодня')} value={fmtMoneyFull(kpi.today_sum || 0)} sub={tt('сум')} color="#22C55E" />
-        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум · за период')} color="#FF6B2B" />
-        <Tile icon="📋" label={tt('В долг')} value={fmtNum(kpi.debt_count || 0)} sub={tt('непогашено')} color={kpi.debt_count > 0 ? '#EF4444' : '#9094B0'} />
+        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={tt('за смену')} color="#1D4ED8" />
+        <Tile icon="💰" label={tt('Выручка сегодня')} value={fmtMoneyFull(kpi.today_sum || 0)} sub={tt('сум')} color="#16A34A" />
+        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум · за период')} color="#D97706" />
+        <Tile icon="📋" label={tt('В долг')} value={fmtNum(kpi.debt_count || 0)} sub={tt('непогашено')} color={kpi.debt_count > 0 ? '#DC2626' : '#94A0B5'} />
       </div>
 
       <div className="grid-2" style={{ marginBottom: 16 }}>
@@ -85,7 +85,7 @@ export default function PosTool() {
                       <span className="mono" style={{ fontWeight: 800 }}>{fmtMoneyFull(sum)} {tt('сум')} · {pct}%</span>
                     </div>
                     <div style={{ height: 8, background: 'var(--bg-2)', borderRadius: 6, overflow: 'hidden' }}>
-                      <div style={{ width: pct + '%', height: '100%', background: PM_COLOR[method] || '#5B4FE8', borderRadius: 6 }} />
+                      <div style={{ width: pct + '%', height: '100%', background: PM_COLOR[method] || '#1D4ED8', borderRadius: 6 }} />
                     </div>
                   </div>
                 );

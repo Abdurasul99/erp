@@ -9,10 +9,10 @@ const PLATFORM_META = {
   tiktok:    { icon: '🎵', label: 'TikTok',    color: '#000000' },
   youtube:   { icon: '▶️', label: 'YouTube',   color: '#FF0000' },
   facebook:  { icon: '👍', label: 'Facebook',  color: '#1877F2' },
-  email:     { icon: '📧', label: 'Email',     color: '#5B4FE8' },
-  sms:       { icon: '💬', label: 'SMS',       color: '#22C55E' },
+  email:     { icon: '📧', label: 'Email',     color: '#1D4ED8' },
+  sms:       { icon: '💬', label: 'SMS',       color: '#16A34A' },
   website:   { icon: '🌐', label: 'Сайт',      color: '#6B7280' },
-  other:     { icon: '📌', label: 'Другое',     color: '#9094B0' },
+  other:     { icon: '📌', label: 'Другое',     color: '#94A0B5' },
 };
 
 const FORMAT_META = {
@@ -159,9 +159,9 @@ export default function ContentPlanTool() {
 
       <div className="grid-4" style={{ marginBottom: 16 }}>
         <Tile icon="📝" label={tt('Всего публикаций')} value={fmtNum(summary.total)} sub={tt('в плане')}          color="#EC4899" />
-        <Tile icon="🔵" label="TOFU"             value={fmtNum(summary.tofu)} sub={tt('привлечение')}      color="#5B4FE8" />
-        <Tile icon="🟡" label="MOFU"             value={fmtNum(summary.mofu)} sub={tt('вовлечение')}       color="#F59E0B" />
-        <Tile icon="🟢" label="BOFU"             value={fmtNum(summary.bofu)} sub={tt('продажа')}          color="#22C55E" />
+        <Tile icon="🔵" label="TOFU"             value={fmtNum(summary.tofu)} sub={tt('привлечение')}      color="#1D4ED8" />
+        <Tile icon="🟡" label="MOFU"             value={fmtNum(summary.mofu)} sub={tt('вовлечение')}       color="#D97706" />
+        <Tile icon="🟢" label="BOFU"             value={fmtNum(summary.bofu)} sub={tt('продажа')}          color="#16A34A" />
       </div>
 
       {editing !== null && (
@@ -216,7 +216,7 @@ export default function ContentPlanTool() {
               placeholder={tt('https://instagram.com/... или идея-референс')} />
           </div>
 
-          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border, #e6e8f2)' }}>
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border, #E3EAF3)' }}>
             <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>📊 {tt('Метрики: план vs факт')}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr', gap: 10, alignItems: 'center', fontSize: 12 }}>
               <div></div>

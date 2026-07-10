@@ -26,19 +26,21 @@ export default function Login() {
       login(data.user, data.token);
       const r = data.user.role;
       if (r === 'seller') navigate('/sell');
-      else if (['admin', 'founder', 'gen_dir', 'manager'].includes(r)) navigate('/desktop');
+      else if (r === 'admin') navigate('/admin');
+      else if (['founder', 'gen_dir', 'manager'].includes(r)) navigate('/desktop');
       else navigate('/select');
     } catch (err) {
+      const st = err.response?.status;
       const msg = err.response?.data?.error || '';
-      // Translate known backend errors
-      if (msg.includes('заблокирован') || err.response?.status === 403) {
+      // Локализуем по статус-коду (надёжнее, чем по тексту), узбекский/русский.
+      if (st === 429) {
+        setError(uz ? "Juda koʻp urinish. 1 daqiqadan soʻng qayta urinib koʻring." : 'Слишком много попыток. Попробуйте через 1 мин.');
+      } else if (st === 403) {
         setError(t('accountBlocked'));
-      } else if (msg.includes('не найден') || msg.includes('topilmadi')) {
-        setError(uz ? 'Foydalanuvchi topilmadi' : 'Пользователь не найден');
-      } else if (msg.includes('пароль') || msg.includes('Parol')) {
-        setError(uz ? 'Parol noto\'g\'ri' : 'Неверный пароль');
+      } else if (st === 401) {
+        setError(uz ? "Login yoki parol notoʻgʻri" : 'Неверный логин или пароль');
       } else {
-        setError(msg || t('error'));
+        setError(uz ? 'Xatolik yuz berdi. Qayta urinib koʻring.' : (msg || 'Ошибка. Попробуйте ещё раз.'));
       }
     } finally {
       setLoading(false);
@@ -58,7 +60,7 @@ export default function Login() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(160deg, #1e1b4b 0%, #3730a3 50%, #4338ca 100%)',
+      background: 'linear-gradient(160deg, #0B1640 0%, #16307A 50%, #1E40AF 100%)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: "'Nunito', sans-serif", padding: '20px',
       position: 'relative', overflow: 'hidden',
@@ -69,20 +71,19 @@ export default function Login() {
       <div style={{ width: '100%', maxWidth: '400px', position: 'relative', zIndex: 1 }}>
         <div style={{ background: '#fff', borderRadius: '24px', padding: '40px 36px', boxShadow: '0 24px 64px rgba(0,0,0,.25)' }}>
 
-          {/* Logo */}
+          {/* Logo — Wave (волна + зелёная линия + ERP SYSTEM) */}
           <div style={{ textAlign: 'center', marginBottom: '28px' }}>
             <div style={{
-              width: '72px', height: '72px', margin: '0 auto 16px',
-              background: 'linear-gradient(135deg, #4338ca, #6366f1, #f97316)',
+              width: '78px', height: '78px', margin: '0 auto 12px',
+              background: '#fff', border: '1px solid #E3EAF3',
               borderRadius: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 8px 24px rgba(67,56,202,.4)',
-            }}>
-              <Icon name="store" size={34} color="#fff" />
-            </div>
-            <div style={{ fontSize: '22px', fontWeight: 900, color: '#1e1b4b' }}>ERP System</div>
-            <div style={{ fontSize: '13px', color: '#9EA3BF', marginTop: '4px' }}>
-              {uz ? 'Biznes boshqaruv tizimi' : 'Система управления бизнесом'}
-            </div>
+              fontSize: '46px', boxShadow: '0 10px 26px rgba(30,58,138,.16)',
+            }}>🌊</div>
+            <div style={{ fontSize: '36px', fontWeight: 900, color: '#0F1B33', lineHeight: 1, letterSpacing: '-1px' }}>Wave</div>
+            <svg width="120" height="12" viewBox="0 0 120 12" fill="none" style={{ display: 'block', margin: '7px auto 0' }}>
+              <path d="M3 7 Q 18 1, 33 6 T 63 6 T 93 6 T 117 6" stroke="#2ECC71" strokeWidth="3.5" strokeLinecap="round" />
+            </svg>
+            <div style={{ fontSize: '11px', fontWeight: 800, color: '#9EA3BF', letterSpacing: '3px', marginTop: '9px' }}>ERP SYSTEM</div>
           </div>
 
           {/* Language toggle */}
@@ -92,7 +93,7 @@ export default function Login() {
                 flex: 1, padding: '9px', border: 'none', cursor: 'pointer', borderRadius: '9px',
                 fontWeight: 800, fontSize: '13px',
                 background: lang === l.key ? '#fff' : 'transparent',
-                color: lang === l.key ? '#4338ca' : '#9EA3BF',
+                color: lang === l.key ? '#2563EB' : '#9EA3BF',
                 boxShadow: lang === l.key ? '0 2px 8px rgba(0,0,0,.08)' : 'none',
                 transition: 'all .2s', fontFamily: "'Nunito', sans-serif",
               }}>{l.label}</button>
@@ -128,7 +129,7 @@ export default function Login() {
                   type="text" value={username} onChange={e => setUsername(e.target.value)}
                   placeholder={uz ? 'Foydalanuvchi nomi' : 'Имя пользователя'}
                   autoFocus required
-                  onFocus={e => e.target.style.borderColor = '#4338ca'}
+                  onFocus={e => e.target.style.borderColor = '#2563EB'}
                   onBlur={e => e.target.style.borderColor = '#E2E4F0'}
                 />
               </div>
@@ -149,7 +150,7 @@ export default function Login() {
                   value={password} onChange={e => setPassword(e.target.value)}
                   placeholder={uz ? 'Parolni kiriting' : 'Введите пароль'}
                   required
-                  onFocus={e => e.target.style.borderColor = '#4338ca'}
+                  onFocus={e => e.target.style.borderColor = '#2563EB'}
                   onBlur={e => e.target.style.borderColor = '#E2E4F0'}
                 />
                 <button type="button" onClick={() => setShowPass(v => !v)} style={{
@@ -163,11 +164,11 @@ export default function Login() {
 
             <button type="submit" disabled={loading} style={{
               width: '100%', padding: '14px',
-              background: loading ? '#9EA3BF' : 'linear-gradient(135deg, #4338ca, #6366f1)',
+              background: loading ? '#9EA3BF' : 'linear-gradient(135deg, #1E40AF, #2563EB)',
               border: 'none', borderRadius: '12px', color: '#fff',
               fontWeight: 900, fontSize: '15px', cursor: loading ? 'not-allowed' : 'pointer',
               fontFamily: "'Nunito', sans-serif",
-              boxShadow: loading ? 'none' : '0 6px 20px rgba(67,56,202,.35)',
+              boxShadow: loading ? 'none' : '0 6px 20px rgba(30,64,175,.35)',
               transition: 'all .2s', letterSpacing: '0.3px',
             }}>
               {loading
@@ -175,6 +176,19 @@ export default function Login() {
                 : (uz ? 'Kirish →' : 'Войти →')}
             </button>
           </form>
+        </div>
+
+        {/* WoW · World Wide — фирменный знак (мелким, снизу) */}
+        <div style={{ textAlign: 'center', marginTop: '18px' }}>
+          <svg width="118" height="30" viewBox="0 0 100 30" fill="none" style={{ display: 'inline-block' }}>
+            <circle cx="14" cy="15" r="11" stroke="#fff" strokeWidth="2" />
+            <circle cx="14" cy="4.6" r="3" fill="#2ECC71" />
+            <text x="14" y="19.6" textAnchor="middle" fontFamily="'Nunito', sans-serif" fontSize="11" fontWeight="900" fill="#fff">W</text>
+            <text x="31" y="20" fontFamily="'Nunito', sans-serif" fontSize="15" fontWeight="900" fill="#fff" letterSpacing="-0.3">WoW</text>
+            <path d="M65 22 L77 5" stroke="#2ECC71" strokeWidth="2.4" strokeLinecap="round" />
+            <path d="M77 5 L71.5 6.8 M77 5 L78.7 10.6" stroke="#2ECC71" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <div style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '3.5px', color: 'rgba(255,255,255,.55)', marginTop: '1px' }}>WORLD WIDE</div>
         </div>
       </div>
     </div>

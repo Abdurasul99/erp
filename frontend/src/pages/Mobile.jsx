@@ -5,8 +5,7 @@ import { t } from '../i18n.js';
 import api from '../api.js';
 import JsBarcode from 'jsbarcode';
 import { fmtMoney } from '../utils.js';
-import { loadSavedPaperSize, makeLabelHTML, renderPrintBarcodes as renderBarcodesShared } from '../utils/printLabel.js';
-import PaperSizeControl from '../utils/PaperSizeControl.jsx';
+import useBarcodePrint from '../utils/useBarcodePrint.jsx';
 
 const S = {
   page: {
@@ -105,25 +104,6 @@ const S = {
   },
 };
 
-// HTML for a 58×40mm thermal label.
-// Forces @page size, scales SVG to 54mm wide (2mm margin each side),
-// Build print HTML for N copies of one label, using the shared printLabel utility.
-// `paperSize` — paper size descriptor (from PAPER_SIZES) or undefined to use saved default.
-function makeLabel58x40({ name, price, barcode, count = 1, paperSize }) {
-  const paper = paperSize || loadSavedPaperSize();
-  return makeLabelHTML({
-    paper,
-    labels: [{ name, price, barcode }],
-    count,
-  });
-}
-
-// Wrapper: pass JsBarcode and current paper size to the shared renderer.
-function renderPrintBarcodes(win, paperSize) {
-  const paper = paperSize || loadSavedPaperSize();
-  renderBarcodesShared(win, JsBarcode, paper);
-}
-
 // simple barcode with external ref for printing
 function BarcodeImgRef({ value, svgRef }) {
   useEffect(() => {
@@ -138,6 +118,7 @@ function BarcodeImgRef({ value, svgRef }) {
 // ─── Barcode SVG + Print ───────────────────────────────────────────────────────
 function BarcodeImg({ value, productName, showPrint = false, lang }) {
   const ref = useRef(null);
+  const { openPrint, printModal } = useBarcodePrint(lang);
   useEffect(() => {
     if (ref.current && value) {
       try { JsBarcode(ref.current, value, { format: 'CODE128', width: 2, height: 50, displayValue: true, fontSize: 13 }); }
@@ -145,26 +126,13 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
     }
   }, [value]);
 
-  const [printCount, setPrintCount] = useState(1);
-  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
-  const handlePrint = () => {
-    if (!value) return;
-    const win = window.open('', '_blank', 'width=300,height=240');
-    if (!win) return;
-    win.document.write(makeLabel58x40({ name: productName, barcode: value, count: printCount, paperSize }));
-    win.document.close();
-    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
-  };
-
   if (!value) return null;
   return (
     <div style={{ background: '#fff', borderRadius: '8px', padding: '10px', textAlign: 'center', marginTop: '10px' }}>
       <svg ref={ref} />
       {showPrint && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
-          <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
-          <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
-          <button onClick={handlePrint} style={{
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px' }}>
+          <button onClick={() => openPrint([{ name: productName, barcode: value }])} style={{
             display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 18px',
             background: '#1e1b4b', color: '#fff', border: 'none', borderRadius: '8px',
             cursor: 'pointer', fontWeight: 700, fontSize: '13px',
@@ -174,33 +142,16 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
               <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
               <rect x="6" y="14" width="12" height="8"/>
             </svg>
-            {lang === 'uz' ? 'Chop etish' : 'Распечатать'} {printCount > 1 && `×${printCount}`}
+            {lang === 'uz' ? 'Chop etish' : 'Распечатать'}
           </button>
         </div>
       )}
+      {printModal}
     </div>
   );
 }
 
 // Reusable count selector for batch print: 1 / 3 / 6 / 9
-function PrintCountSelector({ value, onChange, lang }) {
-  const opts = [1, 3, 6, 9];
-  return (
-    <div style={{ display: 'flex', gap: '3px', background: '#F4F5FA', padding: '3px', borderRadius: '8px' }}>
-      {opts.map(n => (
-        <button key={n} type="button" onClick={() => onChange(n)} style={{
-          padding: '5px 9px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-          fontWeight: 800, fontSize: '12px',
-          background: value === n ? '#fff' : 'transparent',
-          color: value === n ? '#4338ca' : '#6B6F8A',
-          boxShadow: value === n ? '0 1px 3px rgba(26,27,46,.1)' : 'none',
-          fontFamily: "'Nunito', sans-serif",
-        }} title={lang === 'uz' ? `${n} ta nusxa` : `${n} копий`}>×{n}</button>
-      ))}
-    </div>
-  );
-}
-
 // ─── Camera Scanner ────────────────────────────────────────────────────────────
 function CameraScanner({ onScan, onClose }) {
   const scannerRef = useRef(null);
@@ -831,8 +782,7 @@ function FoundProduct({ product, role, lang, onReset }) {
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
-  const [printCount, setPrintCount] = useState(1);
-  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
+  const { openPrint, printModal } = useBarcodePrint(lang);
   const barcodeRef = useRef(null);
 
   const doAction = async (type) => {
@@ -852,15 +802,7 @@ function FoundProduct({ product, role, lang, onReset }) {
     setLoading(false);
   };
 
-  const handlePrint = () => {
-    if (!currentProduct.barcode) return;
-    const price = currentProduct.price_sell ? `${parseFloat(currentProduct.price_sell).toLocaleString('ru-RU')} UZS` : '';
-    const win = window.open('', '_blank', 'width=300,height=240');
-    if (!win) return;
-    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, barcode: currentProduct.barcode, count: printCount, paperSize }));
-    win.document.close();
-    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
-  };
+  const handlePrint = () => openPrint([currentProduct]);
 
   const uz = lang === 'uz';
   const rows = [
@@ -929,17 +871,14 @@ function FoundProduct({ product, role, lang, onReset }) {
                   <rect x="6" y="14" width="12" height="8"/>
                 </svg>
                 <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>
-                  {uz ? 'Chop' : 'Печать'}{printCount > 1 && ` ×${printCount}`}
+                  {uz ? 'Chop' : 'Печать'}
                 </span>
               </button>
-            </div>
-            <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
-              <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
             </div>
           </div>
         )}
       </div>
+      {printModal}
 
       {/* Quantity + actions */}
       <div style={{ ...S.card, marginTop: '10px' }}>
@@ -987,8 +926,7 @@ function CompactProductResult({ product, role, lang, onClear }) {
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
-  const [printCount, setPrintCount] = useState(1);
-  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
+  const { openPrint, printModal } = useBarcodePrint(lang);
   const barcodeRef = useRef(null);
   const uz = lang === 'uz';
   const fmtQty = (v) => parseFloat(parseFloat(v).toFixed(3)).toString();
@@ -1010,15 +948,7 @@ function CompactProductResult({ product, role, lang, onClear }) {
     setLoading(false);
   };
 
-  const handlePrint = () => {
-    if (!currentProduct.barcode) return;
-    const price = currentProduct.price_sell ? `${parseFloat(currentProduct.price_sell).toLocaleString('ru-RU')} UZS` : '';
-    const win = window.open('', '_blank', 'width=300,height=240');
-    if (!win) return;
-    win.document.write(makeLabel58x40({ name: currentProduct.name_ru, price, barcode: currentProduct.barcode, count: printCount, paperSize }));
-    win.document.close();
-    setTimeout(() => renderPrintBarcodes(win, paperSize), 100);
-  };
+  const handlePrint = () => openPrint([currentProduct]);
 
   const stock = parseFloat(currentProduct.stock);
 
@@ -1075,15 +1005,12 @@ function CompactProductResult({ product, role, lang, onClear }) {
                 <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
                 <rect x="6" y="14" width="12" height="8"/>
               </svg>
-              <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>{uz ? 'Chop' : 'Печать'}{printCount > 1 && ` ×${printCount}`}</span>
+              <span style={{ fontSize: '10px', fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>{uz ? 'Chop' : 'Печать'}</span>
             </button>
-          </div>
-          <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
-            <PrintCountSelector value={printCount} onChange={setPrintCount} lang={lang} />
           </div>
         </div>
       )}
+      {printModal}
 
       {/* Quantity + actions */}
       <div style={{ padding: '12px 16px' }}>

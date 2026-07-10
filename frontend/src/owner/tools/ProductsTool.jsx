@@ -44,10 +44,10 @@ export default function ProductsTool() {
         actions={<><button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Импорт XLSX — в разработке'), 'info')}>{tt('📥 Импорт')}</button><button className="btn btn-primary btn-sm" onClick={openAdd}>{tt('+ Новый товар')}</button></>} />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label={tt('Всего')} value={list.length} color="#5B4FE8" />
-        <Tile icon="✅" label={tt('В наличии')} value={list.filter(p => p.stock > 0).length} color="#22C55E" />
-        <Tile icon="⚠️" label={tt('Заканчиваются')} value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#F59E0B" />
-        <Tile icon="🚫" label={tt('Нет в наличии')} value={list.filter(p => p.stock === 0).length} color="#EF4444" />
+        <Tile icon="📦" label={tt('Всего')} value={list.length} color="#1D4ED8" />
+        <Tile icon="✅" label={tt('В наличии')} value={list.filter(p => p.stock > 0).length} color="#16A34A" />
+        <Tile icon="⚠️" label={tt('Заканчиваются')} value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#D97706" />
+        <Tile icon="🚫" label={tt('Нет в наличии')} value={list.filter(p => p.stock === 0).length} color="#DC2626" />
       </div>
 
       <Card>

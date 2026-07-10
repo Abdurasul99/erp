@@ -4,14 +4,14 @@
   --primary-50: #F1EFFE;
   --orange: #FF6B2B;
   --orange-light: #FF8C55;
-  --bg: #F5F6FB;
-  --bg-2: #ECEEF7;
+  --bg: #F7F8FA;
+  --bg-2: #EFF1F4;
   --surface: #FFFFFF;
-  --border: #E6E8F2;
-  --border-strong: #D5D9E8;
-  --text: #1A1B2E;
-  --text2: #5C6080;
-  --text3: #9094B0;
+  --border: #EBECF0;
+  --border-strong: #DCDEE4;
+  --text: #16181D;
+  --text2: #5A616E;
+  --text3: #98A0AD;
   --green: #22C55E;
   --red: #EF4444;
   --yellow: #F59E0B;
@@ -39,11 +39,11 @@
   --lh-base:  1.5;
   --lh-loose: 1.7;
 
-  --shadow-sm: 0 1px 2px rgba(26,27,46,.04), 0 1px 3px rgba(26,27,46,.06);
-  --shadow:    0 2px 4px rgba(26,27,46,.04), 0 4px 16px rgba(91,79,232,.07);
-  --shadow-lg: 0 4px 12px rgba(26,27,46,.06), 0 16px 40px rgba(91,79,232,.10);
+  --shadow-sm: 0 1px 2px rgba(16,18,27,.04);
+  --shadow:    0 1px 2px rgba(16,18,27,.04), 0 4px 14px rgba(16,18,27,.05);
+  --shadow-lg: 0 2px 6px rgba(16,18,27,.05), 0 14px 34px rgba(16,18,27,.08);
   --shadow-focus: 0 0 0 4px rgba(91,79,232,.15);
-  --radius:    16px;
+  --radius:    14px;
   --radius-sm: 10px;
   --radius-xs: 6px;
   --ease: cubic-bezier(.4, 0, .2, 1);
@@ -77,7 +77,7 @@ input, textarea, select, button {
   font-family: 'Nunito', sans-serif;
 }
 
-.mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+.mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ── Buttons ─────────────────────────────────────── */
 .btn {
@@ -218,7 +218,8 @@ select.input { cursor: pointer; padding-right: 32px; appearance: none; -webkit-a
   background: var(--surface);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 18px 22px;
+  /* Fluid padding — same as before on laptops, roomier on wide monitors */
+  padding: clamp(18px, 1.1vw, 28px) clamp(22px, 1.3vw, 34px);
   border: 1px solid rgba(230, 232, 242, .6);
   transition: transform .2s var(--ease), box-shadow .2s var(--ease);
 }
@@ -227,14 +228,15 @@ select.input { cursor: pointer; padding-right: 32px; appearance: none; -webkit-a
 .stat-card .stat-value {
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 26px;
+  /* 26px on laptops (unchanged), scales up on large monitors */
+  font-size: clamp(26px, 1.7vw, 38px);
   font-weight: 600;
   color: var(--text);
   line-height: 1.2;
 }
 
 .stat-card .stat-label {
-  font-size: 11px;
+  font-size: clamp(11px, 0.62vw, 14px);
   font-weight: 700;
   color: var(--text2);
   text-transform: uppercase;
@@ -249,12 +251,13 @@ table {
 }
 
 thead th {
-  font-size: 11px;
+  /* Fluid header text + cell padding so columns breathe on wide screens */
+  font-size: clamp(11px, 0.62vw, 14px);
   font-weight: 800;
   color: var(--text2);
   text-transform: uppercase;
   letter-spacing: 0.7px;
-  padding: 12px 12px;
+  padding: clamp(12px, 0.8vw, 18px) clamp(12px, 0.8vw, 18px);
   text-align: left;
   border-bottom: 1.5px solid var(--border);
   background: var(--surface);
@@ -264,8 +267,9 @@ thead th {
 }
 
 tbody td {
-  padding: 12px;
-  font-size: 14px;
+  padding: clamp(12px, 0.8vw, 18px);
+  /* Fluid body text — ~14px on laptops, up to ~17px on large monitors */
+  font-size: clamp(14px, 0.8vw, 17px);
   border-bottom: 1px solid rgba(230,232,242,.6);
   vertical-align: middle;
 }
@@ -282,11 +286,15 @@ tbody tr:last-child td { border-bottom: none; }
   padding: 5px;
   border-radius: 12px;
   margin-bottom: 20px;
+  /* Compact segmented control: sized to its tabs and left-aligned, instead of
+     stretching across the full-width layout (which spread the tabs far apart). */
+  align-self: flex-start;
+  max-width: 100%;
 }
 
 .tab {
-  flex: 1;
-  padding: 10px 16px;
+  flex: 0 0 auto;
+  padding: 10px 18px;
   border: none;
   border-radius: 8px;
   background: transparent;

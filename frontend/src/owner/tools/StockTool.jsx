@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
+import { Card, Tile, Badge, PageHeader, fmtMoneyFull } from '../ui.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { PRODUCTS, fmt } from '../data.js';
 import { useTt } from '../tt.js';
@@ -18,18 +18,18 @@ export default function StockTool() {
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Запуск инвентаризации'), 'info')}>{tt('🔍 Инвентаризация')}</button>} />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label={tt('Позиций')} value={list.length} color="#5B4FE8" />
-        <Tile icon="💰" label={tt('Стоимость')} value={(totalValue / 1e6).toFixed(1) + 'M'} sub={tt('UZS · по закупке')} color="#FF6B2B" />
-        <Tile icon="⚠️" label={tt('Заканчиваются')} value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#F59E0B" />
-        <Tile icon="🚫" label={tt('Нет')} value={list.filter(p => p.stock === 0).length} color="#EF4444" />
+        <Tile icon="📦" label={tt('Позиций')} value={list.length} color="#1D4ED8" />
+        <Tile icon="💰" label={tt('Стоимость')} value={fmtMoneyFull(totalValue)} sub={tt('UZS · по закупке')} color="#D97706" />
+        <Tile icon="⚠️" label={tt('Заканчиваются')} value={list.filter(p => p.stock > 0 && p.stock < 10).length} color="#D97706" />
+        <Tile icon="🚫" label={tt('Нет')} value={list.filter(p => p.stock === 0).length} color="#DC2626" />
       </div>
 
       <Card>
         <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
           {[['all', tt('Все')], ['low', tt('⚠️ Мало')], ['out', tt('🚫 Нет в наличии')]].map(([k, l]) => (
             <button key={k} onClick={() => setFilter(k)} style={{
-              padding: '8px 14px', borderRadius: 20, border: `1.5px solid ${filter===k?'#5B4FE8':'#E6E8F2'}`,
-              background: filter===k?'rgba(91,79,232,.08)':'#fff', color: filter===k?'#5B4FE8':'#5C6080',
+              padding: '8px 14px', borderRadius: 20, border: `1.5px solid ${filter===k?'#1D4ED8':'#E3EAF3'}`,
+              background: filter===k?'rgba(29,78,216,.08)':'#fff', color: filter===k?'#1D4ED8':'#51607A',
               fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
             }}>{l}</button>
           ))}
@@ -56,9 +56,9 @@ export default function StockTool() {
         {open && (
           <>
             <div className="grid-3">
-              <Tile icon="📦" label={tt('Остаток')} value={open.stock + ' ' + open.unit} color="#5B4FE8" />
-              <Tile icon="💰" label={tt('Закупка')} value={fmt(open.buy)} sub="UZS / " color="#FF6B2B" />
-              <Tile icon="💎" label={tt('Продажа')} value={fmt(open.sell)} sub="UZS / " color="#22C55E" />
+              <Tile icon="📦" label={tt('Остаток')} value={open.stock + ' ' + open.unit} color="#1D4ED8" />
+              <Tile icon="💰" label={tt('Закупка')} value={fmt(open.buy)} sub="UZS / " color="#D97706" />
+              <Tile icon="💎" label={tt('Продажа')} value={fmt(open.sell)} sub="UZS / " color="#16A34A" />
             </div>
             <div style={{ marginTop: 14, background: 'var(--bg-2)', borderRadius: 10, padding: 14, fontSize: 13 }}>
               <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 8 }}>

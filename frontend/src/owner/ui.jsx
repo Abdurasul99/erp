@@ -5,10 +5,10 @@ import { PageHeaderContext } from './PageHeaderContext.js';
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
 
-export function Tile({ icon, label, value, sub, delta, color = '#5B4FE8' }) {
+export function Tile({ icon, label, value, sub, delta, color = 'var(--text)' }) {
   const { tt } = useTt();
   return (
-    <div className="tile" style={{ borderLeftColor: color }}>
+    <div className="tile">
       <div className="tile-label">{icon} {label}</div>
       <div className="tile-value" style={{ color }}>{value}</div>
       {delta != null && (
@@ -40,7 +40,7 @@ export function Badge({ tone = 'blue', children }) {
   return <span className={'badge badge-' + tone}>{children}</span>;
 }
 
-export function Bars({ data, max, color = '#5B4FE8' }) {
+export function Bars({ data, max, color = '#2563EB' }) {
   const cap = max || Math.max(...data, 1);
   return (
     <div className="bars">
@@ -56,7 +56,7 @@ export function Bars({ data, max, color = '#5B4FE8' }) {
 // AreaChart — line with gradient fill below.  Supports an optional comparison series.
 // Used on the dashboard for "Продажи за период" + "Сравнение с прошлым".
 // Поддерживает читаемые оси: yAxis=true рисует 3 метки слева (max / mid / 0).
-export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#9094B0', height = 160, labels = null, yAxis = true }) {
+export function AreaChart({ data, prevData, color = '#2563EB', prevColor = '#94A0B5', height = 160, labels = null, yAxis = true }) {
   const { tt } = useTt();
   if (!data || data.length === 0) {
     return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных за период')}</div>;
@@ -95,9 +95,9 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
           // Reserve space for the x-labels row only when labels are actually rendered,
           // otherwise the Y-axis ticks would float above the chart bottom.
           paddingBottom: (labels && labels.length > 0) ? 22 : 2,
-          fontSize: 10, fontFamily: "'JetBrains Mono', monospace",
-          color: 'var(--text3)', fontWeight: 700, minWidth: 36, textAlign: 'right',
-          height,
+          fontSize: 9, fontFamily: "'JetBrains Mono', monospace",
+          color: 'var(--text3)', fontWeight: 700, minWidth: 66, textAlign: 'right',
+          height, whiteSpace: 'nowrap',
         }}>
           <span>{fmtAxis(max)}</span>
           <span>{fmtAxis(mid)}</span>
@@ -113,9 +113,9 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
             </linearGradient>
           </defs>
           {/* Gridlines — 0, mid, max */}
-          <line x1="0" y1={H - 4} x2={W} y2={H - 4} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />
-          <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
-          <line x1="0" y1={4} x2={W} y2={4} stroke="var(--border, #e6e8f2)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+          <line x1="0" y1={H - 4} x2={W} y2={H - 4} stroke="var(--border, #E3EAF3)" strokeWidth="0.3" vectorEffect="non-scaling-stroke" />
+          <line x1="0" y1={H / 2} x2={W} y2={H / 2} stroke="var(--border, #E3EAF3)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+          <line x1="0" y1={4} x2={W} y2={4} stroke="var(--border, #E3EAF3)" strokeWidth="0.3" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
           {prevData && prevData.length > 0 && (
             <path d={polyPath(prevData, false)} fill="none" stroke={prevColor} strokeWidth="1" strokeDasharray="3 2" opacity="0.7" vectorEffect="non-scaling-stroke" />
           )}
@@ -136,7 +136,9 @@ export function AreaChart({ data, prevData, color = '#5B4FE8', prevColor = '#909
 // тонкие закруглённые бары, светлая базовая линия, даты под барами,
 // без Y-оси (значение каждого бара видно по hover-подсказке).
 // prevData — опциональная серая серия рядом для сравнения периодов.
-export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor = '#C3C8D4', height = 160, maxLabels = 6 }) {
+// peakIdx — индекс «пикового» бара: он окрашивается в peakColor (тёмный),
+//   остальные — в normalColor (светлый). Если peakIdx < 0 — все бары цвета color.
+export function BarChart({ data, prevData, labels, color = '#1D4ED8', prevColor = '#C3C8D4', height = 160, maxLabels = 6, peakIdx = -1, peakColor = '#1D4ED8', normalColor = '#93C5FD' }) {
   const { tt } = useTt();
   if (!data || data.length === 0) {
     return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных за период')}</div>;
@@ -161,7 +163,7 @@ export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor 
     <div>
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 2,
-        height, borderBottom: '1.5px solid var(--border, #E6E8F2)',
+        height, borderBottom: '1.5px solid var(--border, #E3EAF3)',
         paddingBottom: 0,
       }}>
         {data.map((v, i) => {
@@ -184,7 +186,7 @@ export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor 
               )}
               <div style={{
                 width: prevData ? 'min(40%, 8px)' : 'min(60%, 14px)', height: `${hPct}%`,
-                background: color, borderRadius: 99,
+                background: peakIdx >= 0 ? (i === peakIdx ? peakColor : normalColor) : color, borderRadius: 99,
                 minHeight: v > 0 ? 3 : 0,
                 transition: 'height .25s ease',
               }} />
@@ -210,26 +212,45 @@ export function BarChart({ data, prevData, labels, color = '#2563EB', prevColor 
   );
 }
 
-export function Sparkline({ data, color = '#5B4FE8' }) {
+export function Sparkline({ data, color = '#2563EB', height = 54 }) {
   if (!data || data.length < 2) {
-    return <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none" />;
+    return <svg viewBox="0 0 300 54" preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }} />;
   }
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
+  // Широкий viewBox (близко к реальной ширине) → preserveAspectRatio="none" почти не искажает безье.
+  const W = 300, H = 54, padX = 3, padY = 9;
+  const max = Math.max(...data), min = Math.min(...data);
   const range = max - min || 1;
-  const pts = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * 100;
-    const y = 100 - ((v - min) / range) * 80 - 10;
-    return `${x},${y}`;
-  }).join(' ');
+  const X = (i) => padX + (i / (data.length - 1)) * (W - 2 * padX);
+  const Y = (v) => padY + (1 - (v - min) / range) * (H - 2 * padY);
+  const pts = data.map((v, i) => [X(i), Y(v)]);
+  // Мягкая кривая (Catmull-Rom с малым натяжением t=0.1 → почти без выбросов «горкой»).
+  const t = 0.1;
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) * t, c1y = p1[1] + (p2[1] - p0[1]) * t;
+    const c2x = p2[0] - (p3[0] - p1[0]) * t, c2y = p2[1] - (p3[1] - p1[1]) * t;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  const gid = 'spark-' + Math.random().toString(36).slice(2, 8);
+  const area = `${d} L ${W - padX} ${H} L ${padX} ${H} Z`;
+  const last = pts[pts.length - 1];
   return (
-    <svg className="sparkline" viewBox="0 0 100 50" preserveAspectRatio="none">
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }}>
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.10" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#${gid})`} stroke="none" />
+      <path d={d} fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <circle cx={last[0]} cy={last[1]} r="3" fill={color} vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
 
-export function Progress({ value, max = 100, color = '#5B4FE8' }) {
+export function Progress({ value, max = 100, color = 'var(--primary)' }) {
   const pct = Math.min(100, Math.max(0, (value / max) * 100));
   return (
     <div className="progress">
@@ -346,7 +367,7 @@ export function FeatureGrid({ items }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
             <div style={{
               width: 38, height: 38, borderRadius: 10,
-              background: 'rgba(91,79,232,.10)', display: 'flex',
+              background: 'rgba(29,78,216,.10)', display: 'flex',
               alignItems: 'center', justifyContent: 'center', fontSize: 18,
             }}>{f.icon}</div>
             <div style={{ fontWeight: 800, fontSize: 14 }}>{f.title}</div>
@@ -364,13 +385,9 @@ export function FeatureGrid({ items }) {
 }
 
 // Helpers
-export const fmtMoney = (v) => {
-  const n = parseFloat(v) || 0;
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1).replace(/\.?0+$/, '') + 'K';
-  return Math.round(n).toString();
-};
+// Всегда ПОЛНОЕ число с разделителями разрядов: «4 150 000», без K/M/B.
+// (По требованию: суммы и любые числа пишем полностью, без сокращений.)
+export const fmtMoney = (v) => (Math.round(parseFloat(v) || 0)).toLocaleString('ru-RU');
 
 // Full money formatting — «4 150 000» вместо «4.15M». Без валютного суффикса.
 // Используется на главной панели и в финансовых отчётах где важна точная цифра.
@@ -379,14 +396,8 @@ export const fmtMoneyFull = (v) => (Math.round(parseFloat(v) || 0)).toLocaleStri
 // Полная сумма + валюта
 export const fmtSum = (v, currency = 'сум') => `${fmtMoneyFull(v)} ${currency}`;
 
-// Короткий формат для оси Y графика — «4.2M» / «150K» / «25»
-export const fmtAxis = (v) => {
-  const n = parseFloat(v) || 0;
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(0) + 'K';
-  return Math.round(n).toString();
-};
+// Ось Y графика — тоже полное число (без K/M), с разделителями разрядов.
+export const fmtAxis = (v) => (Math.round(parseFloat(v) || 0)).toLocaleString('ru-RU');
 
 export const fmtNum = (v) => (parseFloat(v) || 0).toLocaleString('ru-RU');
 

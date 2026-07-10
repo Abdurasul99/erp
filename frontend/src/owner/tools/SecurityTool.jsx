@@ -48,10 +48,10 @@ export default function SecurityTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
-            <Tile icon="👥" label={tt('Пользователей')} value={fmtNum(data.users_total)} sub={tt('в компании')} color="#5B4FE8" />
-            <Tile icon="🔄" label={tt('Смен ролей')} value={fmtNum(data.role_changes_30d)} sub={tt('за 30 дней')} color={data.role_changes_30d > 0 ? '#F59E0B' : '#22C55E'} />
+            <Tile icon="👥" label={tt('Пользователей')} value={fmtNum(data.users_total)} sub={tt('в компании')} color="#1D4ED8" />
+            <Tile icon="🔄" label={tt('Смен ролей')} value={fmtNum(data.role_changes_30d)} sub={tt('за 30 дней')} color={data.role_changes_30d > 0 ? '#D97706' : '#16A34A'} />
             <Tile icon="🤖" label={tt('AI-запросов')} value={fmtNum(data.ai_requests_30d)} sub={tt('за 30 дней')} color="#0EA5E9" />
-            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum((data.branches || []).length)} sub={tt('активных')} color="#FF6B2B" />
+            <Tile icon="🏭" label={tt('Филиалов')} value={fmtNum((data.branches || []).length)} sub={tt('активных')} color="#D97706" />
           </div>
 
           <Card icon="👥" title={tt('Команда по ролям')} style={{ marginBottom: 16 }}>

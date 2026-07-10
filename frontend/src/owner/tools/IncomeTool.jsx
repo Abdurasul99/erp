@@ -18,9 +18,9 @@ export default function IncomeTool() {
       <PageHeader title={tt('📥 Приход товара')} sub={tt('От поставщиков · на склад')}
         actions={<button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>{tt('+ Приход')}</button>} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="📥" label={tt('Сегодня приходов')} value="8" color="#5B4FE8" />
-        <Tile icon="💰" label={tt('Сумма закупа')} value="42.8M" sub="UZS" color="#FF6B2B" />
-        <Tile icon="📦" label={tt('Единиц получено')} value="284" color="#22C55E" />
+        <Tile icon="📥" label={tt('Сегодня приходов')} value="8" color="#1D4ED8" />
+        <Tile icon="💰" label={tt('Сумма закупа')} value="42 800 000" sub="UZS" color="#D97706" />
+        <Tile icon="📦" label={tt('Единиц получено')} value="284" color="#16A34A" />
       </div>
       <Card>
         <table>

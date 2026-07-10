@@ -4,8 +4,7 @@ import { AuthContext } from '../App.jsx';
 import { useMsg, fmtMoney, fmtNum, formatDate, formatTime } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
-import { loadSavedPaperSize, makeLabelHTML, renderPrintBarcodes } from '../utils/printLabel.js';
-import PaperSizeControl from '../utils/PaperSizeControl.jsx';
+import useBarcodePrint from '../utils/useBarcodePrint.jsx';
 
 export default function WarehouseBalance() {
   const { t, lang } = useTranslation();
@@ -26,12 +25,15 @@ export default function WarehouseBalance() {
   // Product picker inside the email modal
   const [pickerQuery, setPickerQuery] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Batch print: how many copies of each barcode label to print, on consecutive labels
-  const [printCount, setPrintCount] = useState(3);
-  // Adaptive paper size — pulls user's last choice from localStorage
-  const [paperSize, setPaperSize] = useState(() => loadSavedPaperSize());
   // Multi-product select for bulk label printing
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // Split view: id of the product whose detail card is open in the right pane.
+  // We keep the ID (not the object) so the card stays fresh after edit/reload.
+  const [selectedId, setSelectedId] = useState(null);
+  // Photo lightbox — full-screen view of a product photo (null = closed).
+  const [photoZoom, setPhotoZoom] = useState(null);
+  // Unified barcode-print dialog (copies + size, saved per user) — shared across the app.
+  const { openPrint, printModal } = useBarcodePrint(lang);
 
   useEffect(() => {
     load();
@@ -60,6 +62,9 @@ export default function WarehouseBalance() {
   const lowCount  = items.filter(p => parseFloat(p.stock) > 0 && parseFloat(p.stock) < 5).length;
   const outCount  = items.filter(p => parseFloat(p.stock) <= 0).length;
 
+  // Currently-open product in the right detail pane (resolved fresh from items).
+  const selected = selectedId == null ? null : (items.find(i => i.id === selectedId) || null);
+
   const openEdit = (item) => {
     setEditItem(item);
     setEditForm({ name_ru: item.name_ru, name_uz: item.name_uz || '', type_id: item.type_id || '',
@@ -80,7 +85,7 @@ export default function WarehouseBalance() {
 
   const handleDelete = async (id, name) => {
     if (!window.confirm(`${t('delete')} "${name}"?`)) return;
-    try { await api.delete(`/products/${id}`); load(); }
+    try { await api.delete(`/products/${id}`); if (id === selectedId) setSelectedId(null); load(); }
     catch (e) { alert(e.response?.data?.error || t('error')); }
   };
 
@@ -249,45 +254,11 @@ ${draft.from || fromLabel()}`;
     } catch { alert(uz ? 'Nusxalashda xato' : 'Не удалось скопировать'); }
   };
 
-  // Print a batch of 58×40mm thermal labels in one print job.
-  // `items` — products to print. `copies` — how many of each. Items without a barcode are skipped.
-  // Layout rule:
-  //   copies=1 → one full-size barcode per 58×40mm page.
-  //   copies=3 → three barcodes stacked on ONE 58×40mm page (~13mm each, dashed cut line between).
-  //   copies=6 → 6 = 3×2 pages, three barcodes per page.
-  //   copies=9 → 9 = 3×3 pages, three barcodes per page.
-  // For multi-product bulk print, each product runs through its own page-stack independently.
-  // ONE barcode = ONE sticker; size taken from the paperSize state (adaptive).
-  // `copies` = how many copies per item; final pages = items × copies.
-  const printLabels = async (items, copies = printCount) => {
-    const valid = items.filter(it => it && it.barcode);
-    if (valid.length === 0) { alert(t('noBarcode') || 'У выбранных товаров нет штрих-кода'); return; }
-    const C = Math.max(1, Math.min(20, parseInt(copies, 10) || 1));
-    const w = window.open('', '_blank', 'width=420,height=320');
-    if (!w) { alert('Разрешите всплывающие окна для печати'); return; }
-    const { default: JsBarcode } = await import('jsbarcode');
-    const labels = valid.map(it => ({
-      name: it.name_ru,
-      barcode: it.barcode,
-      price: it.price_sell ? `${parseFloat(it.price_sell).toLocaleString('ru-RU')} UZS` : '',
-    }));
-    const html = makeLabelHTML({ paper: paperSize, labels, count: C });
-    w.document.open(); w.document.write(html); w.document.close();
-    setTimeout(() => {
-      try { renderPrintBarcodes(w, JsBarcode, paperSize); }
-      catch (e) { console.error('barcode err', e); }
-    }, 100);
-  };
+  // Per-row single-product print — opens the unified print dialog (copies + size).
+  const printBarcode = (item) => openPrint([item]);
 
-  // Per-row single-product print (backward-compat wrapper)
-  const printBarcode = (item, count = printCount) => printLabels([item], count);
-
-  // Bulk print all selected products
-  const printSelected = () => {
-    const items = filtered.filter(it => selectedIds.has(it.id));
-    if (items.length === 0) return;
-    printLabels(items, printCount);
-  };
+  // Bulk print all selected products — opens the unified print dialog.
+  const printSelected = () => openPrint(filtered.filter(it => selectedIds.has(it.id)));
 
   const toggleSelect = (id) => {
     setSelectedIds(prev => {
@@ -353,30 +324,13 @@ ${draft.from || fromLabel()}`;
             title={t('emailLowStockSuppliers') || 'Письмо поставщикам по товарам с низким остатком'}>
             ✉️ {t('emailSuppliers') || 'Письмо поставщикам'}
           </button>
-          {/* Paper size — presets dropdown + custom W×H (cm) inputs */}
-          <PaperSizeControl value={paperSize} onChange={setPaperSize} compact />
-          {/* Batch print count selector — applies to every 🖨️ click and to bulk print */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-               title={uz ? 'Har bir mahsulot uchun nusxalar soni' : 'Сколько копий каждого ценника'}>
-            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text2)' }}>🖨️</span>
-            <div style={{ display: 'flex', gap: '3px', background: '#F4F5FA', padding: '3px', borderRadius: '8px' }}>
-              {[1, 3, 6, 9].map(n => (
-                <button key={n} type="button" onClick={() => setPrintCount(n)} style={{
-                  padding: '4px 8px', border: 'none', borderRadius: '6px', cursor: 'pointer',
-                  fontWeight: 800, fontSize: '11px',
-                  background: printCount === n ? '#fff' : 'transparent',
-                  color: printCount === n ? '#4338ca' : '#6B6F8A',
-                  boxShadow: printCount === n ? '0 1px 3px rgba(26,27,46,.1)' : 'none',
-                }}>×{n}</button>
-              ))}
-            </div>
-          </div>
-          {/* Bulk-print button — visible only when products are selected */}
+          {/* Bulk-print button — visible only when products are selected.
+              Copies + label size are chosen in the print dialog itself. */}
           {selectedIds.size > 0 && (
             <button className="btn btn-sm" onClick={printSelected}
               style={{ background: 'linear-gradient(135deg, #4338ca, #5b4fe8)', color: '#fff', border: 'none', fontWeight: 800 }}
-              title={uz ? `${selectedIds.size} ta tanlangan mahsulot × ${printCount} nusxa = ${selectedIds.size * printCount} ta etiketka` : `${selectedIds.size} выбрано × ${printCount} копий = ${selectedIds.size * printCount} этикеток`}>
-              🖨️ {uz ? 'Tanlanganni chop etish' : 'Печать выбранных'} ({selectedIds.size} × {printCount} = {selectedIds.size * printCount})
+              title={uz ? `${selectedIds.size} ta mahsulotni chop etish` : `Печать ${selectedIds.size} выбранных`}>
+              🖨️ {uz ? 'Tanlanganni chop etish' : 'Печать выбранных'} ({selectedIds.size})
             </button>
           )}
           {selectedIds.size > 0 && (
@@ -388,106 +342,179 @@ ${draft.from || fromLabel()}`;
           <button className="btn btn-ghost btn-sm" onClick={load}>{t('refresh')}</button>
         </div>
 
-        {loading ? (
-          <div className="center" style={{ padding: '40px' }}><div className="spinner" /></div>
-        ) : (
-          <div className="table-wrap" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th style={{ width: '32px', textAlign: 'center' }}>
-                    <input type="checkbox"
-                      checked={(() => {
-                        const v = filtered.filter(it => it.barcode);
-                        return v.length > 0 && v.every(it => selectedIds.has(it.id));
-                      })()}
-                      onChange={toggleSelectAllVisible}
-                      title={uz ? 'Hammasini tanlash / olib tashlash' : 'Выбрать всё / снять'}
-                      style={{ cursor: 'pointer', width: '16px', height: '16px' }} />
-                  </th>
-                  <th>{t('name')}</th>
-                  <th>{t('type')}</th>
-                  <th>{t('barcode')}</th>
-                  <th>{t('stock')}</th>
-                  <th>{t('priceBuy')}</th>
-                  <th>{t('priceSell')}</th>
-                  <th>{t('saleSum')}</th>
-                  <th>{t('status')}</th>
-                  <th>{t('date')}</th>
-                  <th>{t('actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 && (
-                  <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text3)', padding: '32px' }}>{t('noData')}</td></tr>
-                )}
-                {filtered.map(item => {
-                  const clr = statusColor(item.stock);
-                  const isSelected = selectedIds.has(item.id);
-                  return (
-                    <tr key={item.id} style={isSelected ? { background: 'rgba(67,56,202,.06)' } : undefined}>
-                      <td style={{ textAlign: 'center' }}>
-                        <input type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(item.id)}
-                          disabled={!item.barcode}
-                          title={!item.barcode ? (uz ? 'Shtrix-kod yo\'q' : 'Нет штрих-кода') : (uz ? 'Etiketkaga tanlash' : 'Выбрать для печати')}
-                          style={{ cursor: item.barcode ? 'pointer' : 'not-allowed', width: '16px', height: '16px', opacity: item.barcode ? 1 : 0.3 }} />
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          {item.photo_url && <img src={item.photo_url} alt="" style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover' }} />}
-                          <div>
-                            <div style={{ fontWeight: 600 }}>{item.name_ru}</div>
-                            {(item.color_size || item.brand) && <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{[item.color_size, item.brand].filter(Boolean).join(' · ')}</div>}
-                          </div>
-                        </div>
-                      </td>
-                      <td style={{ fontSize: '13px', color: 'var(--text2)' }}>{item.type_name || '—'}</td>
-                      <td><span className="mono" style={{ fontSize: '12px', color: 'var(--text2)' }}>{item.barcode || '—'}</span></td>
-                      <td>
-                        <span className="mono" style={{ fontWeight: 700, color: clr }}>{fmtQty(item.stock)}</span>
-                        <span style={{ fontSize: '11px', color: 'var(--text3)', marginLeft: '4px' }}>{item.unit}</span>
-                      </td>
-                      <td><span className="mono">{fmtNum(item.price_buy || 0)}</span></td>
-                      <td><span className="mono">{fmtNum(item.price_sell || 0)}</span></td>
-                      <td><span className="mono" style={{ fontWeight: 600 }}>{fmtNum(parseFloat(item.stock) * parseFloat(item.price_sell || 0))}</span></td>
-                      <td><span style={{ fontSize: '12px', fontWeight: 700, color: clr, background: clr + '18', padding: '3px 10px', borderRadius: '20px' }}>{statusLabel(item.stock)}</span></td>
-                      <td style={{ fontSize: '12px', color: 'var(--text2)', whiteSpace: 'nowrap', lineHeight: '1.3' }}>
-                        <div>{formatDate(item.created_at)}</div>
-                        <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{formatTime(item.created_at)}</div>
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '4px' }}>
-                          {parseFloat(item.stock) < 5 && (
-                            <button className="action-btn" onClick={() => emailSupplier(item)}
-                              title={t('emailToSupplier') || 'Написать поставщику'}
-                              style={{ background: 'rgba(34,197,94,.12)', cursor: 'pointer' }}>
-                              <span style={{ fontSize: '13px' }}>✉️</span>
-                            </button>
-                          )}
-                          <button className="action-btn" onClick={() => printBarcode(item)}
-                            title={t('printBarcode') || 'Печать штрих-кода'}
+        {/* Split layout: products table on the left, scrollable product card on the right */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: '14px' }}>
+          {loading ? (
+            <div className="center" style={{ flex: 1, padding: '40px' }}><div className="spinner" /></div>
+          ) : (
+            <div className="table-wrap" style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: '32px', textAlign: 'center' }}>
+                      <input type="checkbox"
+                        checked={(() => {
+                          const v = filtered.filter(it => it.barcode);
+                          return v.length > 0 && v.every(it => selectedIds.has(it.id));
+                        })()}
+                        onChange={toggleSelectAllVisible}
+                        title={uz ? 'Hammasini tanlash / olib tashlash' : 'Выбрать всё / снять'}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px' }} />
+                    </th>
+                    <th>{t('name')}</th>
+                    <th>{t('type')}</th>
+                    <th>{t('barcode')}</th>
+                    <th>{t('stock')}</th>
+                    <th>{t('priceBuy')}</th>
+                    <th>{t('priceSell')}</th>
+                    <th>{t('saleSum')}</th>
+                    <th>{t('status')}</th>
+                    <th>{t('date')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.length === 0 && (
+                    <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text3)', padding: '32px' }}>{t('noData')}</td></tr>
+                  )}
+                  {filtered.map(item => {
+                    const clr = statusColor(item.stock);
+                    const isChecked = selectedIds.has(item.id);
+                    const isActive = item.id === selectedId;
+                    return (
+                      <tr key={item.id}
+                        onClick={() => setSelectedId(isActive ? null : item.id)}
+                        title={uz ? 'Kartochkani ochish' : 'Открыть карточку'}
+                        style={{ cursor: 'pointer', background: isActive ? 'rgba(67,56,202,.12)' : isChecked ? 'rgba(67,56,202,.05)' : undefined }}>
+                        <td style={{ textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+                          <input type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleSelect(item.id)}
                             disabled={!item.barcode}
-                            style={{ background: item.barcode ? 'rgba(67,56,202,.08)' : '#F4F5FA', cursor: item.barcode ? 'pointer' : 'not-allowed', opacity: item.barcode ? 1 : 0.4 }}>
-                            <span style={{ fontSize: '13px' }}>🖨️</span>
-                          </button>
-                          <button className="action-btn action-btn-edit" onClick={() => openEdit(item)} title={t('edit')}>
-                            <Icon name="edit" size={13} color="var(--primary)" />
-                          </button>
-                          <button className="action-btn action-btn-del" onClick={() => handleDelete(item.id, item.name_ru)} title={t('delete')}>
-                            <Icon name="trash" size={13} color="var(--red)" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                            title={!item.barcode ? (uz ? 'Shtrix-kod yo\'q' : 'Нет штрих-кода') : (uz ? 'Etiketkaga tanlash' : 'Выбрать для печати')}
+                            style={{ cursor: item.barcode ? 'pointer' : 'not-allowed', width: '16px', height: '16px', opacity: item.barcode ? 1 : 0.3 }} />
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {item.photo_url && <img src={item.photo_url} alt=""
+                              onClick={e => { e.stopPropagation(); setPhotoZoom(item.photo_url); }}
+                              title={uz ? 'Suratni ochish' : 'Открыть фото'}
+                              style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover', cursor: 'zoom-in' }} />}
+                            <div>
+                              <div style={{ fontWeight: 600 }}>{item.name_ru}</div>
+                              {(item.color_size || item.brand) && <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{[item.color_size, item.brand].filter(Boolean).join(' · ')}</div>}
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ fontSize: '13px', color: 'var(--text2)' }}>{item.type_name || '—'}</td>
+                        <td><span className="mono" style={{ fontSize: '12px', color: 'var(--text2)' }}>{item.barcode || '—'}</span></td>
+                        <td>
+                          <span className="mono" style={{ fontWeight: 700, color: clr }}>{fmtQty(item.stock)}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text3)', marginLeft: '4px' }}>{item.unit}</span>
+                        </td>
+                        <td><span className="mono">{fmtNum(item.price_buy || 0)}</span></td>
+                        <td><span className="mono">{fmtNum(item.price_sell || 0)}</span></td>
+                        <td><span className="mono" style={{ fontWeight: 600 }}>{fmtNum(parseFloat(item.stock) * parseFloat(item.price_sell || 0))}</span></td>
+                        <td><span style={{ fontSize: '12px', fontWeight: 700, color: clr, background: clr + '18', padding: '3px 10px', borderRadius: '20px' }}>{statusLabel(item.stock)}</span></td>
+                        <td style={{ fontSize: '12px', color: 'var(--text2)', whiteSpace: 'nowrap', lineHeight: '1.3' }}>
+                          <div>{formatDate(item.created_at)}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text3)' }}>{formatTime(item.created_at)}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ── Right product card (scrollable) ── */}
+          {selected && (
+            <div style={{ width: '380px', flexShrink: 0, minHeight: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--line)' }}>
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '2px 4px 18px 16px' }}>
+                {/* Header */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '14px' }}>
+                  {selected.photo_url
+                    ? <button type="button" onClick={() => setPhotoZoom(selected.photo_url)}
+                        title={uz ? 'Suratni ochish' : 'Открыть фото'}
+                        style={{ width: '72px', height: '72px', borderRadius: '12px', overflow: 'hidden', flexShrink: 0, border: 'none', padding: 0, background: 'none', cursor: 'zoom-in', position: 'relative' }}>
+                        <img src={selected.photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                        <span style={{ position: 'absolute', right: 0, bottom: 0, background: 'rgba(0,0,0,.55)', color: '#fff', fontSize: '11px', lineHeight: 1, padding: '2px 4px', borderTopLeftRadius: '6px' }}>🔍</span>
+                      </button>
+                    : <div style={{ width: '72px', height: '72px', borderRadius: '12px', background: '#F4F5FA', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon name="box" size={26} color="var(--text3)" /></div>}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: '16px', lineHeight: 1.25 }}>{selected.name_ru}</div>
+                    {selected.name_uz && <div style={{ fontSize: '12px', color: 'var(--text3)' }}>{selected.name_uz}</div>}
+                    <div style={{ marginTop: '6px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: statusColor(selected.stock), background: statusColor(selected.stock) + '18', padding: '3px 10px', borderRadius: '20px' }}>{statusLabel(selected.stock)}</span>
+                    </div>
+                  </div>
+                  <button onClick={() => setSelectedId(null)} title={t('close') || 'Закрыть'}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '22px', color: 'var(--text3)', lineHeight: 1, flexShrink: 0 }}>×</button>
+                </div>
+
+                {/* Big print button */}
+                <button onClick={() => printBarcode(selected)} disabled={!selected.barcode} className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', gap: '8px', padding: '14px', fontSize: '15px', fontWeight: 800, marginBottom: '6px', opacity: selected.barcode ? 1 : 0.5, cursor: selected.barcode ? 'pointer' : 'not-allowed' }}>
+                  🖨️ {t('printBarcode') || 'Печать штрих-кода'}
+                </button>
+                {!selected.barcode && (
+                  <div style={{ fontSize: '11px', color: 'var(--text3)', textAlign: 'center', marginBottom: '8px' }}>{uz ? 'Shtrix-kod yo\'q' : 'Нет штрих-кода'}</div>
+                )}
+
+                {/* Email + Edit */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', margin: '10px 0 16px' }}>
+                  <button onClick={() => emailSupplier(selected)} className="btn"
+                    style={{ justifyContent: 'center', gap: '6px', background: 'rgba(34,197,94,.12)', color: '#16a34a', border: 'none', fontWeight: 700 }}>
+                    ✉️ {uz ? 'Pochta' : 'Письмо'}
+                  </button>
+                  <button onClick={() => openEdit(selected)} className="btn btn-ghost" style={{ justifyContent: 'center', gap: '6px' }}>
+                    <Icon name="edit" size={14} color="var(--primary)" /> {t('edit')}
+                  </button>
+                </div>
+
+                {/* Parameters */}
+                <div style={{ border: '1px solid var(--line)', borderRadius: '12px', overflow: 'hidden', marginBottom: '16px' }}>
+                  {[
+                    [t('type'), selected.type_name || '—'],
+                    [t('brand'), selected.brand || '—'],
+                    [t('colorSize'), selected.color_size || '—'],
+                    [t('barcode'), selected.barcode || '—', true],
+                    [t('stock'), `${fmtQty(selected.stock)} ${selected.unit || ''}`],
+                    [t('priceBuy'), fmtNum(selected.price_buy || 0)],
+                    [t('priceSell'), fmtNum(selected.price_sell || 0)],
+                    [t('saleSum'), fmtNum(parseFloat(selected.stock) * parseFloat(selected.price_sell || 0))],
+                    [t('date'), `${formatDate(selected.created_at)} ${formatTime(selected.created_at)}`],
+                  ].map(([k, v, mono], i) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '9px 12px', borderTop: i ? '1px solid var(--line)' : 'none', fontSize: '13px' }}>
+                      <span style={{ color: 'var(--text3)', flexShrink: 0 }}>{k}</span>
+                      <span className={mono ? 'mono' : ''} style={{ fontWeight: 700, textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Delete */}
+                <button onClick={() => handleDelete(selected.id, selected.name_ru)} className="btn"
+                  style={{ width: '100%', justifyContent: 'center', gap: '6px', background: 'rgba(239,68,68,.08)', color: 'var(--red)', border: 'none', fontWeight: 700 }}>
+                  <Icon name="trash" size={14} color="var(--red)" /> {t('delete')}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Unified barcode-print dialog (copies + size) */}
+      {printModal}
+
+      {/* Photo lightbox — click anywhere to close */}
+      {photoZoom && (
+        <div onClick={() => setPhotoZoom(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: '24px', cursor: 'zoom-out' }}>
+          <img src={photoZoom} alt="" style={{ maxWidth: '92vw', maxHeight: '88vh', objectFit: 'contain', borderRadius: '12px', boxShadow: '0 20px 60px rgba(0,0,0,.5)' }} />
+          <button onClick={() => setPhotoZoom(null)} title={t('close') || 'Закрыть'}
+            style={{ position: 'fixed', top: '18px', right: '22px', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(255,255,255,.16)', color: '#fff', border: 'none', fontSize: '24px', lineHeight: 1, cursor: 'pointer' }}>×</button>
+        </div>
+      )}
 
       {/* Email composer modal */}
       {emailDraft && (

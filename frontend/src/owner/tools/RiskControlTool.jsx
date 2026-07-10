@@ -6,9 +6,9 @@ import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
 
 const SEVERITY_META = {
-  critical: { color: '#EF4444', badge: 'red',    label: 'Критично' },
-  warning:  { color: '#F59E0B', badge: 'yellow', label: 'Внимание' },
-  info:     { color: '#5B4FE8', badge: 'blue',   label: 'Информация' },
+  critical: { color: '#DC2626', badge: 'red',    label: 'Критично' },
+  warning:  { color: '#D97706', badge: 'yellow', label: 'Внимание' },
+  info:     { color: '#1D4ED8', badge: 'blue',   label: 'Информация' },
 };
 
 const CATEGORY_META = {
@@ -72,10 +72,10 @@ export default function RiskControlTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🔴" label={tt('Критичные')} value={fmtNum(summary.critical)} sub={tt('требуют действия сейчас')} color="#EF4444" />
-            <Tile icon="🟡" label={tt('Внимание')}  value={fmtNum(summary.warning)}  sub={tt('разобраться в течение недели')} color="#F59E0B" />
-            <Tile icon="🔵" label={tt('Инфо')}      value={fmtNum(summary.info)}     sub={tt('к сведению')} color="#5B4FE8" />
-            <Tile icon="📊" label={tt('Всего')}     value={fmtNum(summary.total)}    sub={tt('алертов')} color="#5B4FE8" />
+            <Tile icon="🔴" label={tt('Критичные')} value={fmtNum(summary.critical)} sub={tt('требуют действия сейчас')} color="#DC2626" />
+            <Tile icon="🟡" label={tt('Внимание')}  value={fmtNum(summary.warning)}  sub={tt('разобраться в течение недели')} color="#D97706" />
+            <Tile icon="🔵" label={tt('Инфо')}      value={fmtNum(summary.info)}     sub={tt('к сведению')} color="#1D4ED8" />
+            <Tile icon="📊" label={tt('Всего')}     value={fmtNum(summary.total)}    sub={tt('алертов')} color="#1D4ED8" />
           </div>
 
           <Card icon="📋" title={`${tt('Алерты')} (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS.map(t => ({ ...t, label: tt(t.label) }))} />}

@@ -16,9 +16,9 @@ export default function CommercialOfferTool() {
     <>
       <PageHeader title={`📄 ${tt('Коммерческое предложение')}`} sub={tt('Генератор КП за 3 шага · УТП включено')} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="📤" label={tt('Отправлено')} value="34" sub={tt('за месяц')} color="#5B4FE8" />
-        <Tile icon="✅" label={tt('Конверсия')} value="28%" color="#22C55E" />
-        <Tile icon="💰" label={tt('Средний чек')} value="14.2M" color="#FF6B2B" />
+        <Tile icon="📤" label={tt('Отправлено')} value="34" sub={tt('за месяц')} color="#1D4ED8" />
+        <Tile icon="✅" label={tt('Конверсия')} value="28%" color="#16A34A" />
+        <Tile icon="💰" label={tt('Средний чек')} value="14 200 000" color="#D97706" />
       </div>
 
       <Card icon="✨" title={tt('Наше УТП — встраивается в каждое КП')}>
@@ -41,7 +41,7 @@ export default function CommercialOfferTool() {
       <Card icon="🎯" title={tt('Создать КП за 3 шага')} style={{ marginTop: 18 }}>
         <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
           {[`1. ${tt('Клиент')}`, `2. ${tt('Товары')}`, `3. ${tt('Готово')}`].map((s, i) => (
-            <div key={s} style={{ flex: 1, padding: 10, borderRadius: 8, textAlign: 'center', fontSize: 12, fontWeight: 800, background: step >= i ? 'rgba(91,79,232,.1)' : 'var(--bg-2)', color: step >= i ? 'var(--primary)' : 'var(--text3)' }}>{s}</div>
+            <div key={s} style={{ flex: 1, padding: 10, borderRadius: 8, textAlign: 'center', fontSize: 12, fontWeight: 800, background: step >= i ? 'rgba(29,78,216,.1)' : 'var(--bg-2)', color: step >= i ? 'var(--primary)' : 'var(--text3)' }}>{s}</div>
           ))}
         </div>
 
@@ -65,7 +65,7 @@ export default function CommercialOfferTool() {
                 return (
                   <button key={p.id} className="btn btn-ghost" onClick={() => {
                     setItems(items => items.find(i => i.id === p.id) ? items.filter(i => i.id !== p.id) : [...items, { ...p, qty: 10 }]);
-                  }} style={{ justifyContent: 'flex-start', padding: 10, fontSize: 12, background: inCart ? 'rgba(91,79,232,.1)' : '#fff' }}>
+                  }} style={{ justifyContent: 'flex-start', padding: 10, fontSize: 12, background: inCart ? 'rgba(29,78,216,.1)' : '#fff' }}>
                     {p.photo} {p.name}
                   </button>
                 );

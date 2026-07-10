@@ -7,15 +7,15 @@ import { useTt } from '../tt.js';
 // 3×3 matrix: rows = A/B/C (revenue), cols = X/Y/Z (demand stability).
 // AX = stable cash cow → keep stocked. CZ = dead stock → liquidate.
 const CELL_META = {
-  AX: { color: '#22C55E', advice: 'Cash cow — держать запас, частые поставки' },
-  AY: { color: '#5B4FE8', advice: 'Стабильный лидер с колебаниями — буфер 20%' },
+  AX: { color: '#16A34A', advice: 'Cash cow — держать запас, частые поставки' },
+  AY: { color: '#1D4ED8', advice: 'Стабильный лидер с колебаниями — буфер 20%' },
   AZ: { color: '#0EA5E9', advice: 'Сезонник, который много даёт — прогноз' },
-  BX: { color: '#22C55E', advice: 'Стабильный середняк — оптимизировать запас' },
-  BY: { color: '#FF6B2B', advice: 'Умеренный · средняя предсказуемость' },
-  BZ: { color: '#F59E0B', advice: 'Непредсказуемый середняк — гибкий запас' },
+  BX: { color: '#16A34A', advice: 'Стабильный середняк — оптимизировать запас' },
+  BY: { color: '#D97706', advice: 'Умеренный · средняя предсказуемость' },
+  BZ: { color: '#D97706', advice: 'Непредсказуемый середняк — гибкий запас' },
   CX: { color: '#0EA5E9', advice: 'Стабильный хвост — минимальный запас' },
-  CY: { color: '#F59E0B', advice: 'Низкий вклад · средние колебания' },
-  CZ: { color: '#EF4444', advice: 'Мёртвый товар — ликвидация со скидкой' },
+  CY: { color: '#D97706', advice: 'Низкий вклад · средние колебания' },
+  CZ: { color: '#DC2626', advice: 'Мёртвый товар — ликвидация со скидкой' },
 };
 
 const TABS = [
@@ -64,10 +64,10 @@ export default function InventoryMgmtTool() {
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="🏆" label={tt('Группа A')} value={fmtNum((matrix.AX?.count || 0) + (matrix.AY?.count || 0) + (matrix.AZ?.count || 0))} sub={tt('80% выручки')} color="#22C55E" />
-            <Tile icon="📈" label={tt('Группа B')} value={fmtNum((matrix.BX?.count || 0) + (matrix.BY?.count || 0) + (matrix.BZ?.count || 0))} sub={tt('15% выручки')} color="#5B4FE8" />
-            <Tile icon="📉" label={tt('Группа C')} value={fmtNum((matrix.CX?.count || 0) + (matrix.CY?.count || 0) + (matrix.CZ?.count || 0))} sub={tt('5% выручки')}  color="#F59E0B" />
-            <Tile icon="💀" label={tt('Мёртвые (CZ)')} value={fmtNum(matrix.CZ?.count || 0)} sub={tt('кандидаты на ликвидацию')} color="#EF4444" />
+            <Tile icon="🏆" label={tt('Группа A')} value={fmtNum((matrix.AX?.count || 0) + (matrix.AY?.count || 0) + (matrix.AZ?.count || 0))} sub={tt('80% выручки')} color="#16A34A" />
+            <Tile icon="📈" label={tt('Группа B')} value={fmtNum((matrix.BX?.count || 0) + (matrix.BY?.count || 0) + (matrix.BZ?.count || 0))} sub={tt('15% выручки')} color="#1D4ED8" />
+            <Tile icon="📉" label={tt('Группа C')} value={fmtNum((matrix.CX?.count || 0) + (matrix.CY?.count || 0) + (matrix.CZ?.count || 0))} sub={tt('5% выручки')}  color="#D97706" />
+            <Tile icon="💀" label={tt('Мёртвые (CZ)')} value={fmtNum(matrix.CZ?.count || 0)} sub={tt('кандидаты на ликвидацию')} color="#DC2626" />
           </div>
 
           <Card icon="🎯" title={tt('Матрица ABC × XYZ')} style={{ marginBottom: 16 }}>

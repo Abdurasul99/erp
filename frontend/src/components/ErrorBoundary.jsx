@@ -26,8 +26,36 @@ export default class ErrorBoundary extends React.Component {
     window.location.reload();
   };
 
+  // Повторить рендер (для compact-режима одного инструмента — сбросить ошибку без перезагрузки всего SPA).
+  retry = () => {
+    this.setState({ error: null });
+  };
+
   render() {
     if (!this.state.error) return this.props.children;
+    // Compact: падение одного инструмента показывает карточку внутри оболочки —
+    // сайдбар и остальные инструменты продолжают работать (не «белый экран» всего app).
+    if (this.props.compact) {
+      return (
+        <div style={{
+          background: '#fff', border: '1px solid #E2E4F0', borderRadius: 14,
+          padding: '28px 24px', textAlign: 'center', margin: '8px 0',
+          fontFamily: "'Nunito', sans-serif",
+        }}>
+          <div style={{ fontSize: 42, marginBottom: 10 }}>⚠️</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: '#1A1B2E', marginBottom: 6 }}>
+            {t('somethingWrong')}
+          </div>
+          <div style={{ fontSize: 12, color: '#9EA3BF', marginBottom: 18, fontFamily: 'monospace', wordBreak: 'break-word' }}>
+            {String(this.state.error?.message || this.state.error || 'Unknown')}
+          </div>
+          <button onClick={this.retry}
+            style={{ padding: '9px 18px', background: 'linear-gradient(135deg, #4338ca, #6366f1)', color: '#fff', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 800, fontSize: 13, fontFamily: "'Nunito', sans-serif" }}>
+            🔄 {t('reload')}
+          </button>
+        </div>
+      );
+    }
     return (
       <div style={{
         minHeight: '100vh',

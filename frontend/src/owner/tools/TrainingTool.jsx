@@ -20,9 +20,9 @@ export default function TrainingTool() {
       <PageHeader title={tt('🎬 Обучение')} sub={tt('Курсы in-app · уроки · аттестация')}
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Конструктор курса'))}>{tt('+ Курс')}</button>} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🎓" label={tt('Курсов')} value={courses.length} color="#5B4FE8" />
-        <Tile icon="✅" label={tt('Выпускников')} value="38" color="#22C55E" />
-        <Tile icon="⏳" label={tt('В процессе')} value="14" color="#FF6B2B" />
+        <Tile icon="🎓" label={tt('Курсов')} value={courses.length} color="#1D4ED8" />
+        <Tile icon="✅" label={tt('Выпускников')} value="38" color="#16A34A" />
+        <Tile icon="⏳" label={tt('В процессе')} value="14" color="#D97706" />
         <Tile icon="📚" label={tt('Часов контента')} value="124" color="#0EA5E9" />
       </div>
       <div className="grid-3">
@@ -35,7 +35,7 @@ export default function TrainingTool() {
               <span style={{ color: 'var(--text3)' }}>{tt('Прогресс')}</span>
               <span className="mono" style={{ fontWeight: 800 }}>{c.c}%</span>
             </div>
-            <Progress value={c.c} max={100} color="#5B4FE8" />
+            <Progress value={c.c} max={100} color="#1D4ED8" />
             <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Badge tone="blue">{c.en} {tt('учатся')}</Badge>
               <button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Открыт курс') + ' «' + c.n + '»')}>{tt('▶️ Открыть')}</button>

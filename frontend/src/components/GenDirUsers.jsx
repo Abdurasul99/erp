@@ -21,6 +21,8 @@ export default function GenDirUsers() {
   const [editUser, setEditUser]   = useState(null);
   const [pwdChange, setPwdChange] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [profileUser, setProfileUser] = useState(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [newPwd, setNewPwd]       = useState('');
   const [showNewPwd, setShowNewPwd] = useState(false);
   const [msg, setMsg, clearMsg]   = useMsg();
@@ -32,12 +34,12 @@ export default function GenDirUsers() {
 
   useEffect(() => {
     load();
-    api.get('/branches').then(r => setBranches(r.data)).catch(() => {});
+    api.get('/branches').then(r => setBranches(Array.isArray(r.data) ? r.data : [])).catch(() => {});
   }, []);
 
   const load = async () => {
     const { data } = await api.get('/users');
-    setUsers(data);
+    setUsers(Array.isArray(data) ? data : []);
   };
 
   // Group by branch
@@ -78,6 +80,32 @@ export default function GenDirUsers() {
     try {
       await api.delete(`/users/${deleteConfirm.id}`);
       setDeleteConfirm(null); load();
+    } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
+  };
+
+  const uploadPhoto = async (file) => {
+    if (!file) return;
+    setUploadingPhoto(true);
+    try {
+      const fd = new FormData(); fd.append('photo', file);
+      const { data } = await api.post('/upload/photo', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setProfileUser(p => ({ ...p, photo: data.url }));
+    } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
+    finally { setUploadingPhoto(false); }
+  };
+
+  const handleProfileSave = async () => {
+    try {
+      const p = profileUser;
+      await api.put(`/users/${p.id}/profile`, {
+        photo: p.photo || null,
+        birth_date: p.birth_date ? String(p.birth_date).slice(0, 10) : null,
+        education: p.education || null, experience: p.experience || null, prev_jobs: p.prev_jobs || null,
+        phone: p.phone || null, position: p.position || null,
+        hired_at: p.hired_at ? String(p.hired_at).slice(0, 10) : null,
+        profile_notes: p.profile_notes || null,
+      });
+      setMsg('success', t('success')); setProfileUser(null); load();
     } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
   };
 
@@ -285,6 +313,7 @@ export default function GenDirUsers() {
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '4px' }}>
+                        <button title={t('Профиль')} onClick={() => setProfileUser({ ...u })} style={{ width: '30px', height: '30px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '14px', background: 'rgba(67,56,202,.08)' }}>📇</button>
                         <button className="action-btn action-btn-edit" title={t('edit')} onClick={() => setEditUser({ ...u })}>
                           <Icon name="edit" size={12} color="var(--primary)" />
                         </button>
@@ -384,6 +413,47 @@ export default function GenDirUsers() {
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className="btn btn-danger" onClick={handleDelete} style={{ flex: 1, justifyContent: 'center' }}>{t('delete')}</button>
               <button className="btn btn-ghost" onClick={() => setDeleteConfirm(null)} style={{ flex: 1, justifyContent: 'center' }}>{t('cancel')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile modal — учредитель/менеджер заполняют полный профиль сотрудника */}
+      {profileUser && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '16px', padding: '24px', maxWidth: '620px', width: '100%', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+              <div style={{ fontWeight: 800, fontSize: '18px' }}>👤 {t('Профиль')} — {fullName(profileUser)}</div>
+              <button onClick={() => setProfileUser(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '20px', color: 'var(--text3)' }}>×</button>
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '18px' }}>
+              <div style={{ width: '88px', height: '88px', borderRadius: '50%', overflow: 'hidden', background: 'var(--bg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '2px solid var(--border)' }}>
+                {profileUser.photo ? <img src={profileUser.photo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: '34px' }}>👤</span>}
+              </div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+                  {uploadingPhoto ? t('Загрузка…') : t('📷 Загрузить фото')}
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => uploadPhoto(e.target.files?.[0])} />
+                </label>
+                {profileUser.photo && <button className="btn btn-ghost btn-sm" onClick={() => setProfileUser(p => ({ ...p, photo: null }))}>{t('Убрать')}</button>}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+              <div><label className="label">{t('Должность')}</label><input className="input" value={profileUser.position || ''} onChange={e => setProfileUser({ ...profileUser, position: e.target.value })} placeholder={t('напр. Старший продавец')} /></div>
+              <div><label className="label">{t('Телефон')}</label><input className="input" value={profileUser.phone || ''} onChange={e => setProfileUser({ ...profileUser, phone: e.target.value })} placeholder="+998…" /></div>
+              <div><label className="label">{t('Дата рождения')}</label><input className="input" type="date" value={profileUser.birth_date ? String(profileUser.birth_date).slice(0, 10) : ''} onChange={e => setProfileUser({ ...profileUser, birth_date: e.target.value })} /></div>
+              <div><label className="label">{t('Дата приёма')}</label><input className="input" type="date" value={profileUser.hired_at ? String(profileUser.hired_at).slice(0, 10) : ''} onChange={e => setProfileUser({ ...profileUser, hired_at: e.target.value })} /></div>
+            </div>
+            <div style={{ marginBottom: '12px' }}><label className="label">{t('Учебное заведение')}</label><input className="input" value={profileUser.education || ''} onChange={e => setProfileUser({ ...profileUser, education: e.target.value })} placeholder={t('ВУЗ / колледж · специальность')} /></div>
+            <div style={{ marginBottom: '12px' }}><label className="label">{t('Опыт работы')}</label><textarea className="input" rows={2} value={profileUser.experience || ''} onChange={e => setProfileUser({ ...profileUser, experience: e.target.value })} placeholder={t('напр. 5 лет в рознице')} /></div>
+            <div style={{ marginBottom: '12px' }}><label className="label">{t('Предыдущие места работы')}</label><textarea className="input" rows={3} value={profileUser.prev_jobs || ''} onChange={e => setProfileUser({ ...profileUser, prev_jobs: e.target.value })} placeholder={t('Компания · должность · годы…')} /></div>
+            <div style={{ marginBottom: '18px' }}><label className="label">{t('Заметки')}</label><textarea className="input" rows={2} value={profileUser.profile_notes || ''} onChange={e => setProfileUser({ ...profileUser, profile_notes: e.target.value })} /></div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="btn btn-primary" onClick={handleProfileSave} style={{ flex: 1, justifyContent: 'center' }}>{t('save')}</button>
+              <button className="btn btn-ghost" onClick={() => setProfileUser(null)} style={{ flex: 1, justifyContent: 'center' }}>{t('cancel')}</button>
             </div>
           </div>
         </div>

@@ -19,18 +19,18 @@ export default function CashTool() {
       <PageHeader title={tt('🏦 Касса')} sub={tt('Приход · расход по методам оплаты')}
         actions={<><button className="btn btn-orange btn-sm" onClick={() => setAdding('expense')}>− {tt('Расход')}</button><button className="btn btn-primary btn-sm" onClick={() => setAdding('income')}>+ {tt('Приход')}</button></>} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="💰" label={tt('Баланс')} value="148.2M" sub="UZS" color="#22C55E" />
-        <Tile icon="📥" label={tt('Приход (день)')} value="+8.4M" delta={12} color="#5B4FE8" />
-        <Tile icon="📤" label={tt('Расход (день)')} value="−2.1M" color="#EF4444" />
-        <Tile icon="⏳" label={tt('Ждёт от продавцов')} value="4.2M" color="#F59E0B" />
+        <Tile icon="💰" label={tt('Баланс')} value="148 200 000" sub="UZS" color="#16A34A" />
+        <Tile icon="📥" label={tt('Приход (день)')} value="+8.4M" delta={12} color="#1D4ED8" />
+        <Tile icon="📤" label={tt('Расход (день)')} value="−2.1M" color="#DC2626" />
+        <Tile icon="⏳" label={tt('Ждёт от продавцов')} value="4 200 000" color="#D97706" />
       </div>
       <div className="grid-2">
         <Card icon="💳" title={tt('По способам оплаты')}>
           {[
-            { n: '💵 Наличные', v: '48.2M', pct: 28, c: '#22C55E' },
-            { n: '💳 Карта', v: '62.1M', pct: 37, c: '#0EA5E9' },
-            { n: '🏦 Перевод', v: '34.5M', pct: 21, c: '#5B4FE8' },
-            { n: '📑 Перечисление', v: '23.6M', pct: 14, c: '#7C3AED' },
+            { n: '💵 Наличные', v: '48 200 000', pct: 28, c: '#16A34A' },
+            { n: '💳 Карта', v: '62 100 000', pct: 37, c: '#0EA5E9' },
+            { n: '🏦 Перевод', v: '34 500 000', pct: 21, c: '#1D4ED8' },
+            { n: '📑 Перечисление', v: '23 600 000', pct: 14, c: '#1D4ED8' },
           ].map(r => (
             <div key={r.n} className="list-item">
               <div style={{ flex: 1 }}>
@@ -44,7 +44,7 @@ export default function CashTool() {
           ))}
         </Card>
         <Card icon="📈" title={tt('Cash Flow (7 дней)')}>
-          <Sparkline data={[22, 26, 31, 38, 42, 45, 51]} color="#22C55E" />
+          <Sparkline data={[22, 26, 31, 38, 42, 45, 51]} color="#16A34A" />
           <div className="grid-3" style={{ marginTop: 14, fontSize: 12 }}>
             <div><div style={{ color: 'var(--text3)' }}>{tt('Приход')}</div><div className="mono" style={{ fontWeight: 800, color: 'var(--green)' }}>+154M</div></div>
             <div><div style={{ color: 'var(--text3)' }}>{tt('Расход')}</div><div className="mono" style={{ fontWeight: 800, color: 'var(--red)' }}>−82M</div></div>
@@ -60,8 +60,8 @@ export default function CashTool() {
           <div style={{ display: 'flex', gap: 6 }}>
             {['cash', 'card', 'transfer', 'wire'].map(p => (
               <button key={p} onClick={() => setForm({ ...form, pm: p })} style={{
-                flex: 1, padding: 10, borderRadius: 8, border: '1.5px solid ' + (form.pm === p ? '#5B4FE8' : '#E6E8F2'),
-                background: form.pm === p ? 'rgba(91,79,232,.08)' : '#fff', color: form.pm === p ? '#5B4FE8' : 'var(--text2)',
+                flex: 1, padding: 10, borderRadius: 8, border: '1.5px solid ' + (form.pm === p ? '#1D4ED8' : '#E3EAF3'),
+                background: form.pm === p ? 'rgba(29,78,216,.08)' : '#fff', color: form.pm === p ? '#1D4ED8' : 'var(--text2)',
                 cursor: 'pointer', fontWeight: 700, fontSize: 12, fontFamily: 'inherit',
               }}>{ {cash: tt('💵 Нал'), card: tt('💳 Карта'), transfer: tt('🏦 Перевод'), wire: tt('📑 Перечисл.')}[p] }</button>
             ))}

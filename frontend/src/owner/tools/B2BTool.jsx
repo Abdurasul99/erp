@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Card, Tile, Badge, PageHeader } from '../ui.jsx';
+import { Card, Tile, Badge, PageHeader, fmtMoneyFull } from '../ui.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { useTt } from '../tt.js';
 
@@ -24,11 +24,11 @@ export default function B2BTool() {
       <PageHeader title={tt('🏢 B2B / B2G сделки')} sub={tt('Корпоративный pipeline · PITCH · тарифы')}
         actions={<button className="btn btn-primary btn-sm" onClick={() => toast(tt('Открыта форма новой сделки'))}>+ {tt('Сделка')}</button>} />
       <div className="grid-5" style={{ marginBottom: 18 }}>
-        <Tile icon="📞" label={tt('Лидов')} value={deals.filter(d => d.stage === 0).length} color="#9094B0" />
-        <Tile icon="💌" label={tt('КП отправлено')} value={deals.filter(d => d.stage === 3).length} color="#5B4FE8" />
-        <Tile icon="🤝" label={tt('В договоре')} value={deals.filter(d => d.stage === 4).length} color="#FF6B2B" />
-        <Tile icon="✅" label={tt('Выиграно')} value={deals.filter(d => d.stage === 5).length} color="#22C55E" />
-        <Tile icon="💰" label={tt('Пайплайн')} value={(deals.reduce((s, d) => s + d.value, 0) / 1e6).toFixed(1) + 'M'} color="#0EA5E9" />
+        <Tile icon="📞" label={tt('Лидов')} value={deals.filter(d => d.stage === 0).length} color="#94A0B5" />
+        <Tile icon="💌" label={tt('КП отправлено')} value={deals.filter(d => d.stage === 3).length} color="#1D4ED8" />
+        <Tile icon="🤝" label={tt('В договоре')} value={deals.filter(d => d.stage === 4).length} color="#D97706" />
+        <Tile icon="✅" label={tt('Выиграно')} value={deals.filter(d => d.stage === 5).length} color="#16A34A" />
+        <Tile icon="💰" label={tt('Пайплайн')} value={fmtMoneyFull(deals.reduce((s, d) => s + d.value, 0))} color="#0EA5E9" />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
@@ -43,7 +43,7 @@ export default function B2BTool() {
                 }}>
                   <div style={{ fontSize: 10, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>{d.id}</div>
                   <div style={{ fontWeight: 800, fontSize: 13, margin: '4px 0' }}>{d.client}</div>
-                  <div className="mono" style={{ fontSize: 13, fontWeight: 800, color: 'var(--primary)' }}>{(d.value / 1e6).toFixed(1)}M UZS</div>
+                  <div className="mono" style={{ fontSize: 13, fontWeight: 800, color: 'var(--primary)' }}>{fmtMoneyFull(d.value)} UZS</div>
                   <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>👤 {d.owner}</div>
                 </div>
               ))}
@@ -58,8 +58,8 @@ export default function B2BTool() {
         {open && (
           <>
             <div className="grid-2" style={{ marginBottom: 14 }}>
-              <Tile icon="💰" label={tt('Сумма')} value={(open.value / 1e6).toFixed(1) + 'M'} color="#5B4FE8" />
-              <Tile icon="🎯" label={tt('Стадия')} value={tt(STAGES[open.stage])} color="#FF6B2B" />
+              <Tile icon="💰" label={tt('Сумма')} value={fmtMoneyFull(open.value)} color="#1D4ED8" />
+              <Tile icon="🎯" label={tt('Стадия')} value={tt(STAGES[open.stage])} color="#D97706" />
             </div>
             <div style={{ background: 'var(--bg-2)', borderRadius: 10, padding: 12, fontSize: 13 }}>
               <div style={{ marginBottom: 6 }}><strong>{tt('Ответственный')}:</strong> {open.owner}</div>

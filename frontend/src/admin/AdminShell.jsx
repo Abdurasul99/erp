@@ -7,12 +7,15 @@ import AdminDashboard from './pages/AdminDashboard.jsx';
 import CompanyDetail from './pages/CompanyDetail.jsx';
 import FeatureFlags from './pages/FeatureFlags.jsx';
 import AuditLog from './pages/AuditLog.jsx';
+import AdminPanel from '../components/AdminPanel.jsx';
+import TeamPage from './pages/TeamPage.jsx';
 
 const SECTIONS = [
-  { id: 'dashboard', icon: '🏠', title: 'Главная',         desc: 'Сводка по всем клиентам' },
-  { id: 'companies', icon: '🏢', title: 'Компании',         desc: 'Список клиентов · drill-down' },
-  { id: 'features',  icon: '🚦', title: 'Фичи · тарифы',    desc: 'Включить премиум клиенту' },
-  { id: 'audit',     icon: '📋', title: 'Audit Log',        desc: 'Кто что когда делал' },
+  { id: 'dashboard', icon: '🏠', title: 'Главная',          desc: 'Сводка по всем клиентам' },
+  { id: 'team',      icon: '👥', title: 'Наша команда',     desc: 'Сотрудники WoW · доступ ко всем' },
+  { id: 'companies', icon: '🏢', title: 'Компании-клиенты', desc: 'Создать/изменить · филиалы · доступы' },
+  { id: 'features',  icon: '🚦', title: 'Фичи · тарифы',     desc: 'Включить премиум клиенту' },
+  { id: 'audit',     icon: '📋', title: 'Журнал действий',   desc: 'Операции пользователей' },
 ];
 
 export default function AdminShell() {
@@ -31,11 +34,11 @@ export default function AdminShell() {
     <div className={'owner-shell' + (collapsed ? ' collapsed' : '')}>
       <aside className="o-sidebar" style={{ background: 'linear-gradient(180deg, #4338ca 0%, #1e1b4b 100%)' }}>
         <div className="o-brand" onClick={() => navigate('/admin')}>
-          <div className="o-brand-ico" style={{ background: 'linear-gradient(135deg, #FF6B2B, #F59E0B)' }}>🛡️</div>
+          <div className="o-brand-ico" style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)', fontWeight: 900, fontSize: 18, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>W</div>
           {!collapsed && (
             <div>
-              <div className="o-brand-name">WareApp Admin</div>
-              <div className="o-brand-sub">SaaS · Antropoid</div>
+              <div className="o-brand-name" style={{ letterSpacing: '.5px' }}>WoW</div>
+              <div className="o-brand-sub">Панель управления</div>
             </div>
           )}
         </div>
@@ -75,11 +78,11 @@ export default function AdminShell() {
               {(SECTIONS.find(s => s.id === activeSection) || SECTIONS[0])?.icon}{' '}
               {(SECTIONS.find(s => s.id === activeSection) || SECTIONS[0])?.title}
             </div>
-            <div className="o-topbar-sub">Режим администратора SaaS · {new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</div>
+            <div className="o-topbar-sub">WoW · панель управления · {new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</div>
           </div>
 
-          <div className="o-branch-pick" style={{ background: 'linear-gradient(135deg, #FF6B2B 0%, #F59E0B 100%)', color: '#fff', border: 'none', cursor: 'default' }}>
-            🛡️ Admin · все компании
+          <div className="o-branch-pick" style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)', color: '#fff', border: 'none', cursor: 'default' }}>
+            WoW · все компании
           </div>
 
           <div className="o-user" onClick={logout} title="Выйти" style={{ cursor: 'pointer' }}>
@@ -95,7 +98,9 @@ export default function AdminShell() {
           <Routes>
             <Route index element={<AdminDashboard />} />
             <Route path="dashboard" element={<AdminDashboard />} />
-            <Route path="companies" element={<AdminDashboard />} />
+            <Route path="team" element={<TeamPage />} />
+            {/* Companies+branches+staff CRUD (was a separate /desktop screen) now lives here. */}
+            <Route path="companies" element={<AdminPanel />} />
             <Route path="companies/:id" element={<CompanyDetail />} />
             <Route path="features" element={<FeatureFlags />} />
             <Route path="audit" element={<AuditLog />} />

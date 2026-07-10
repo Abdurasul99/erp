@@ -13,8 +13,17 @@ import {
 //   value    — current paper size object (from PAPER_SIZES or makeCustomPaperSize).
 //   onChange — fired when preset OR custom dimensions change with the new paper-size object.
 //   compact  — smaller paddings/fonts for use inside dense toolbars.
-export default function PaperSizeControl({ value, onChange, compact = false }) {
+export default function PaperSizeControl({ value, onChange, compact = false, lang = 'ru' }) {
   const isCustom = value?.id === 'custom';
+
+  // Localized labels — full words (not single letters), so the Uzbek UI no longer
+  // shows Russian «Ш/В».
+  const L = {
+    ru: { w: 'Ширина', h: 'Высота', unit: 'см', wTitle: 'Ширина в см (1 см = 10 мм)', hTitle: 'Высота в см (1 см = 10 мм)' },
+    uz: { w: 'Eni',    h: "Bo'yi",  unit: 'sm', wTitle: 'Eni, sm (1 sm = 10 mm)',     hTitle: "Bo'yi, sm (1 sm = 10 mm)" },
+    en: { w: 'Width',  h: 'Height', unit: 'cm', wTitle: 'Width in cm (1 cm = 10 mm)', hTitle: 'Height in cm (1 cm = 10 mm)' },
+  };
+  const tt = L[lang] || L.ru;
 
   const [wCm, setWCm] = useState(() => +(value.w / 10).toFixed(1));
   const [hCm, setHCm] = useState(() => +(value.h / 10).toFixed(1));
@@ -78,24 +87,24 @@ export default function PaperSizeControl({ value, onChange, compact = false }) {
           <option key={s.id} value={s.id}>{s.label}</option>
         ))}
       </select>
-      <span style={labelStyle}>Ш</span>
+      <span style={labelStyle}>{tt.w}</span>
       <input
         type="number" min="1" max="30" step="0.1"
         value={wCm}
         onChange={e => onCustom(parseFloat(e.target.value) || 0, hCm)}
-        title="Ширина в см (1 см = 10 мм)"
+        title={tt.wTitle}
         style={inputStyle}
       />
       <span style={labelStyle}>×</span>
-      <span style={labelStyle}>В</span>
+      <span style={labelStyle}>{tt.h}</span>
       <input
         type="number" min="1" max="30" step="0.1"
         value={hCm}
         onChange={e => onCustom(wCm, parseFloat(e.target.value) || 0)}
-        title="Высота в см (1 см = 10 мм)"
+        title={tt.hTitle}
         style={inputStyle}
       />
-      <span style={labelStyle}>см</span>
+      <span style={labelStyle}>{tt.unit}</span>
     </div>
   );
 }

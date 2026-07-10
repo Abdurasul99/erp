@@ -87,7 +87,7 @@ function MonthlyBarsChart({ points }) {
   const max = Math.max(...points.map(p => p.value), 1);
   return (
     <div>
-      <Bars data={points.map(p => p.value)} color="#5B4FE8" />
+      <Bars data={points.map(p => p.value)} color="#1D4ED8" />
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 10, color: 'var(--text3)', fontWeight: 700, gap: 4, overflowX: 'auto' }}>
         {points.map((p, i) => (
           <div key={i} style={{ flex: 1, textAlign: 'center', minWidth: 30 }}>{p.label.slice(2)}</div>
@@ -160,14 +160,14 @@ function PeriodCompareChart({ current, prev }) {
   const delta = prevSum > 0 ? Math.round(((curSum - prevSum) / prevSum) * 100) : null;
   return (
     <div>
-      <AreaChart data={curVals} prevData={prevVals} color="#22C55E" prevColor="#9094B0" height={140} />
+      <AreaChart data={curVals} prevData={prevVals} color="#16A34A" prevColor="#94A0B5" height={140} />
       <div style={{ display: 'flex', gap: 14, marginTop: 10, fontSize: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 14, height: 3, background: '#22C55E', borderRadius: 2 }} />
+          <span style={{ width: 14, height: 3, background: '#16A34A', borderRadius: 2 }} />
           <span style={{ color: 'var(--text2)' }}>{tt('Сейчас')}: <strong>{fmtMoney(curSum)}</strong></span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 14, height: 0, borderTop: '2px dashed #9094B0' }} />
+          <span style={{ width: 14, height: 0, borderTop: '2px dashed #94A0B5' }} />
           <span style={{ color: 'var(--text2)' }}>{tt('Раньше')}: <strong>{fmtMoney(prevSum)}</strong></span>
         </div>
         {delta != null && (

@@ -79,8 +79,8 @@ export default function PersonasTool() {
 
       <div className="grid-3" style={{ marginBottom: 16 }}>
         <Tile icon="👥" label={tt('Всего портретов')}  value={fmtNum(list.length)} sub={tt('ЦА-аватаров')} color="#EC4899" />
-        <Tile icon="🎯" label={tt('С JTBD')}            value={fmtNum(list.filter(p => p.jtbd).length)} sub={tt('есть задача-кандидат')} color="#7C3AED" />
-        <Tile icon="💔" label={tt('С болями')}          value={fmtNum(list.filter(p => p.pains).length)} sub={tt('описаны pain points')} color="#EF4444" />
+        <Tile icon="🎯" label={tt('С JTBD')}            value={fmtNum(list.filter(p => p.jtbd).length)} sub={tt('есть задача-кандидат')} color="#1D4ED8" />
+        <Tile icon="💔" label={tt('С болями')}          value={fmtNum(list.filter(p => p.pains).length)} sub={tt('описаны pain points')} color="#DC2626" />
       </div>
 
       {editing !== null && (

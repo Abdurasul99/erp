@@ -4,6 +4,11 @@ import { useMsg, formatLastLogin, filterByPeriod } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
+import { SECTIONS } from '../owner/modules.js';
+
+// Все инструменты (для матрицы доступов): id → используется в users.blocked_tools.
+const ALL_TOOL_IDS = SECTIONS.flatMap(s => (s.tools || []).map(t => t.id));
+const PERMS_SECTIONS = SECTIONS.filter(s => s.tools && s.tools.length);
 
 const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
 const roleBadge = { founder: 'badge-blue', gen_dir: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
@@ -92,7 +97,9 @@ export default function AdminPanel() {
       } else if (activeModal === 'branch') {
         await api.post('/branches', modalData);
       } else if (activeModal === 'user') {
-        if (!modalData.password || modalData.password.length < 4) { setMsg('error', t('minPassword')); return; }
+        if (!modalData.username || modalData.username.trim().length < 3) { setMsg('error', t('loginMin') || 'Логин минимум 3 символа'); return; }
+        const pw = modalData.password || '';
+        if (pw.length < 8 || !/[a-zA-Zа-яА-Я]/.test(pw) || !/[0-9]/.test(pw)) { setMsg('error', t('passwordRule') || 'Пароль: минимум 8 символов, буква и цифра'); return; }
         await api.post('/users', modalData);
       }
       setMsg('success', t('success'));
@@ -110,6 +117,18 @@ export default function AdminPanel() {
       } else if (activeModal === 'editUser') {
         await api.put(`/users/${modalData.id}`, modalData);
       }
+      setMsg('success', t('success'));
+      closeModal();
+      loadAll();
+    } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
+  };
+
+  const handlePermissions = async () => {
+    try {
+      await api.put(`/users/${modalData.id}/permissions`, {
+        blocked_tools: Array.isArray(modalData.blocked_tools) ? modalData.blocked_tools : [],
+        ai_enabled: modalData.ai_enabled !== false,
+      });
       setMsg('success', t('success'));
       closeModal();
       loadAll();
@@ -180,6 +199,13 @@ export default function AdminPanel() {
         <div style={{ display: 'flex', gap: '3px', flexShrink: 0 }}>
           <button className="action-btn action-btn-edit" title={t('edit')} onClick={() => openModal('editUser', { ...u, newPassword: '' })}>
             <Icon name="edit" size={11} color="var(--primary)" />
+          </button>
+          <button title="Доступ к инструментам и AI"
+            onClick={() => openModal('permissions', { id: u.id, username: u.username, role: u.role,
+              blocked_tools: Array.isArray(u.blocked_tools) ? [...u.blocked_tools] : [],
+              ai_enabled: u.ai_enabled !== false })}
+            style={{ width: '26px', height: '26px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '12px', background: 'rgba(29,78,216,.1)' }}>
+            🎛️
           </button>
           <button title={u.is_blocked ? t('unblock') : t('block')} onClick={() => handleBlock(u)}
             style={{ width: '26px', height: '26px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '12px', background: u.is_blocked ? 'rgba(34,197,94,.1)' : 'rgba(245,158,11,.1)' }}>
@@ -266,8 +292,7 @@ export default function AdminPanel() {
             <button className="btn btn-sm" style={{ padding: '5px 10px', fontSize: '11px', background: 'rgba(67,56,202,.1)', border: 'none', color: 'var(--primary)', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Nunito', sans-serif", fontWeight: 700 }}
               onClick={() => {
                 const hasFounder = !!getCompanyFounder(company.id);
-                const hasGenDir = !!getCompanyGenDir(company.id);
-                const defaultRole = !hasFounder ? 'founder' : !hasGenDir ? 'gen_dir' : 'manager';
+                const defaultRole = !hasFounder ? 'founder' : 'manager';
                 openModal('user', { company_id: company.id, role: defaultRole });
               }}>
               + {t('addUser')}
@@ -317,19 +342,24 @@ export default function AdminPanel() {
     const isBranch = m.includes('branch');
     const isCompany = m.includes('company');
     const isPwd = activeModal === 'resetPwd';
+    const isPerms = activeModal === 'permissions';
+    const blockedSet = new Set(modalData.blocked_tools || []);
+    const toggleTool = (id) => { const s = new Set(modalData.blocked_tools || []); s.has(id) ? s.delete(id) : s.add(id); setModalData({ ...modalData, blocked_tools: [...s] }); };
+    const allowedCount = ALL_TOOL_IDS.length - blockedSet.size;
 
-    const title = isEdit
+    const title = isPerms ? `Доступы — @${modalData.username}`
+      : isEdit
       ? (isUser ? `${t('editUserTitle')} — @${modalData.username}` : isCompany ? t('editCompany') : t('editBranch'))
       : isPwd ? t('changePassword')
       : isUser ? t('addUser') : isBranch ? `+ ${t('branches')}` : `+ ${t('companies')}`;
 
-    const onSave = isEdit ? handleEdit : isPwd ? handleResetPwd : handleCreate;
+    const onSave = isPerms ? handlePermissions : isEdit ? handleEdit : isPwd ? handleResetPwd : handleCreate;
     const companiesForBranch = companies;
     const branchesForUser = allBranches.filter(b => b.company_id === (parseInt(modalData.company_id) || modalData.company_id));
 
     return (
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
-        <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', maxWidth: '480px', width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,.2)', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', maxWidth: isPerms ? '680px' : '480px', width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,.2)', maxHeight: '90vh', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div style={{ fontWeight: 800, fontSize: '18px' }}>{title}</div>
             <button onClick={closeModal} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '22px', color: '#9EA3BF' }}>×</button>
@@ -464,6 +494,56 @@ export default function AdminPanel() {
                 </button>
               )}
             </>
+          )}
+
+          {/* Гранулярные доступы: AI + матрица инструментов */}
+          {isPerms && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: '#EEF3FF', borderRadius: 10, marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>🤖 AI-помощник</div>
+                  <div style={{ fontSize: 12, color: '#6B6F8A' }}>AI-чат, анализ, подсказки — блокируется и на сервере</div>
+                </div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
+                  <input type="checkbox" checked={modalData.ai_enabled !== false} onChange={e => setModalData({ ...modalData, ai_enabled: e.target.checked })} />
+                  {modalData.ai_enabled !== false ? 'Включён' : 'Выключен'}
+                </label>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontWeight: 800, fontSize: 14 }}>Инструменты <span style={{ color: '#6B6F8A', fontWeight: 600, fontSize: 12 }}>· доступно {allowedCount} из {ALL_TOOL_IDS.length}</span></div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, blocked_tools: [] })}>Открыть все</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, blocked_tools: [...ALL_TOOL_IDS] })}>Скрыть все</button>
+                </div>
+              </div>
+              <div style={{ maxHeight: '46vh', overflowY: 'auto', paddingRight: 4 }}>
+                {PERMS_SECTIONS.map(sec => {
+                  const ids = sec.tools.map(tl => tl.id);
+                  const allHidden = ids.every(id => blockedSet.has(id));
+                  return (
+                    <div key={sec.id} style={{ marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '6px 0' }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: sec.color || '#1D4ED8' }}>{sec.icon} {sec.title}</div>
+                        <button type="button" onClick={() => { const s = new Set(modalData.blocked_tools || []); if (allHidden) ids.forEach(id => s.delete(id)); else ids.forEach(id => s.add(id)); setModalData({ ...modalData, blocked_tools: [...s] }); }}
+                          style={{ border: 'none', background: 'none', color: '#6B6F8A', fontSize: 11, cursor: 'pointer' }}>{allHidden ? 'открыть раздел' : 'скрыть раздел'}</button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                        {sec.tools.map(tl => {
+                          const blocked = blockedSet.has(tl.id);
+                          return (
+                            <label key={tl.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 7px', borderRadius: 7, cursor: 'pointer', background: blocked ? '#FFF1F1' : '#F1FBF3', border: '1px solid ' + (blocked ? '#FBD5D5' : '#D6F0DD') }}>
+                              <input type="checkbox" checked={!blocked} onChange={() => toggleTool(tl.id)} />
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tl.icon} {tl.title}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: '#9094B0', margin: '8px 0 2px' }}>Снятая галка = инструмент скрыт у пользователя в его панели.</div>
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>

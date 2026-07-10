@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WareApp · Симулятор нагрузки</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🌊</text></svg>">
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  :root{--bg:#F5F8FD;--card:#FFFFFF;--line:#E3EAF3;--soft:#F4F7FC;--txt:#0F1B33;--mut:#6B7A99;--pri:#2563EB;--grn:#16a34a;--red:#dc2626;--amb:#d97706}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:'Segoe UI',Roboto,system-ui,sans-serif;font-size:14px}
+  .wrap{max-width:1200px;margin:0 auto;padding:18px}
+  h1{font-size:20px;margin:0 0 2px;color:var(--txt)} .sub{color:var(--mut);font-size:12px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(15,27,51,.05)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+  label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px}
+  input,select{background:#fff;border:1.5px solid var(--line);color:var(--txt);border-radius:8px;padding:7px 9px;font-size:13px}
+  input[type=number]{width:88px}
+  button{background:var(--pri);color:#fff;border:none;border-radius:9px;padding:9px 16px;font-weight:700;cursor:pointer;font-size:13px}
+  button.ghost{background:#EEF3FB;color:var(--pri)} button.grn{background:var(--grn)} button.red{background:var(--red)} button.amb{background:var(--amb)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .kpi{background:var(--soft);border:1px solid var(--line);border-radius:11px;padding:11px 13px}
+  .kpi .v{font-size:24px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--txt)} .kpi .l{font-size:11px;color:var(--mut)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase}
+  .mono{font-family:'JetBrains Mono',monospace} .pill{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .on{background:rgba(22,163,74,.12);color:var(--grn)} .off{background:rgba(107,122,153,.14);color:var(--mut)}
+  .tag{display:inline-block;background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin:1px;font-size:11px}
+  canvas{width:100%;height:140px;display:block}
+  .err{color:var(--red)} .ok{color:var(--grn)} .hint{color:var(--mut);font-size:12px} a{color:var(--pri)}
+  .login{max-width:380px;margin:8vh auto 0} .login input{width:100%;margin-bottom:10px;padding:10px}
+  .sched{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:700;color:var(--pri)}
+</style>
+</head>
+<body>
+<div id="app" class="wrap">
+
+  <!-- ЭКРАН ЛОГИНА (реальный админ WareApp) -->
+  <div v-if="!authed" class="login">
+    <h1>🌊 WareApp · Симулятор</h1>
+    <div class="sub">Вход в панель управления нагрузкой</div>
+    <div class="card">
+      <label>Логин</label>
+      <input v-model="loginUser" placeholder="admin" @keyup.enter="doLogin" />
+      <label>Пароль (админа из базы)</label>
+      <input type="password" v-model="loginPwd" placeholder="пароль администратора" @keyup.enter="doLogin" />
+      <button style="width:100%" :disabled="checking" @click="doLogin">{{ checking?'Проверяю…':'Войти' }}</button>
+      <div class="err" style="margin-top:8px" v-if="loginErr">{{ loginErr }}</div>
+      <div class="hint" style="margin-top:10px">Вход — учётной записью администратора WareApp (логин и пароль из базы).</div>
+    </div>
+  </div>
+
+  <!-- ПАНЕЛЬ -->
+  <template v-else>
+  <h1>🌊 WareApp · Симулятор нагрузки
+    <span class="pill" :class="connected?'on':'off'">{{ connected?'online':'offline' }}</span>
+    <button class="ghost" style="float:right;padding:6px 12px" @click="logout">Выйти</button>
+  </h1>
+  <div class="sub">Реальный цикл через API ({{ cfg.apiBase }}) · цель — &gt;100 операций/с · данные помечены [SIM]</div>
+
+  <div class="card">
+    <div class="row">
+      <div><label>Компаний</label><input type="number" v-model.number="form.count" min="1" max="20"></div>
+      <div><label>Филиалов</label><input type="number" v-model.number="form.branches" min="1" max="10"></div>
+      <div><label>Складовщиков</label><input type="number" v-model.number="form.warehouses" min="1" max="10"></div>
+      <div><label>Продавцов</label><input type="number" v-model.number="form.sellers" min="1" max="30"></div>
+      <div><label>Кассиров</label><input type="number" v-model.number="form.cashiers" min="1" max="10"></div>
+      <div><label>Товаров</label><input type="number" v-model.number="form.products" min="1" max="500"></div>
+      <div><label>Клиентов</label><input type="number" v-model.number="form.customers" min="0" max="200"></div>
+      <button :disabled="busy" @click="create">{{ busy?'Создаю…':'Создать компании' }}</button>
+    </div>
+    <div class="hint" style="margin-top:8px" v-if="provLog">{{ provLog }}</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div><label>Целевой темп (msg/с)</label><input type="number" v-model.number="rate" min="0" max="5000" style="width:110px"></div>
+      <div><label>Длительность</label><input type="number" v-model.number="durVal" min="0" max="999" style="width:80px"></div>
+      <div><label>&nbsp;</label>
+        <select v-model="durUnit">
+          <option value="forever">бессрочно</option>
+          <option value="minute">минут</option>
+          <option value="hour">часов</option>
+          <option value="day">дней</option>
+          <option value="week">недель</option>
+          <option value="month">месяцев</option>
+        </select>
+      </div>
+      <button class="grn" @click="startAll">▶ Старт всех ({{ companies.length }})</button>
+      <button class="ghost" @click="applyRate">Применить темп</button>
+      <button class="red" @click="stopAll">■ Стоп всех</button>
+      <button class="amb" @click="cleanup" :disabled="busy">🧹 Очистить [SIM]</button>
+    </div>
+    <div class="sched" style="margin-top:10px" v-if="endAt">
+      ⏱ Запланировано до <b>{{ fmtDate(endAt) }}</b> · осталось <b>{{ fmtLeft(endAt-now) }}</b>
+    </div>
+    <div class="hint" style="margin-top:10px" v-else-if="run.length">Идёт бессрочно (до ручного «Стоп»).</div>
+  </div>
+
+  <div class="card" style="display:flex;gap:32px;flex-wrap:wrap;align-items:center;background:linear-gradient(135deg,#EAF2FF,#FFFFFF)">
+    <div><div style="font-size:30px;font-weight:900;color:var(--grn);font-family:'JetBrains Mono',monospace">{{ fmt(totalRevenue) }} <small style="font-size:15px;color:var(--mut)">сум</small></div><div style="font-size:12px;color:var(--mut)">💰 Выручка всех [SIM]-компаний (живая)</div></div>
+    <div><div style="font-size:22px;font-weight:800">{{ fmt(totalDeals) }}</div><div style="font-size:12px;color:var(--mut)">продаж (чеков)</div></div>
+    <div><div style="font-size:22px;font-weight:800">{{ fmt(totalCash) }} <small style="color:var(--mut)">сум</small></div><div style="font-size:12px;color:var(--mut)">приход кассы</div></div>
+  </div>
+
+  <div class="card">
+    <div class="kpis">
+      <div class="kpi"><div class="v">{{ m.rate.published }}</div><div class="l">опубликовано/с</div></div>
+      <div class="kpi"><div class="v" style="color:var(--grn)">{{ m.rate.ok }}</div><div class="l">успешно/с</div></div>
+      <div class="kpi"><div class="v err">{{ m.rate.fail }}</div><div class="l">ошибок/с</div></div>
+      <div class="kpi"><div class="v">{{ m.inflight }}</div><div class="l">в полёте</div></div>
+      <div class="kpi"><div class="v" :class="m.queue>1000?'err':''">{{ m.queue }}</div><div class="l">очередь</div></div>
+      <div class="kpi"><div class="v">{{ m.latency.p50 }}<small>мс</small></div><div class="l">latency p50</div></div>
+      <div class="kpi"><div class="v">{{ m.latency.p95 }}<small>мс</small></div><div class="l">latency p95</div></div>
+      <div class="kpi"><div class="v">{{ m.latency.p99 }}<small>мс</small></div><div class="l">latency p99</div></div>
+      <div class="kpi"><div class="v">{{ fmt(m.totals.ok) }}</div><div class="l">всего операций</div></div>
+    </div>
+    <canvas ref="chart" style="margin-top:14px"></canvas>
+    <div class="hint">Синий — успешно/с · Красный — ошибок/с · Жёлтый — очередь (backpressure). Рост очереди = сервер/БД на пределе.</div>
+    <div style="margin-top:10px" v-if="Object.keys(m.errors).length">
+      <label>Ошибки:</label>
+      <span class="tag" v-for="(v,k) in m.errors" :key="k">{{ k }}: {{ v }}</span>
+    </div>
+  </div>
+
+  <div class="card" v-if="companies.length">
+    <table>
+      <thead><tr><th>Компания</th><th>Филиалы</th><th>Товары</th><th>Продавцы</th><th>Выручка (сум)</th><th>Чеки</th><th>Учредитель (вход)</th><th>Статус</th><th></th></tr></thead>
+      <tbody>
+        <tr v-for="c in companies" :key="c.id">
+          <td>{{ c.name }}</td><td>{{ c.branches }}</td><td>{{ c.products }}</td><td>{{ c.sellers }}</td>
+          <td class="mono" style="color:var(--grn);font-weight:700">{{ fmt(c.revenue) }}</td>
+          <td>{{ fmt(c.deals) }}</td>
+          <td class="mono">{{ c.founder.username }} / {{ c.founder.password }}
+            <button class="ghost" style="padding:3px 8px;font-size:11px" @click="copy(c.founder.username+' / '+c.founder.password)">copy</button>
+          </td>
+          <td><span class="pill" :class="run.includes(c.id)?'on':'off'">{{ run.includes(c.id)?'идёт':'стоп' }}</span></td>
+          <td><button class="ghost" style="padding:5px 10px;font-size:12px" @click="verify(c)">Проверить инструменты</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="hint" style="margin-top:8px">Войди в WareApp учредителем любой [SIM]-компании (логин/пароль выше) → данные наполняются в реальном времени.</div>
+  </div>
+
+  <div class="card" v-if="verifyRes">
+    <b>Проверка инструментов «{{ verifyRes.name }}»:</b>
+    <span :class="verifyRes.fail?'err':'ok'"> {{ verifyRes.pass }}/{{ verifyRes.total }} OK</span>
+    <span class="err" v-if="verifyRes.fail"> · {{ verifyRes.fail }} не отдали 200</span>
+    <div style="margin-top:8px">
+      <span class="tag" v-for="r in verifyRes.results" :key="r.ep" :style="{color: r.ok?'var(--grn)':'var(--red)'}">{{ r.ep }} · {{ r.status }}</span>
+    </div>
+  </div>
+  </template>
+</div>
+
+<script>
+const { createApp } = Vue;
+const UNIT_MS = { minute:60e3, hour:3600e3, day:864e5, week:7*864e5, month:30*864e5 };
+createApp({
+  data(){return{
+    authed:false, key:'', loginUser:'admin', loginPwd:'', loginErr:'', checking:false,
+    cfg:{apiBase:'',concurrency:0},
+    form:{count:1,branches:2,warehouses:1,sellers:3,cashiers:1,products:30,customers:10},
+    companies:[], run:[], rate:120, durVal:1, durUnit:'forever', endAt:null, now:Date.now(),
+    busy:false, provLog:'', connected:false, verifyRes:null,
+    m:{rate:{published:0,ok:0,fail:0,consumed:0},inflight:0,queue:0,latency:{p50:0,p95:0,p99:0},totals:{ok:0},errors:{}},
+    hist:[], rateTouched:false,
+  }},
+  computed:{
+    totalRevenue(){return this.companies.reduce((s,c)=>s+(c.revenue||0),0)},
+    totalDeals(){return this.companies.reduce((s,c)=>s+(c.deals||0),0)},
+    totalCash(){return this.companies.reduce((s,c)=>s+(c.cashIn||0),0)},
+  },
+  methods:{
+    fmt(n){return (n||0).toLocaleString('ru-RU')},
+    fmtDate(ms){return new Date(ms).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})},
+    fmtLeft(ms){if(ms<=0)return '—';const s=Math.floor(ms/1000),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),mn=Math.floor(s%3600/60);return (d?d+'д ':'')+(h?h+'ч ':'')+mn+'м'},
+    async api(path,body){const sep=path.includes('?')?'&':'?';const url=path+(this.key?sep+'key='+encodeURIComponent(this.key):'');const r=await fetch(url,{method:body?'POST':'GET',headers:{'content-type':'application/json','x-sim-key':this.key},body:body?JSON.stringify(body):undefined});if(r.status===401){this.authed=false;throw new Error('unauthorized')}return r.json()},
+    async doLogin(){
+      this.loginErr='';this.checking=true;
+      try{
+        const r=await fetch('/api/sim/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:(this.loginUser||'').trim(),password:this.loginPwd})});
+        const j=await r.json();
+        if(r.status===200&&j.ok){this.key=j.token;localStorage.setItem('simkey',j.token);this.authed=true;this.loginPwd='';this.poll();}
+        else this.loginErr=j.error||('Ошибка '+r.status);
+      }catch(e){this.loginErr='Сервер недоступен: '+e.message}
+      this.checking=false;
+    },
+    logout(){this.key='';this.authed=false;localStorage.removeItem('simkey')},
+    async poll(){
+      if(!this.authed)return;
+      try{
+        const s=await this.api('/api/sim/state');
+        if(!s||!s.config)return;
+        this.connected=true;this.cfg=s.config;this.companies=s.companies||[];this.run=s.running||[];this.m=s.metrics||this.m;
+        this.endAt=s.endAt||null;this.now=s.now||Date.now();
+        if(!this.rateTouched&&s.rate)this.rate=s.rate;
+        this.hist.push({ok:this.m.rate.ok,fail:this.m.rate.fail,queue:this.m.queue});if(this.hist.length>160)this.hist.shift();
+        this.draw();
+      }catch(e){this.connected=false}
+    },
+    durationMs(){return this.durUnit==='forever'||!(this.durVal>0)?0:Math.round(this.durVal*UNIT_MS[this.durUnit])},
+    async create(){this.busy=true;this.provLog='Создаю компании через реальный API…';try{const r=await this.api('/api/sim/companies',this.form);this.provLog=r.ok?('Готово: +'+r.created.length+' компаний'):('Ошибка: '+r.error);}catch(e){this.provLog='Ошибка: '+e.message}await this.poll();this.busy=false;},
+    async startAll(){this.rateTouched=true;await this.api('/api/sim/start',{rate:this.rate,durationMs:this.durationMs()});await this.poll();},
+    async applyRate(){this.rateTouched=true;await this.api('/api/sim/rate',{rate:this.rate});},
+    async stopAll(){await this.api('/api/sim/stop',{});await this.poll();},
+    async cleanup(){if(!confirm('Удалить ВСЕ [SIM]-данные?'))return;this.busy=true;const r=await this.api('/api/sim/cleanup',{});this.provLog='Очищено компаний: '+(r.companies||0);await this.poll();this.busy=false;},
+    async verify(c){this.verifyRes={name:c.name,pass:'…',total:'',fail:0,results:[]};try{const r=await this.api('/api/sim/verify',{id:c.id});this.verifyRes={name:c.name,...r};}catch(e){this.verifyRes=null}},
+    copy(t){navigator.clipboard&&navigator.clipboard.writeText(t)},
+    draw(){const cv=this.$refs.chart;if(!cv)return;const dpr=devicePixelRatio||1;const W=cv.clientWidth,H=140;cv.width=W*dpr;cv.height=H*dpr;const x=cv.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,W,H);
+      const h=this.hist;if(h.length<2)return;const maxR=Math.max(10,...h.map(p=>Math.max(p.ok,p.fail)));const maxQ=Math.max(10,...h.map(p=>p.queue));
+      const line=(key,col,mx)=>{x.beginPath();h.forEach((p,i)=>{const px=i/(h.length-1)*W;const py=H-4-(p[key]/mx)*(H-12);i?x.lineTo(px,py):x.moveTo(px,py)});x.strokeStyle=col;x.lineWidth=2;x.stroke()};
+      line('queue','#d97706',maxQ);line('fail','#dc2626',maxR);line('ok','#2563eb',maxR);
+    },
+  },
+  async mounted(){
+    const urlKey=new URLSearchParams(location.search).get('key');
+    const k=(urlKey||localStorage.getItem('simkey')||'').trim();
+    if(k){try{const r=await fetch('/api/sim/state',{headers:{'x-sim-key':k}});if(r.status===200){this.key=k;localStorage.setItem('simkey',k);this.authed=true;}}catch(e){}}
+    if(this.authed)this.poll();
+    setInterval(()=>{if(this.authed)this.poll();else this.now=Date.now();},1000);
+    window.addEventListener('resize',()=>this.draw());
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

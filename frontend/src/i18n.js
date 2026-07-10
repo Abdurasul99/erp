@@ -1,7 +1,7 @@
 export const translations = {
   ru: {
     // App
-    appName: 'ERP System', appSubtitle: 'Система управления бизнесом',
+    appName: 'Wave ERP', appSubtitle: 'Система управления бизнесом',
     // Nav
     warehouse: 'Склад', cash: 'Касса', profit: 'Прибыль',
     desktop: 'Компьютер', mobile: 'Телефон', menu: 'Меню',
@@ -121,7 +121,7 @@ export const translations = {
     deleteConfirm: 'будет удалён безвозвратно.',
     // Roles
     adminRole: 'Администратор', adminRoleDesc: 'Управление системой',
-    genDirRole: 'Ген. Директор', genDirRoleDesc: 'Полный доступ к компании',
+    genDirRole: 'Директор сети', genDirRoleDesc: 'Свои филиалы · без стратегических финансов',
     founderRole: 'Учредитель', founderRoleDesc: 'Учредитель компании',
     managerRole: 'Менеджер', managerRoleDesc: 'Управляет филиалом',
     cashierRole: 'Кассир', cashierRoleDesc: 'Касса + склад',
@@ -216,7 +216,7 @@ export const translations = {
 
   uz: {
     // App
-    appName: 'ERP System', appSubtitle: 'Biznes boshqaruv tizimi',
+    appName: 'Wave ERP', appSubtitle: 'Biznes boshqaruv tizimi',
     // Nav
     warehouse: 'Ombor', cash: 'Kassa', profit: 'Foyda',
     desktop: 'Kompyuter', mobile: 'Telefon', menu: 'Menyu',
@@ -333,7 +333,15 @@ export const translations = {
     deleteConfirm: 'qaytarib bo\'lmas tarzda o\'chiriladi.',
     // Roles
     adminRole: 'Administrator', adminRoleDesc: 'Tizimni boshqarish',
-    genDirRole: 'Bosh direktor', genDirRoleDesc: 'Kompaniyaga to\'liq kirish',
+    genDirRole: 'Tarmoq direktori', genDirRoleDesc: 'O\'z filiallari · strategik moliyasiz',
+    // Профиль сотрудника (ключи = русские строки, ru берётся из ключа)
+    'Профиль': 'Profil', 'Должность': 'Lavozim', 'Телефон': 'Telefon',
+    'Дата рождения': 'Tug\'ilgan sana', 'Дата приёма': 'Ishga qabul sanasi',
+    'Учебное заведение': 'O\'quv muassasasi', 'Опыт работы': 'Ish tajribasi',
+    'Предыдущие места работы': 'Oldingi ish joylari', 'Заметки': 'Eslatmalar',
+    '📷 Загрузить фото': '📷 Rasm yuklash', 'Загрузка…': 'Yuklanmoqda…', 'Убрать': 'Olib tashlash',
+    'напр. Старший продавец': 'masalan, Katta sotuvchi', 'ВУЗ / колледж · специальность': 'OTM / kollej · mutaxassislik',
+    'напр. 5 лет в рознице': 'masalan, chakana savdoda 5 yil', 'Компания · должность · годы…': 'Kompaniya · lavozim · yillar…',
     founderRole: 'Ta\'sischi', founderRoleDesc: 'Kompaniya ta\'sischisi',
     managerRole: 'Menejer', managerRoleDesc: 'Filialni boshqaradi',
     cashierRole: 'Kassir', cashierRoleDesc: 'Kassa + ombor',

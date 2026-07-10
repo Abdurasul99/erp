@@ -29,10 +29,10 @@ export default function ContactPointsTool() {
     <>
       <PageHeader title={tt('📍 Точки контакта')} sub={tt('До · во время · после покупки')} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📍" label={tt('Всего')} value="14" color="#5B4FE8" />
-        <Tile icon="✅" label={tt('Активных')} value="11" color="#22C55E" />
-        <Tile icon="🚧" label={tt('В плане')} value="3" color="#F59E0B" />
-        <Tile icon="🎯" label={tt('Конверсия')} value="8.4%" delta={3} color="#FF6B2B" />
+        <Tile icon="📍" label={tt('Всего')} value="14" color="#1D4ED8" />
+        <Tile icon="✅" label={tt('Активных')} value="11" color="#16A34A" />
+        <Tile icon="🚧" label={tt('В плане')} value="3" color="#D97706" />
+        <Tile icon="🎯" label={tt('Конверсия')} value="8.4%" delta={3} color="#D97706" />
       </div>
       {POINTS.map(s => (
         <Card key={s.stage} icon={s.icon} title={tt(s.stage)} style={{ marginBottom: 14 }}>

@@ -5,7 +5,7 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const http = require('http');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'warehouse_jwt_secret_2024_xk9q';
+const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = process.env.PORT || 3001;
 const TARGET_PRODUCTS = 100000;
 const INCOMES_VIA_API = 2000;   // real API calls
@@ -15,7 +15,7 @@ const CONCURRENCY = 20;
 const pool = new Pool({
   database: process.env.DB_NAME || 'warehouse',
   user: process.env.DB_USER || 'wareapp_user',
-  password: process.env.DB_PASS || 'Wareapp2024!',
+  password: process.env.DB_PASS,
   host: process.env.DB_HOST || 'localhost', port: 5432, max: 50,
 });
 

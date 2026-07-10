@@ -32,6 +32,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code personal/local settings (permissions, etc.) — never commit
+.claude/settings.local.json
+
 # Test artefacts
 coverage/
 .nyc_output/

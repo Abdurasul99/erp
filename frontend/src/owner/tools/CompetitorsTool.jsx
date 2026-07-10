@@ -8,9 +8,9 @@ export default function CompetitorsTool() {
     <>
       <PageHeader title={tt('🔭 Конкуренты')} sub={tt('Мониторинг цен · сильные/слабые стороны')} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="🔭" label={tt('Конкурентов')} value="6" color="#5B4FE8" />
-        <Tile icon="🚨" label={tt('Сменили цены')} value="3" sub={tt('за неделю')} color="#F59E0B" />
-        <Tile icon="🆕" label={tt('Новые товары')} value="8" color="#22C55E" />
+        <Tile icon="🔭" label={tt('Конкурентов')} value="6" color="#1D4ED8" />
+        <Tile icon="🚨" label={tt('Сменили цены')} value="3" sub={tt('за неделю')} color="#D97706" />
+        <Tile icon="🆕" label={tt('Новые товары')} value="8" color="#16A34A" />
       </div>
       <Card icon="🆚" title={tt('Сравнение цен')}>
         <table>

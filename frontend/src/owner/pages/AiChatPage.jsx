@@ -225,7 +225,7 @@ export default function AiChatPage() {
                 display: 'flex', alignItems: 'center', gap: 8,
                 transition: 'background-color .15s',
               }}
-              onMouseEnter={e => { if (s.id !== activeId) e.currentTarget.style.background = 'rgba(91,79,232,.06)'; }}
+              onMouseEnter={e => { if (s.id !== activeId) e.currentTarget.style.background = 'rgba(29,78,216,.06)'; }}
               onMouseLeave={e => { if (s.id !== activeId) e.currentTarget.style.background = 'transparent'; }}
             >
               <span style={{ fontSize: 14 }}>💬</span>
@@ -271,18 +271,18 @@ export default function AiChatPage() {
           </button>
           <div style={{
             width: 38, height: 38, borderRadius: 10,
-            background: 'linear-gradient(135deg, #1e1b4b, #5B4FE8)',
+            background: 'linear-gradient(135deg, #1E293B, #1D4ED8)',
             color: '#fff',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 18,
-            boxShadow: '0 4px 12px rgba(91,79,232,.25)',
+            boxShadow: '0 4px 12px rgba(29,78,216,.25)',
           }}>🤖</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 800, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {active?.title ? tt(active.title) : tt('AI-консультант')}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>
-              DeepSeek · {tt('бизнес-консультант · ответы кратко по делу')}
+              Wave AI · {tt('бизнес-консультант · ответы кратко по делу')}
             </div>
           </div>
           <button onClick={startNewChat} className="btn btn-ghost btn-sm" title={tt('Новый чат')}>
@@ -327,7 +327,7 @@ export default function AiChatPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10 }}>
                   {SEED_QUESTIONS.map((q, i) => (
                     <button key={i}
-                      onClick={() => sendMessage(q.text)}
+                      onClick={() => sendMessage(tt(q.text))}
                       style={{
                         padding: '12px 14px',
                         background: 'var(--surface)',
@@ -357,7 +357,7 @@ export default function AiChatPage() {
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {followUps.slice(0, 5).map((q, i) => (
-                    <button key={i} onClick={() => sendMessage(q)} disabled={typing} style={{
+                    <button key={i} onClick={() => sendMessage(tt(q))} disabled={typing} style={{
                       padding: '8px 14px',
                       background: 'var(--surface)',
                       border: '1.5px solid var(--border-strong)',
@@ -471,7 +471,7 @@ function Message({ message, onCopy }) {
             padding: isUser ? '12px 16px' : '14px 18px',
             borderRadius: isUser ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
             background: isUser
-              ? 'linear-gradient(135deg, #5B4FE8, #3D33C4)'
+              ? 'linear-gradient(135deg, #1D4ED8, #1E3A8A)'
               : (message.error ? 'rgba(239,68,68,.10)' : 'var(--bg-2)'),
             color: isUser ? '#fff' : (message.error ? '#b91c1c' : 'var(--text)'),
             fontFamily: isUser ? 'inherit' : "'Inter', 'Nunito', system-ui, sans-serif",
@@ -480,7 +480,7 @@ function Message({ message, onCopy }) {
             letterSpacing: isUser ? 0 : '-0.1px',
             whiteSpace: isUser ? 'pre-wrap' : 'normal',
             wordBreak: 'break-word',
-            boxShadow: isUser ? '0 4px 12px rgba(91,79,232,.20)' : 'var(--shadow-sm)',
+            boxShadow: isUser ? '0 4px 12px rgba(29,78,216,.20)' : 'var(--shadow-sm)',
           }}>
             {isUser ? tt(cleanText) : <RichText text={cleanText} />}
           </div>
@@ -515,13 +515,13 @@ function Avatar({ role }) {
     <div style={{
       width: 34, height: 34, borderRadius: 10,
       background: isUser
-        ? 'linear-gradient(135deg, #FF6B2B, #F59E0B)'
-        : 'linear-gradient(135deg, #1e1b4b, #5B4FE8)',
+        ? 'linear-gradient(135deg, #D97706, #D97706)'
+        : 'linear-gradient(135deg, #1E293B, #1D4ED8)',
       color: '#fff',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontSize: 16,
       flexShrink: 0,
-      boxShadow: isUser ? '0 2px 8px rgba(255,107,43,.25)' : '0 2px 8px rgba(91,79,232,.25)',
+      boxShadow: isUser ? '0 2px 8px rgba(255,107,43,.25)' : '0 2px 8px rgba(29,78,216,.25)',
     }}>
       {isUser ? '👤' : '🤖'}
     </div>

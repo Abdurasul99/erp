@@ -112,8 +112,8 @@ export default function ReferencesTool() {
       ) : tab === 'types' ? (
         <>
           <div className="grid-3" style={{ marginBottom: 16 }}>
-            <Tile icon="🏷️" label={tt('Всего типов')}  value={fmtNum(types.length)} sub={tt('категорий товаров')} color="#FF6B2B" />
-            <Tile icon="📦" label={tt('Товаров')}      value={fmtNum(products.length)} sub={tt('привязаны к типам')} color="#5B4FE8" />
+            <Tile icon="🏷️" label={tt('Всего типов')}  value={fmtNum(types.length)} sub={tt('категорий товаров')} color="#D97706" />
+            <Tile icon="📦" label={tt('Товаров')}      value={fmtNum(products.length)} sub={tt('привязаны к типам')} color="#1D4ED8" />
             <Tile icon="✨" label={tt('Самый частый')} value={
               (() => {
                 const counts = {};
@@ -121,7 +121,7 @@ export default function ReferencesTool() {
                 const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
                 return top ? top[0] : '—';
               })()
-            } sub={tt('по числу товаров')} color="#22C55E" />
+            } sub={tt('по числу товаров')} color="#16A34A" />
           </div>
 
           {canEdit && (
@@ -183,9 +183,9 @@ export default function ReferencesTool() {
       ) : tab === 'brands' ? (
         <>
           <div className="grid-3" style={{ marginBottom: 16 }}>
-            <Tile icon="🏢" label={tt('Всего брендов')} value={fmtNum(brands.length)} color="#7c3aed" />
-            <Tile icon="✨" label={tt('Топ-бренд')}     value={brands[0]?.name || '—'} sub={brands[0] ? `${brands[0].count} ${tt('товаров')}` : ''} color="#FF6B2B" />
-            <Tile icon="📦" label={tt('Без бренда')}   value={fmtNum(products.filter(p => !p.brand).length)} sub={tt('не указан')} color="#9094B0" />
+            <Tile icon="🏢" label={tt('Всего брендов')} value={fmtNum(brands.length)} color="#1D4ED8" />
+            <Tile icon="✨" label={tt('Топ-бренд')}     value={brands[0]?.name || '—'} sub={brands[0] ? `${brands[0].count} ${tt('товаров')}` : ''} color="#D97706" />
+            <Tile icon="📦" label={tt('Без бренда')}   value={fmtNum(products.filter(p => !p.brand).length)} sub={tt('не указан')} color="#94A0B5" />
           </div>
           <Card icon="📋" title={`${tt('Бренды')} (${brands.length})`}
             actions={<span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('Добавляется при создании товара')}</span>}>
@@ -207,8 +207,8 @@ export default function ReferencesTool() {
         <>
           <div className="grid-3" style={{ marginBottom: 16 }}>
             <Tile icon="📐" label={tt('Всего единиц')}  value={fmtNum(units.length)} sub={tt('разных')} color="#0EA5E9" />
-            <Tile icon="✨" label={tt('Самая частая')}  value={units[0]?.name || '—'} sub={units[0] ? `${units[0].count} ${tt('товаров')}` : ''} color="#22C55E" />
-            <Tile icon="📦" label={tt('Без ед.')}       value={fmtNum(products.filter(p => !p.unit).length)} sub={tt('не указана')} color="#9094B0" />
+            <Tile icon="✨" label={tt('Самая частая')}  value={units[0]?.name || '—'} sub={units[0] ? `${units[0].count} ${tt('товаров')}` : ''} color="#16A34A" />
+            <Tile icon="📦" label={tt('Без ед.')}       value={fmtNum(products.filter(p => !p.unit).length)} sub={tt('не указана')} color="#94A0B5" />
           </div>
           <Card icon="📋" title={`${tt('Единицы измерения')} (${units.length})`}
             actions={<span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('Меняется при создании товара')}</span>}>
@@ -230,7 +230,7 @@ export default function ReferencesTool() {
         <>
           <div className="grid-2" style={{ marginBottom: 16 }}>
             <Tile icon="⚙️" label={tt('Атрибутов')} value={fmtNum(attrs.length)} sub={tt('цвет / размер / прочее')} color="#9333EA" />
-            <Tile icon="📦" label={tt('С атрибутами')} value={fmtNum(products.filter(p => p.color_size).length)} sub={`${tt('из')} ${products.length} ${tt('товаров')}`} color="#5B4FE8" />
+            <Tile icon="📦" label={tt('С атрибутами')} value={fmtNum(products.filter(p => p.color_size).length)} sub={`${tt('из')} ${products.length} ${tt('товаров')}`} color="#1D4ED8" />
           </div>
           <Card icon="📋" title={`${tt('Атрибуты')} (${attrs.length})`}
             actions={<span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('Сейчас — свободный текст. Структурированные атрибуты добавим позже')}</span>}>

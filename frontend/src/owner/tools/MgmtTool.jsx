@@ -4,12 +4,12 @@ import { useTt } from '../tt.js';
 
 const MATRIX = [
   [
-    { c: '#EF4444', label: 'СРОЧНО · ВАЖНО', items: ['🔥 Решить долг TashTrade', '🚨 Закрыть кассовый разрыв', '⚡ 1:1 с Anvar S.'] },
-    { c: '#22C55E', label: 'НЕСРОЧНО · ВАЖНО', items: ['📚 Запустить онлайн-обучение', '🎯 Стратегия на 2027', '👥 Найм 2 менеджеров B2B'] },
+    { c: '#DC2626', label: 'СРОЧНО · ВАЖНО', items: ['🔥 Решить долг TashTrade', '🚨 Закрыть кассовый разрыв', '⚡ 1:1 с Anvar S.'] },
+    { c: '#16A34A', label: 'НЕСРОЧНО · ВАЖНО', items: ['📚 Запустить онлайн-обучение', '🎯 Стратегия на 2027', '👥 Найм 2 менеджеров B2B'] },
   ],
   [
-    { c: '#F59E0B', label: 'СРОЧНО · НЕВАЖНО', items: ['📞 Перезвонить поставщику X', '✉️ Ответить на email-ы (47)'] },
-    { c: '#9094B0', label: 'НЕСРОЧНО · НЕВАЖНО', items: ['🍽️ Корп. обед', '📺 Просмотр трендов'] },
+    { c: '#D97706', label: 'СРОЧНО · НЕВАЖНО', items: ['📞 Перезвонить поставщику X', '✉️ Ответить на email-ы (47)'] },
+    { c: '#94A0B5', label: 'НЕСРОЧНО · НЕВАЖНО', items: ['🍽️ Корп. обед', '📺 Просмотр трендов'] },
   ],
 ];
 
@@ -19,9 +19,9 @@ export default function MgmtTool() {
     <>
       <PageHeader title={tt('🎓 Управление')} sub={tt('Матрица Эйзенхауэра · ССП · ORG · бизнес-процессы')} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="🎯" label={tt('Стратегических целей')} value="6" sub={tt('на 2026')} color="#5B4FE8" />
-        <Tile icon="👥" label={tt('В команде')} value="14" color="#FF6B2B" />
-        <Tile icon="📋" label={tt('Бизнес-процессов')} value="22" sub={tt('задокументировано')} color="#22C55E" />
+        <Tile icon="🎯" label={tt('Стратегических целей')} value="6" sub={tt('на 2026')} color="#1D4ED8" />
+        <Tile icon="👥" label={tt('В команде')} value="14" color="#D97706" />
+        <Tile icon="📋" label={tt('Бизнес-процессов')} value="22" sub={tt('задокументировано')} color="#16A34A" />
       </div>
       <Card icon="🎯" title={tt('Матрица Эйзенхауэра — задачи дня')}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

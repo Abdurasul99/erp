@@ -45,8 +45,8 @@ export default function ScriptsTool() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
         {scripts.map(s => (
           <button key={s.id} onClick={() => setActive(s.id)} style={{
-            padding: '10px 16px', borderRadius: 10, border: '1.5px solid ' + (active === s.id ? '#5B4FE8' : '#E6E8F2'),
-            background: active === s.id ? 'rgba(91,79,232,.08)' : '#fff', color: active === s.id ? '#5B4FE8' : 'var(--text2)',
+            padding: '10px 16px', borderRadius: 10, border: '1.5px solid ' + (active === s.id ? '#1D4ED8' : '#E3EAF3'),
+            background: active === s.id ? 'rgba(29,78,216,.08)' : '#fff', color: active === s.id ? '#1D4ED8' : 'var(--text2)',
             fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
           }}>{s.icon} {s.title}</button>
         ))}

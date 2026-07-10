@@ -10,9 +10,9 @@ export default function AuditTool() {
     <>
       <PageHeader title={tt('🔍 Инвентаризация')} sub={tt('Сверка фактических остатков vs учёт')} />
       <div className="grid-3" style={{ marginBottom: 18 }}>
-        <Tile icon="✓" label={tt('Последняя')} value="25 мая 2026" sub={tt('успешно завершена')} color="#22C55E" />
-        <Tile icon="📊" label={tt('Совпало')} value="1224/1248" sub="98%" color="#5B4FE8" />
-        <Tile icon="⚠️" label={tt('Расхождения')} value="24" sub={tt('14 излишков + 10 недостач')} color="#F59E0B" />
+        <Tile icon="✓" label={tt('Последняя')} value="25 мая 2026" sub={tt('успешно завершена')} color="#16A34A" />
+        <Tile icon="📊" label={tt('Совпало')} value="1224/1248" sub="98%" color="#1D4ED8" />
+        <Tile icon="⚠️" label={tt('Расхождения')} value="24" sub={tt('14 излишков + 10 недостач')} color="#D97706" />
       </div>
       <Card icon="🚀" title={running ? tt('Идёт инвентаризация...') : tt('Запустить новую инвентаризацию')}>
         {running ? (

@@ -80,9 +80,9 @@ export default function SalesHistoryTool() {
       />
 
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={`${fmtMoneyFull(kpi.today_sum || 0)} ${tt('сум')}`} color="#5B4FE8" />
-        <Tile icon="💰" label={tt('Сумма за период')} value={fmtMoneyFull(kpi.period_sum || 0)} sub={tt('сум')} color="#22C55E" />
-        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум')} color="#FF6B2B" />
+        <Tile icon="🧾" label={tt('Чеков сегодня')} value={fmtNum(kpi.today_count || 0)} sub={`${fmtMoneyFull(kpi.today_sum || 0)} ${tt('сум')}`} color="#1D4ED8" />
+        <Tile icon="💰" label={tt('Сумма за период')} value={fmtMoneyFull(kpi.period_sum || 0)} sub={tt('сум')} color="#16A34A" />
+        <Tile icon="🧮" label={tt('Средний чек')} value={fmtMoneyFull(kpi.avg_check || 0)} sub={tt('сум')} color="#D97706" />
         <Tile icon="🏢" label={tt('B2B доля')} value={(kpi.b2b_share || 0) + '%'} sub={`${fmtNum(kpi.b2b_count || 0)} ${tt('сделок')}`} color="#0EA5E9" />
       </div>
 

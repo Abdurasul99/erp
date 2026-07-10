@@ -64,9 +64,9 @@ export default function HrTool() {
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
             <Tile icon="👥" label={tt('Всего в команде')} value={fmtNum(employees.length)} sub={tt('сотрудников')} color="#9333EA" />
-            <Tile icon="🛒" label={tt('Продавали за 30 дней')} value={fmtNum(sellers.length)} sub={tt('активных')} color="#22C55E" />
+            <Tile icon="🛒" label={tt('Продавали за 30 дней')} value={fmtNum(sellers.length)} sub={tt('активных')} color="#16A34A" />
             <Tile icon="🆕" label={tt('Новички')} value={fmtNum(newHires.length)} sub={tt('меньше 2 месяцев')} color="#0EA5E9" />
-            <Tile icon="💰" label={tt('Продажи команды 30д')} value={fmtMoneyFull(employees.reduce((a, e) => a + e.revenue_30d, 0))} sub={tt('сум')} color="#FF6B2B" />
+            <Tile icon="💰" label={tt('Продажи команды 30д')} value={fmtMoneyFull(employees.reduce((a, e) => a + e.revenue_30d, 0))} sub={tt('сум')} color="#D97706" />
           </div>
 
           <Card icon="🗂" title={tt('Все сотрудники')}>

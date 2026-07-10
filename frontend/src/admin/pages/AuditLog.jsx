@@ -135,7 +135,7 @@ export default function AuditLog() {
                       <td className="mono" style={{ fontSize: 12 }}>{l.entity_id || '—'}</td>
                       <td className="mono" style={{ fontSize: 11, color: 'var(--text3)' }}>{l.ip_address || '—'}</td>
                       <td style={{ fontSize: 11, color: 'var(--text3)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {l.new_value ? JSON.stringify(l.new_value).slice(0, 60) : '—'}
+                        {l.new_value ? JSON.stringify(l.new_value).slice(0, 60) : (l.module || '—')}
                       </td>
                     </tr>
                   );

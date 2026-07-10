@@ -86,9 +86,9 @@ export default function DebtsTool() {
         <>
           <div className="grid-4" style={{ marginBottom: 16 }}>
             <Tile icon="🏭" label={tt('Всего долгов')} value={fmtNum(summary.total)}   sub={`${fmtMoney(summary.totalAmount)} UZS`} color="#0EA5E9" />
-            <Tile icon="🔴" label={tt('Просрочено')}  value={fmtNum(summary.overdue)} sub={`${fmtMoney(summary.overdueAmount)} UZS`} color="#EF4444" />
-            <Tile icon="🟡" label={tt('Скоро срок')}  value={fmtNum(summary.soon)}    sub={tt('≤ 7 дней')} color="#F59E0B" />
-            <Tile icon="🟢" label={tt('В сроке')}     value={fmtNum(summary.ok)}      sub={tt('> 7 дней')} color="#22C55E" />
+            <Tile icon="🔴" label={tt('Просрочено')}  value={fmtNum(summary.overdue)} sub={`${fmtMoney(summary.overdueAmount)} UZS`} color="#DC2626" />
+            <Tile icon="🟡" label={tt('Скоро срок')}  value={fmtNum(summary.soon)}    sub={tt('≤ 7 дней')} color="#D97706" />
+            <Tile icon="🟢" label={tt('В сроке')}     value={fmtNum(summary.ok)}      sub={tt('> 7 дней')} color="#16A34A" />
           </div>
 
           <div className="grid-2" style={{ marginBottom: 16 }}>

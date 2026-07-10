@@ -16,6 +16,7 @@ export const PAPER_SIZES = [
   { id: '58x60', label: '58×60 мм',  w: 58,  h: 60,  hint: 'термостикер (высокий)' },
   { id: '40x30', label: '40×30 мм',  w: 40,  h: 30,  hint: 'малый стикер' },
   { id: '40x25', label: '40×25 мм',  w: 40,  h: 25,  hint: 'узкий малый' },
+  { id: '29x19', label: '29×19 мм · 1 ШК', w: 29, h: 19, hint: 'мини-этикетка 2.9×1.9 см — один штрих-код' },
   { id: '50x30', label: '50×30 мм',  w: 50,  h: 30,  hint: 'небольшой' },
   { id: '80x50', label: '80×50 мм',  w: 80,  h: 50,  hint: 'крупный стикер' },
   { id: '100x50', label: '100×50 мм', w: 100, h: 50, hint: 'широкий стикер' },
@@ -83,6 +84,49 @@ export function getPaperSize(id) {
   return PAPER_SIZES.find(s => s.id === id && s.id !== 'custom') || DEFAULT_PAPER;
 }
 
+// ─── Per-user print preferences (label size + copies) ──────────────────────────
+// Saved under a key suffixed with the current user's id, so several cashiers sharing
+// one device each keep their own default size/copies. Falls back to a global key
+// when there's no logged-in user.
+const PREFS_KEY = 'wareapp_print_prefs';
+function prefsKey() {
+  try {
+    const u = JSON.parse(localStorage.getItem('user') || 'null');
+    return u && u.id ? `${PREFS_KEY}_u${u.id}` : PREFS_KEY;
+  } catch { return PREFS_KEY; }
+}
+
+// Returns { paper, copies, hasSaved }.
+//   paper    — saved paper-size object (preset or custom), or 58×40 default.
+//   copies   — saved copy count, or null if the user has never chosen (forces a pick).
+//   hasSaved — whether this user has saved print prefs before.
+export function loadPrintPrefs() {
+  try {
+    const raw = localStorage.getItem(prefsKey());
+    if (raw) {
+      const p = JSON.parse(raw);
+      const paper = p.sizeId === 'custom'
+        ? makeCustomPaperSize(p.wCm, p.hCm)
+        : (PAPER_SIZES.find(s => s.id === p.sizeId && s.id !== 'custom') || DEFAULT_PAPER);
+      const copies = (typeof p.copies === 'number' && p.copies > 0) ? Math.min(50, p.copies) : null;
+      return { paper, copies, hasSaved: true };
+    }
+  } catch {}
+  return { paper: DEFAULT_PAPER, copies: null, hasSaved: false };
+}
+
+// Persist the user's chosen size + copies as their new default.
+export function savePrintPrefs(paper, copies) {
+  try {
+    localStorage.setItem(prefsKey(), JSON.stringify({
+      sizeId: paper.id,
+      wCm: +(paper.w / 10).toFixed(2),
+      hCm: +(paper.h / 10).toFixed(2),
+      copies: Math.max(1, Math.min(50, parseInt(copies, 10) || 1)),
+    }));
+  } catch {}
+}
+
 // Generate the print HTML.
 // `paper` = { w, h } in mm (use getPaperSize or pass custom).
 // `labels` = array of { name, price, barcode } objects, one per sticker.
@@ -100,22 +144,31 @@ export function makeLabelHTML({ paper = DEFAULT_PAPER, labels = [], count = 1 })
   const barcodeMaxH = Math.max(8, h * 0.55);  // mm
   const barcodeMaxW = Math.max(10, w - padMm * 2); // mm
 
+  const availPt = barcodeMaxW * 2.8346; // usable width in points (1mm ≈ 2.8346pt)
   const pages = [];
   for (const lab of labels) {
     const safeName = safe(lab.name);
     const safePrice = lab.price ? safe(lab.price) : '';
+    // Auto-fit the price font so even a long (8–10 digit) sum fits on ONE line
+    // across the label width. Short prices keep the normal (height-based) size.
+    const pricePt = safePrice
+      ? Math.max(5, Math.min(priceFontPt, Math.round((availPt / (safePrice.length * 0.62)) * 10) / 10))
+      : priceFontPt;
     const pageHtml = `
     <div class="page">
       ${safeName ? `<div class="n">${safeName}</div>` : ''}
       <div class="bc"><svg class="bc-svg" data-code="${safe(lab.barcode)}"></svg></div>
-      ${safePrice ? `<div class="p">${safePrice}</div>` : ''}
+      ${safePrice ? `<div class="p" style="font-size:${pricePt}pt">${safePrice}</div>` : ''}
     </div>`;
     for (let i = 0; i < Math.max(1, count); i++) pages.push(pageHtml);
   }
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Этикетки ${w}×${h}mm × ${pages.length}</title>
+<html><head><meta charset="utf-8"><title> </title>
 <style>
+  /* size + zero margin tells Chrome to drop its header/footer (date / URL) and
+     print the label at its exact physical size. The user must still keep
+     "Margins: None" and "Headers & footers: off" in the print dialog. */
   @page { size: ${w}mm ${h}mm; margin: 0; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #fff; }
@@ -166,6 +219,7 @@ export function makeLabelHTML({ paper = DEFAULT_PAPER, labels = [], count = 1 })
     line-height: 1;
     overflow: hidden;
     width: 100%;
+    white-space: nowrap;
   }
   @media print { body { margin: 0; } }
 </style></head>

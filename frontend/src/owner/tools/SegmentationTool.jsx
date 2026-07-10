@@ -4,22 +4,19 @@ import { Card, Tile, Badge, PageHeader, fmtMoney, fmtNum, Pills } from '../ui.js
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
 
-const SEGMENT_META = {
-  vip:      { label: 'VIP',      tone: 'orange', icon: '👑', desc: 'LTV ≥ 5M UZS · активные'           },
-  regular:  { label: 'Активные', tone: 'green',  icon: '✅', desc: 'Регулярные покупки в последние 60д' },
-  new:      { label: 'Новые',    tone: 'blue',   icon: '✨', desc: 'Зарегистрированы < 30 дней назад' },
-  sleeping: { label: 'Спящие',   tone: 'yellow', icon: '😴', desc: 'Без покупок 60-120 дней — реактивация' },
-  lost:     { label: 'Ушли',     tone: 'red',    icon: '👋', desc: 'Без покупок 120+ дней или никогда не покупали' },
-};
+// Цвет балла R/F/M (1-5): 4-5 зелёный, 3 жёлтый, 1-2 красный.
+const scoreColor = (s) => (s >= 4 ? '#16a34a' : s === 3 ? '#D97706' : '#DC2626');
 
-const TABS = [
-  { value: 'all',      label: 'Все' },
-  { value: 'vip',      label: '👑 VIP' },
-  { value: 'regular',  label: '✅ Активные' },
-  { value: 'sleeping', label: '😴 Спящие' },
-  { value: 'lost',     label: '👋 Ушли' },
-  { value: 'new',      label: '✨ Новые' },
-];
+function RfmChips({ r, f, m }) {
+  const chip = (letter, v) => (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 2,
+      fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 800,
+      color: '#fff', background: scoreColor(v), borderRadius: 5, padding: '1px 5px',
+    }}>{letter}{v}</span>
+  );
+  return <span style={{ display: 'inline-flex', gap: 4 }}>{chip('R', r)}{chip('F', f)}{chip('M', m)}</span>;
+}
 
 export default function SegmentationTool() {
   const { tt } = useTt();
@@ -39,15 +36,25 @@ export default function SegmentationTool() {
       .finally(() => setLoading(false));
   }, [branchId]);
 
-  const summary = data?.summary || {};
+  const segments = data?.segments || [];
   const customers = data?.customers || [];
+  const total = data?.total || 0;
+  const scoring = data?.scoring || {};
+  const segByKey = Object.fromEntries(segments.map(s => [s.key, s]));
   const filtered = tab === 'all' ? customers : customers.filter(c => c.segment === tab);
+
+  // 4 ключевых сегмента в обзоре (как в эталоне): Чемпионы, Лояльные, В зоне риска, Потерянные.
+  const HIGHLIGHT = ['champions', 'loyal', 'at_risk', 'lost'];
+  const HIGHLIGHT_COLOR = { champions: '#D97706', loyal: '#16A34A', at_risk: '#DC2626', lost: '#6B7280' };
+
+  const tabs = [{ value: 'all', label: tt('Все') + ` (${total})` },
+    ...segments.filter(s => s.count > 0).map(s => ({ value: s.key, label: `${s.icon} ${tt(s.label)} (${s.count})` }))];
 
   return (
     <>
       <PageHeader
-        title={tt('🎯 Сегментация клиентов')}
-        sub={tt('RFM-разбивка — кому звонить, кого возвращать')}
+        title={tt('🎯 RFM-сегментация клиентов')}
+        sub={tt('Recency · Frequency · Monetary — кому звонить, кого возвращать')}
         actions={<Badge tone="green">{tt('Live')}</Badge>}
       />
 
@@ -57,16 +64,49 @@ export default function SegmentationTool() {
         <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
       ) : (
         <>
-          <div className="grid-5" style={{ marginBottom: 16 }}>
-            <Tile icon="👑" label={tt('VIP')}      value={fmtNum(summary.vip)}      sub={tt('клиентов')}  color="#FF6B2B" />
-            <Tile icon="✅" label={tt('Активные')} value={fmtNum(summary.regular)}  sub={tt('клиентов')}  color="#22C55E" />
-            <Tile icon="😴" label={tt('Спящие')}   value={fmtNum(summary.sleeping)} sub={tt('60-120 дн')} color="#F59E0B" />
-            <Tile icon="👋" label={tt('Ушли')}     value={fmtNum(summary.lost)}     sub={tt('120+ дн')}   color="#EF4444" />
-            <Tile icon="✨" label={tt('Новые')}    value={fmtNum(summary.new)}      sub={tt('< 30 дн')}   color="#5B4FE8" />
+          {/* Обзор — 4 ключевых сегмента */}
+          <div className="grid-4" style={{ marginBottom: 16 }}>
+            {HIGHLIGHT.map(key => {
+              const s = segByKey[key] || { count: 0, icon: '', label: key };
+              return <Tile key={key} icon={s.icon} label={tt(s.label)} value={fmtNum(s.count)}
+                sub={`${s.pct || 0}% · LTV ${fmtMoney(s.avg_ltv || 0)}`} color={HIGHLIGHT_COLOR[key]} />;
+            })}
           </div>
 
-          <Card icon="📋" title={`${tt('Клиенты')} (${filtered.length})`} actions={<Pills value={tab} onChange={setTab} options={TABS.map(t => ({ ...t, label: tt(t.label) }))} />}
-            style={{ marginBottom: 16 }}>
+          {/* Полная таблица 11 сегментов */}
+          <Card icon="📊" title={tt('11 сегментов — распределение и действия')} style={{ marginBottom: 16 }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>{tt('Сегмент')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Клиентов')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Доля')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Средний LTV')}</th>
+                    <th>{tt('Рекомендованное действие')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {segments.map(s => (
+                    <tr key={s.key} style={{ opacity: s.count > 0 ? 1 : 0.5, cursor: s.count > 0 ? 'pointer' : 'default' }}
+                      tabIndex={s.count > 0 ? 0 : -1} aria-label={`${tt(s.label)}: ${s.count}`}
+                      onClick={() => s.count > 0 && setTab(s.key)}
+                      onKeyDown={(e) => { if (s.count > 0 && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setTab(s.key); } }}>
+                      <td style={{ fontWeight: 700 }}><Badge tone={s.tone}>{s.icon} {tt(s.label)}</Badge></td>
+                      <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNum(s.count)}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{s.pct}%</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(s.avg_ltv)}</td>
+                      <td style={{ fontSize: 12, color: 'var(--text2)' }}>{tt(s.action)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* Таблица клиентов с фильтром по сегменту */}
+          <Card icon="📋" title={`${tt('Клиенты')} (${filtered.length})`}
+            actions={<Pills value={tab} onChange={setTab} options={tabs} />} style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
@@ -74,21 +114,23 @@ export default function SegmentationTool() {
                     <th>{tt('Клиент')}</th>
                     <th>{tt('Телефон')}</th>
                     <th>{tt('Сегмент')}</th>
-                    <th style={{ textAlign: 'right' }}>{tt('Сделок')}</th>
-                    <th style={{ textAlign: 'right' }}>{tt('Выручка')}</th>
+                    <th>{tt('RFM')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('Покупок')}</th>
+                    <th style={{ textAlign: 'right' }}>{tt('LTV')}</th>
                     <th style={{ textAlign: 'right' }}>{tt('Посл. покупка')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
-                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>{tt('Нет клиентов в этом сегменте')}</td></tr>
+                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>{tt('Нет клиентов в этом сегменте')}</td></tr>
                   ) : filtered.slice(0, 200).map(c => {
-                    const meta = SEGMENT_META[c.segment] || {};
+                    const s = segByKey[c.segment] || {};
                     return (
                       <tr key={c.id}>
                         <td style={{ fontWeight: 700 }}>{c.name}</td>
                         <td className="mono" style={{ fontSize: 12, color: 'var(--text2)' }}>{c.phone || '—'}</td>
-                        <td><Badge tone={meta.tone}>{meta.icon} {tt(meta.label)}</Badge></td>
+                        <td><Badge tone={s.tone}>{s.icon} {tt(c.segment_label || s.label || c.segment)}</Badge></td>
+                        <td><RfmChips r={c.r_score} f={c.f_score} m={c.m_score} /></td>
                         <td className="mono" style={{ textAlign: 'right' }}>{c.deals}</td>
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoney(c.revenue)}</td>
                         <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--text2)' }}>
@@ -107,26 +149,23 @@ export default function SegmentationTool() {
             )}
           </Card>
 
-          <div className="grid-3">
-            {['vip', 'sleeping', 'lost'].map(seg => {
-              const meta = SEGMENT_META[seg];
-              const count = summary[seg] || 0;
-              return (
-                <Card key={seg} icon={meta.icon} title={`${tt(meta.label)} — ${tt('план действий')}`}>
-                  <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
-                    {tt(meta.desc)}
+          {/* Справка по шкале баллов R/F/M */}
+          <Card icon="📐" title={tt('Как считаются баллы R / F / M (1-5)')}>
+            <div className="grid-3">
+              {[['R', tt('Recency — давность покупки'), scoring.r],
+                ['F', tt('Frequency — частота покупок / год'), scoring.f],
+                ['M', tt('Monetary — сумма покупок / год'), scoring.m]].map(([letter, title, items]) => (
+                <div key={letter}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
+                    <span style={{ color: '#fff', background: 'var(--primary)', borderRadius: 6, padding: '1px 7px', fontFamily: "'JetBrains Mono', monospace" }}>{letter}</span> {title}
                   </div>
-                  <div style={{ marginTop: 12, fontSize: 24, fontWeight: 900 }} className="mono">{count}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>{tt('клиентов в сегменте')}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-                    {seg === 'vip' && tt('Персональный звонок · эксклюзивные предложения · приоритетная поддержка')}
-                    {seg === 'sleeping' && tt('SMS-рассылка со скидкой 10% · напомните о себе · вернуть на радар')}
-                    {seg === 'lost' && tt('Опрос «что пошло не так» · попытка last-chance с агрессивной скидкой')}
+                  <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
+                    {(items || []).map((it, i) => <div key={i}>• {it}</div>)}
                   </div>
-                </Card>
-              );
-            })}
-          </div>
+                </div>
+              ))}
+            </div>
+          </Card>
         </>
       )}
     </>

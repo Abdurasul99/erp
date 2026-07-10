@@ -75,9 +75,9 @@ export default function ModelingTool() {
     const profitDeltaPct = profit0 !== 0 ? (profitDelta / Math.abs(profit0)) * 100 : 0;
     // Рекомендация: смотрим на дельту прибыли + риск оттока
     let verdict, verdictLabel, verdictColor;
-    if (profitDelta > 0 && unitsLost <= U0 * 0.1) { verdict = '✅'; verdictLabel = tt('Безопасно'); verdictColor = '#22C55E'; }
-    else if (profitDelta > 0) { verdict = '⚠️'; verdictLabel = tt('Прибыльно, но риск оттока'); verdictColor = '#F59E0B'; }
-    else { verdict = '❌'; verdictLabel = tt('Невыгодно'); verdictColor = '#EF4444'; }
+    if (profitDelta > 0 && unitsLost <= U0 * 0.1) { verdict = '✅'; verdictLabel = tt('Безопасно'); verdictColor = '#16A34A'; }
+    else if (profitDelta > 0) { verdict = '⚠️'; verdictLabel = tt('Прибыльно, но риск оттока'); verdictColor = '#D97706'; }
+    else { verdict = '❌'; verdictLabel = tt('Невыгодно'); verdictColor = '#DC2626'; }
     return { R0, C0, U0, profit0, R1, profit1, U1, margin0, margin1, unitsLost, unitsGained, profitDelta, profitDeltaPct, verdict, verdictLabel, verdictColor };
   }, [base, pct, sens, tt]);
 
@@ -100,23 +100,23 @@ export default function ModelingTool() {
         <>
           {/* Baseline — реальные текущие цифры */}
           <div className="grid-4" style={{ marginBottom: 16 }}>
-            <Tile icon="💰" label={tt('Выручка / мес (факт)')} value={fmtMoneyFull(calc.R0)} sub={tt('сум')} color="#5B4FE8" />
+            <Tile icon="💰" label={tt('Выручка / мес (факт)')} value={fmtMoneyFull(calc.R0)} sub={tt('сум')} color="#1D4ED8" />
             <Tile icon="📦" label={tt('Продаж / мес')} value={fmtNum(calc.U0)} sub={tt('сделок')} color="#0EA5E9" />
-            <Tile icon="💎" label={tt('Текущая маржа')} value={calc.margin0.toFixed(1) + '%'} color="#22C55E" />
-            <Tile icon="🏦" label={tt('Прибыль / мес (факт)')} value={fmtMoneyFull(calc.profit0)} sub={tt('сум')} color="#FF6B2B" />
+            <Tile icon="💎" label={tt('Текущая маржа')} value={calc.margin0.toFixed(1) + '%'} color="#16A34A" />
+            <Tile icon="🏦" label={tt('Прибыль / мес (факт)')} value={fmtMoneyFull(calc.profit0)} sub={tt('сум')} color="#D97706" />
           </div>
 
           <Card icon="🎯" title={tt('Сценарий: изменить цены на X%')}>
             <div style={{ padding: '16px 0' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
                 <span style={{ fontWeight: 700 }}>{tt('Изменение цен по всему ассортименту:')}</span>
-                <span className="mono" style={{ fontWeight: 900, fontSize: 28, color: pct > 0 ? '#22C55E' : pct < 0 ? '#EF4444' : '#5B4FE8' }}>
+                <span className="mono" style={{ fontWeight: 900, fontSize: 28, color: pct > 0 ? '#16A34A' : pct < 0 ? '#DC2626' : '#1D4ED8' }}>
                   {pct > 0 ? '+' : ''}{pct}%
                 </span>
               </div>
               <input type="range" min="-30" max="50" value={pct} onChange={e => setPct(parseInt(e.target.value))}
                 aria-label={tt('Изменение цен в процентах')}
-                style={{ width: '100%', height: 8, appearance: 'none', background: 'linear-gradient(90deg, #EF4444, #5B4FE8, #22C55E)', borderRadius: 4, outline: 'none' }} />
+                style={{ width: '100%', height: 8, appearance: 'none', background: 'linear-gradient(90deg, #DC2626, #1D4ED8, #16A34A)', borderRadius: 4, outline: 'none' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>
                 <span>−30%</span><span>0</span><span>+50%</span>
               </div>
@@ -128,12 +128,12 @@ export default function ModelingTool() {
 
             <div className="grid-4" style={{ marginTop: 8 }}>
               <Tile icon="💰" label={tt('Прогноз выручки')} value={fmtMoneyFull(calc.R1)}
-                sub={`${tt('было')} ${fmtMoneyFull(calc.R0)}`} color="#5B4FE8" />
+                sub={`${tt('было')} ${fmtMoneyFull(calc.R0)}`} color="#1D4ED8" />
               <Tile icon={calc.unitsLost > 0 ? '📉' : '📈'} label={calc.unitsLost > 0 ? tt('Потеря продаж') : tt('Прирост продаж')}
                 value={fmtNum(calc.unitsLost > 0 ? calc.unitsLost : calc.unitsGained)}
-                sub={calc.unitsLost > 0 ? tt('клиенты уйдут') : tt('новые продажи')} color={calc.unitsLost > 0 ? '#EF4444' : '#22C55E'} />
+                sub={calc.unitsLost > 0 ? tt('клиенты уйдут') : tt('новые продажи')} color={calc.unitsLost > 0 ? '#DC2626' : '#16A34A'} />
               <Tile icon="💎" label={tt('Маржа')} value={calc.margin1.toFixed(1) + '%'}
-                sub={`${calc.margin1 >= calc.margin0 ? '▲' : '▼'} ${Math.abs(calc.margin1 - calc.margin0).toFixed(1)} ${tt('п.п.')}`} color="#22C55E" />
+                sub={`${calc.margin1 >= calc.margin0 ? '▲' : '▼'} ${Math.abs(calc.margin1 - calc.margin0).toFixed(1)} ${tt('п.п.')}`} color="#16A34A" />
               <Tile icon="🎯" label={tt('Рекомендация')} value={calc.verdict} sub={calc.verdictLabel} color={calc.verdictColor} />
             </div>
 

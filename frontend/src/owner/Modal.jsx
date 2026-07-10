@@ -41,7 +41,7 @@ export function Modal({ open, onClose, title, icon, children, footer, width = 52
   if (!open) return null;
   return (
     <div onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(26,27,46,.5)', backdropFilter: 'blur(4px)',
+      position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', backdropFilter: 'blur(4px)',
       zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
     }}>
       <div ref={dialogRef} onClick={e => e.stopPropagation()}
@@ -96,7 +96,7 @@ export function ToastHost() {
     <div style={{ position: 'fixed', top: 76, right: 20, zIndex: 2000, display: 'flex', flexDirection: 'column', gap: 8 }}>
       {list.map(t => (
         <div key={t.id} style={{
-          background: t.type === 'success' ? '#16A34A' : t.type === 'error' ? '#EF4444' : '#5B4FE8',
+          background: t.type === 'success' ? '#16A34A' : t.type === 'error' ? '#DC2626' : '#1D4ED8',
           color: '#fff', padding: '12px 18px', borderRadius: 10,
           boxShadow: '0 8px 24px rgba(0,0,0,.2)',
           fontWeight: 700, fontSize: 13, minWidth: 240, maxWidth: 360,

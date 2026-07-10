@@ -8,10 +8,10 @@ export default function LogisticsTool() {
     <>
       <PageHeader title={tt('🚚 Логистика')} sub={tt('Курьеры · карта · статусы доставки')} />
       <div className="grid-4" style={{ marginBottom: 18 }}>
-        <Tile icon="📦" label={tt('В доставке')} value="42" color="#5B4FE8" />
-        <Tile icon="🚚" label={tt('Курьеров')} value="8" sub={tt('из 12')} color="#FF6B2B" />
-        <Tile icon="⏱️" label={tt('Среднее время')} value="2.4ч" color="#22C55E" />
-        <Tile icon="⚠️" label={tt('Просрочки')} value="3" color="#EF4444" />
+        <Tile icon="📦" label={tt('В доставке')} value="42" color="#1D4ED8" />
+        <Tile icon="🚚" label={tt('Курьеров')} value="8" sub={tt('из 12')} color="#D97706" />
+        <Tile icon="⏱️" label={tt('Среднее время')} value="2.4ч" color="#16A34A" />
+        <Tile icon="⚠️" label={tt('Просрочки')} value="3" color="#DC2626" />
       </div>
       <div className="grid-2">
         <Card icon="🚚" title={tt('Активные доставки')}>
@@ -23,7 +23,7 @@ export default function LogisticsTool() {
           ].map(d => (
             <div key={d.id} className="list-item">
               <Badge tone="gray">{d.id}</Badge>
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{d.c}</div><div style={{ fontSize: 11, color: 'var(--text3)' }}>{d.dr !== '—' ? '👤 ' + d.dr : tt('Не назначен')}</div></div>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{tt(d.c)}</div><div style={{ fontSize: 11, color: 'var(--text3)' }}>{d.dr !== '—' ? '👤 ' + tt(d.dr) : tt('Не назначен')}</div></div>
               {d.st === 'on-way' && <Badge tone="blue">{tt('🚚 В пути')}</Badge>}
               {d.st === 'picked-up' && <Badge tone="yellow">{tt('📦 Забран')}</Badge>}
               {d.st === 'delivered' && <Badge tone="green">{tt('✓ Доставлен')}</Badge>}
