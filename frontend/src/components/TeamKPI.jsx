@@ -6,8 +6,8 @@ import { Icon } from '../icons.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
 import { AuthContext } from '../App.jsx';
 
-const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole' };
-const roleColor = { founder: '#7c3aed', gen_dir: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
+const ROLE_KEYS = { founder: 'founderRole', director: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole' };
+const roleColor = { founder: '#7c3aed', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
 const uzNoBranch = (t) => t('noBranch') || 'Без филиала';
 
@@ -19,8 +19,8 @@ export default function TeamKPI() {
   const [period, setPeriod] = useState('month');
   const [customRange, setCustomRange] = useState({ from: '', to: '' });
   const [roleFilter, setRoleFilter] = useState('all');
-  // For company-level viewers (founder/gen_dir) → group by branch
-  const groupByBranch = user?.role === 'founder' || user?.role === 'gen_dir';
+  // For company-level viewers (founder/director) → group by branch
+  const groupByBranch = user?.role === 'founder' || user?.role === 'director';
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [period, customRange.from, customRange.to]);
 

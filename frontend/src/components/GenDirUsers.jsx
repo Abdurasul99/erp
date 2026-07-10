@@ -7,8 +7,8 @@ import { AuthContext } from '../App.jsx';
 
 const PW_HINT = 'Пароль минимум 8 символов и должен содержать букву и цифру';
 const pwOk = (pw) => typeof pw === 'string' && pw.length >= 8 && /[a-zA-Zа-яА-Я]/.test(pw) && /[0-9]/.test(pw);
-const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole' };
-const roleBadge = { founder: 'badge-blue', gen_dir: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
+const ROLE_KEYS = { founder: 'founderRole', director: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole' };
+const roleBadge = { founder: 'badge-blue', director: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
 
 export default function GenDirUsers() {
@@ -292,7 +292,7 @@ export default function GenDirUsers() {
                     </td>
                     <td style={{ fontSize: '12px' }}>
                       {u.created_by_name
-                        ? <span style={{ background: u.created_by_role === 'admin' ? 'rgba(107,111,138,.1)' : u.created_by_role === 'gen_dir' ? 'rgba(67,56,202,.1)' : 'rgba(34,197,94,.1)', color: u.created_by_role === 'admin' ? '#6B6F8A' : u.created_by_role === 'gen_dir' ? '#4338ca' : '#16a34a', padding: '2px 8px', borderRadius: '8px', fontWeight: 700, fontSize: '11px', whiteSpace: 'nowrap' }}>✎ {u.created_by_name}</span>
+                        ? <span style={{ background: u.created_by_role === 'admin' ? 'rgba(107,111,138,.1)' : u.created_by_role === 'director' ? 'rgba(67,56,202,.1)' : 'rgba(34,197,94,.1)', color: u.created_by_role === 'admin' ? '#6B6F8A' : u.created_by_role === 'director' ? '#4338ca' : '#16a34a', padding: '2px 8px', borderRadius: '8px', fontWeight: 700, fontSize: '11px', whiteSpace: 'nowrap' }}>✎ {u.created_by_name}</span>
                         : <span style={{ color: 'var(--text3)' }}>—</span>}
                     </td>
                     <td style={{ fontSize: '12px', whiteSpace: 'nowrap' }}>
@@ -358,12 +358,12 @@ export default function GenDirUsers() {
               <label className="label">{t('role')}</label>
               <select className="input" value={editUser.role} onChange={e => {
                 const r = e.target.value;
-                setEditUser({ ...editUser, role: r, branch_id: r === 'gen_dir' ? null : editUser.branch_id });
+                setEditUser({ ...editUser, role: r, branch_id: r === 'director' ? null : editUser.branch_id });
               }}>
-                {['gen_dir','manager','cashier','warehouse','seller'].map(r => <option key={r} value={r}>{t(ROLE_KEYS[r])}</option>)}
+                {['director','manager','cashier','warehouse','seller'].map(r => <option key={r} value={r}>{t(ROLE_KEYS[r])}</option>)}
               </select>
             </div>
-            {editUser.role !== 'gen_dir' && (
+            {editUser.role !== 'director' && (
             <div style={{ marginBottom: '20px' }}>
               <label className="label">{t('branch')} ({t('redistribution') || 'Перераспределить'})</label>
               <select className="input" value={editUser.branch_id || ''} onChange={e => setEditUser({ ...editUser, branch_id: e.target.value ? parseInt(e.target.value) : null })}>

@@ -13,7 +13,7 @@ export default function CompanyManager() {
   const [editBranch, setEditBranch] = useState(null);
   const [msg, setMsg, clearMsg] = useMsg();
 
-  const [companyForm, setCompanyForm] = useState({ name: '', address: '', phone: '', gen_dir_username: '', gen_dir_password: '' });
+  const [companyForm, setCompanyForm] = useState({ name: '', address: '', phone: '', director_username: '', director_password: '' });
   const [branchForm, setBranchForm] = useState({ name: '', address: '', phone: '', manager_username: '', manager_password: '' });
 
   useEffect(() => { loadCompanies(); }, []);
@@ -34,7 +34,7 @@ export default function CompanyManager() {
     try {
       await api.post('/companies', companyForm);
       setMsg('success', `Компания "${companyForm.name}" создана`);
-      setCompanyForm({ name: '', address: '', phone: '', gen_dir_username: '', gen_dir_password: '' });
+      setCompanyForm({ name: '', address: '', phone: '', director_username: '', director_password: '' });
       setShowAddCompany(false);
       loadCompanies();
     } catch (e) { setMsg('error', e.response?.data?.error || 'Ошибка'); }
@@ -204,13 +204,13 @@ export default function CompanyManager() {
               <input className="input" value={companyForm.phone} onChange={e => setCompanyForm({ ...companyForm, phone: e.target.value })} />
             </Field>
             <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0', paddingTop: '16px' }}>
-              <div style={{ fontWeight: 800, fontSize: '13px', color: 'var(--primary)', marginBottom: '12px' }}>Генеральный директор (опционально)</div>
+              <div style={{ fontWeight: 800, fontSize: '13px', color: 'var(--primary)', marginBottom: '12px' }}>Директор (опционально)</div>
               <div className="form-grid">
                 <Field label="Логин">
-                  <input className="input" value={companyForm.gen_dir_username} onChange={e => setCompanyForm({ ...companyForm, gen_dir_username: e.target.value })} placeholder="username" />
+                  <input className="input" value={companyForm.director_username} onChange={e => setCompanyForm({ ...companyForm, director_username: e.target.value })} placeholder="username" />
                 </Field>
                 <Field label="Пароль">
-                  <input className="input" type="password" value={companyForm.gen_dir_password} onChange={e => setCompanyForm({ ...companyForm, gen_dir_password: e.target.value })} placeholder="password" />
+                  <input className="input" type="password" value={companyForm.director_password} onChange={e => setCompanyForm({ ...companyForm, director_password: e.target.value })} placeholder="password" />
                 </Field>
               </div>
             </div>

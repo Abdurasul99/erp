@@ -29,7 +29,7 @@ export default function ReferencesTool() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  const canEdit = ['admin', 'gen_dir', 'founder', 'manager'].includes(user?.role);
+  const canEdit = ['admin', 'director', 'founder', 'manager'].includes(user?.role);
 
   const reload = async () => {
     setLoading(true);

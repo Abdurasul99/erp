@@ -940,7 +940,7 @@ export const TOOLS_UZ = {
   "Где теряем маржу?": "Marjani qayerda yo'qotyapmiz?",
   "Где у меня самая низкая маржа и что с этим делать?": "Eng past marja qayerda va u bilan nima qilish kerak?",
   "ген. директор": "bosh direktor",
-  "Ген. директор": "Bosh direktor",
+  "Директор": "Bosh direktor",
   "Генератор КП за 3 шага · УТП включено": "3 qadamda tijoriy taklif generatori · UTP kiritilgan",
   "Германия": "Germaniya",
   "Главный дашборд": "Asosiy dashbord",

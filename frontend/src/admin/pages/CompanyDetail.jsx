@@ -7,7 +7,7 @@ import { Tile, Card, Badge, PageHeader, Skeleton, EmptyState, fmtMoney, fmtNum }
 const ROLE_LABEL = {
   admin:     'Администратор',
   founder:   'Учредитель',
-  gen_dir:   'Директор сети',
+  director:   'Директор',
   manager:   'Менеджер',
   cashier:   'Кассир',
   warehouse: 'Складовщик',
@@ -15,7 +15,7 @@ const ROLE_LABEL = {
 };
 
 const ROLE_TONE = {
-  admin: 'red', founder: 'orange', gen_dir: 'purple', manager: 'blue',
+  admin: 'red', founder: 'orange', director: 'purple', manager: 'blue',
   cashier: 'green', warehouse: 'cyan', seller: 'yellow',
 };
 
@@ -44,7 +44,7 @@ export default function CompanyDetail() {
   const users = data?.users || [];
   const usage = data?.usage || {};
 
-  const isCoLevel = impRole === 'founder' || impRole === 'gen_dir';
+  const isCoLevel = impRole === 'founder' || impRole === 'director';
   const enterCompany = async () => {
     if (!isCoLevel && !impBranch) { window.alert('Выберите филиал для этой роли'); return; }
     setImpBusy(true);
@@ -60,7 +60,7 @@ export default function CompanyDetail() {
         const d = new Date();
         localStorage.setItem('seller_branch_picked_date', `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
         navigate('/sell');
-      } else if (['founder', 'gen_dir', 'manager'].includes(role)) {
+      } else if (['founder', 'director', 'manager'].includes(role)) {
         navigate('/owner');
       } else {
         navigate('/desktop');
@@ -174,7 +174,7 @@ export default function CompanyDetail() {
                 <label className="label">Роль</label>
                 <select className="input" value={impRole} onChange={e => setImpRole(e.target.value)}>
                   <option value="founder">Учредитель</option>
-                  <option value="gen_dir">Директор сети</option>
+                  <option value="director">Директор</option>
                   <option value="manager">Менеджер</option>
                   <option value="cashier">Кассир</option>
                   <option value="warehouse">Складовщик</option>

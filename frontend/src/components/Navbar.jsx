@@ -29,7 +29,7 @@ export default function Navbar() {
     }
   };
 
-  const roleLabel = { admin: uz ? 'Admin' : 'Администратор', founder: uz ? 'Ta\'sischi' : 'Учредитель', gen_dir: uz ? 'Tarmoq direktori' : 'Директор сети', manager: uz ? 'Menejer' : 'Менеджер', cashier: uz ? 'Kassir' : 'Кассир', warehouse: uz ? 'Omborchi' : 'Складовщик', seller: uz ? 'Sotuvchi' : 'Продавец' };
+  const roleLabel = { admin: uz ? 'Admin' : 'Администратор', founder: uz ? 'Ta\'sischi' : 'Учредитель', director: uz ? 'Direktor' : 'Директор', manager: uz ? 'Menejer' : 'Менеджер', cashier: uz ? 'Kassir' : 'Кассир', warehouse: uz ? 'Omborchi' : 'Складовщик', seller: uz ? 'Sotuvchi' : 'Продавец' };
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username;
 
   return (

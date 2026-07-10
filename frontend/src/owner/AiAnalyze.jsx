@@ -7,7 +7,7 @@ import { useTt } from './tt.js';
 
 // Кнопка «🤖 AI-анализ» — отправляет topic на backend, который ПЕРЕСЧИТЫВАЕТ
 // реальные цифры на сервере и просит DeepSeek дать разбор + рекомендации.
-// Доступна только руководителям (founder/gen_dir/admin) — у менеджера AI нет.
+// Доступна только руководителям (founder/director/admin) — у менеджера AI нет.
 export default function AiAnalyze({ topic, branchId }) {
   const { tt, lang } = useTt();
   const { role } = useContext(BranchScope);
@@ -16,7 +16,7 @@ export default function AiAnalyze({ topic, branchId }) {
   const [analysis, setAnalysis] = useState('');
   const [error, setError] = useState('');
 
-  if (!['founder', 'gen_dir', 'admin'].includes(role)) return null;
+  if (!['founder', 'director', 'admin'].includes(role)) return null;
 
   const run = () => {
     setOpen(true); setLoading(true); setError(''); setAnalysis('');

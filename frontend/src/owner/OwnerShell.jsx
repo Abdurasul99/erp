@@ -58,7 +58,7 @@ export default function OwnerShell() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const role = user?.role;
-  const isOwner = role === 'founder' || role === 'gen_dir';
+  const isOwner = role === 'founder' || role === 'director';
 
   const [branches, setBranches] = useState([]);
   const [branchId, setBranchId] = useState(() => {
@@ -106,7 +106,7 @@ export default function OwnerShell() {
   const showPeriod = ['dashboard', 'analytics', 'finance', 'procurement', 'warehouse', 'operations'].includes(activeSection);
 
   const initials = (user?.first_name || user?.username || 'U').slice(0, 2).toUpperCase();
-  const roleLabel = tt(({ founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер' })[role] || role);
+  const roleLabel = tt(({ founder: 'Учредитель', director: 'Директор', manager: 'Менеджер' })[role] || role);
 
   const currentBranchName = (() => {
     if (role === 'manager') return user?.branch_name || tt('Мой филиал');
@@ -163,7 +163,7 @@ export default function OwnerShell() {
           </div>
 
           <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid rgba(255,255,255,.08)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {/* Quick AI popup — only for founder/gen_dir с включённым AI. Manager has no AI access. */}
+            {/* Quick AI popup — only for founder/director с включённым AI. Manager has no AI access. */}
             {isOwner && aiEnabled && (
               <button onClick={() => setAiOpen(true)} className="o-link" style={{
                 background: 'linear-gradient(135deg, #1D4ED8, #1D4ED8)',

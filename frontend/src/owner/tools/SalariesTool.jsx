@@ -5,11 +5,11 @@ import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
 
 const ROLE_RU = {
-  founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер',
+  founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
   cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
 };
 const ROLE_TONE = {
-  founder: 'purple', gen_dir: 'purple', manager: 'blue',
+  founder: 'purple', director: 'purple', manager: 'blue',
   cashier: 'cyan', warehouse: 'orange', seller: 'green',
 };
 const STATUS_RU = { draft: 'Черновик', approved: 'Утверждено', paid: 'Выплачено' };

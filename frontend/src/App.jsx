@@ -28,7 +28,7 @@ function RootRedirect() {
   if (user.role === 'seller') {
     return <Navigate to={localStorage.getItem('seller_branch_id') ? '/sell' : '/select-branch'} replace />;
   }
-  if (['founder', 'gen_dir', 'manager'].includes(user.role)) return <Navigate to="/owner" replace />;
+  if (['founder', 'director', 'manager'].includes(user.role)) return <Navigate to="/owner" replace />;
   if (user.role === 'admin') return <Navigate to="/admin" replace />;
   return <Navigate to="/select" replace />;
 }
@@ -55,12 +55,12 @@ function RequireNonSeller({ children }) {
   return children;
 }
 
-// Owner roles (founder/gen_dir/manager) now belong on /owner with the new shell.
+// Owner roles (founder/director/manager) now belong on /owner with the new shell.
 // If they hit /desktop directly (bookmark, old link) — bounce them to /owner.
 // Admin still uses /desktop because AdminPanel is admin-only.
 function RequireNotOwner({ children }) {
   const { user } = useContext(AuthContext);
-  if (['founder', 'gen_dir', 'manager'].includes(user?.role)) return <Navigate to="/owner" replace />;
+  if (['founder', 'director', 'manager'].includes(user?.role)) return <Navigate to="/owner" replace />;
   // Admin now has a single, dedicated shell at /admin (dashboard + company/staff
   // management + features + audit). Keep them out of the staff /desktop shell.
   if (user?.role === 'admin') return <Navigate to="/admin" replace />;
@@ -90,7 +90,7 @@ function Splash() {
 
 // Плашка режима «войти как» (WoW). Видна во всех оболочках, пока активна impersonation.
 const IMP_ROLE_LABEL = {
-  founder: 'Учредитель', gen_dir: 'Директор сети', manager: 'Менеджер',
+  founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
   cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
 };
 function ImpersonationBanner() {

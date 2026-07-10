@@ -16,7 +16,7 @@ const SCOPES = [
 ];
 
 const ROLE_RU = {
-  founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер',
+  founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
   cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
 };
 

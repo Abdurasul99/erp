@@ -18,7 +18,7 @@ const POSITIONS = [
   { value: 'cashier',   label: 'Кассир' },
   { value: 'seller',    label: 'Продавец' },
   { value: 'warehouse', label: 'Кладовщик' },
-  { value: 'gen_dir',   label: 'Директор' },
+  { value: 'director',   label: 'Директор' },
 ];
 
 const overlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 };

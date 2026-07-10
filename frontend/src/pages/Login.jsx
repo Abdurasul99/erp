@@ -27,7 +27,7 @@ export default function Login() {
       const r = data.user.role;
       if (r === 'seller') navigate('/sell');
       else if (r === 'admin') navigate('/admin');
-      else if (['founder', 'gen_dir', 'manager'].includes(r)) navigate('/desktop');
+      else if (['founder', 'director', 'manager'].includes(r)) navigate('/desktop');
       else navigate('/select');
     } catch (err) {
       const st = err.response?.status;

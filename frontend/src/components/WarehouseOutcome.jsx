@@ -12,7 +12,7 @@ const sellerName = (item) => {
   const fn = [item.created_by_first_name, item.created_by_last_name].filter(Boolean).join(' ');
   return fn || item.created_by_name || '—';
 };
-const roleColor = { admin: '#6B6F8A', gen_dir: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
+const roleColor = { admin: '#6B6F8A', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
 
 export default function WarehouseOutcome() {
   const { t, lang } = useTranslation();
@@ -36,9 +36,9 @@ export default function WarehouseOutcome() {
   const [customRange, setCustomRange] = useState({ from: '', to: '' });
   const [historySearch, setHistorySearch] = useState('');
   const [view, setView] = useState('form'); // 'form' (form + pending) | 'history'
-  const canApprove     = ['admin', 'founder', 'gen_dir', 'manager', 'warehouse'].includes(user?.role);
-  const canViewPending = ['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier'].includes(user?.role);
-  const canEdit        = ['admin', 'founder', 'gen_dir', 'manager', 'warehouse'].includes(user?.role);
+  const canApprove     = ['admin', 'founder', 'director', 'manager', 'warehouse'].includes(user?.role);
+  const canViewPending = ['admin', 'founder', 'director', 'manager', 'warehouse', 'cashier'].includes(user?.role);
+  const canEdit        = ['admin', 'founder', 'director', 'manager', 'warehouse'].includes(user?.role);
 
   const [incomes, setIncomes] = useState([]); // history of stock_income — needed to show last supplier per product
 

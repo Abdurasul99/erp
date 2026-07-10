@@ -192,11 +192,11 @@ const auth = (roles = []) => (req, res, next) => {
 };
 
 // Company-level roles: tied to company, not to a branch
-const COMPANY_LEVEL_ROLES = new Set(['gen_dir', 'founder']);
+const COMPANY_LEVEL_ROLES = new Set(['director', 'founder']);
 const isCompanyLevel = (role) => COMPANY_LEVEL_ROLES.has(role);
 
 // Helper: get branch_id filter for queries
-// admin/founder/gen_dir can pass ?branch_id=X, others use their own branch_id.
+// admin/founder/director can pass ?branch_id=X, others use their own branch_id.
 // Seller can also pass branch_id (chosen at session start) — must be within own company;
 // scope is enforced server-side in mutation endpoints via assertBranchInCompany.
 function getBranchFilter(user, query = {}) {
@@ -225,7 +225,7 @@ async function getUserBranchIds(user, query = {}) {
     }
     return { ids: [user.branch_id], restrictive: true };
   }
-  // gen_dir / founder / cashier / warehouse / seller — scope to their company
+  // director / founder / cashier / warehouse / seller — scope to their company
   if (!user.company_id) return { ids: [], restrictive: true };
   if (qBranch) {
     const o = await pool.query('SELECT id FROM branches WHERE id = $1 AND company_id = $2', [qBranch, user.company_id]);
@@ -277,7 +277,7 @@ app.use((req, res, next) => {
 });
 
 // === COMPANIES ===
-app.get('/api/companies', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/companies', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   let query = `
     SELECT c.*, u.username as created_by_name,
       (SELECT COUNT(*) FROM branches b WHERE b.company_id = c.id) as branch_count,
@@ -285,7 +285,7 @@ app.get('/api/companies', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
     FROM companies c LEFT JOIN users u ON c.created_by = u.id
   `;
   const params = [];
-  // gen_dir and manager only see their own company
+  // director and manager only see their own company
   if (isCompanyLevel(req.user.role) || req.user.role === 'manager') {
     query += ' WHERE c.id = $1';
     params.push(req.user.company_id);
@@ -314,13 +314,13 @@ app.post('/api/companies', auth(['admin']), async (req, res) => {
     const {
       name, address, phone,
       founder_first_name, founder_last_name,
-      gen_dir_username, gen_dir_password,
+      director_username, director_password,
     } = req.body;
-    // Founder is required — every company must have a gen_dir
+    // Founder is required — every company must have a director
     if (!name || !name.trim()) return res.status(400).json({ error: 'Название компании обязательно' });
     if (!founder_first_name || !founder_first_name.trim()) return res.status(400).json({ error: 'ФИО учредителя обязательно' });
-    if (!gen_dir_username || !gen_dir_username.trim()) return res.status(400).json({ error: 'Логин учредителя обязателен' });
-    { const v = validatePassword(gen_dir_password); if (!v.ok) return res.status(400).json({ error: v.error }); }
+    if (!director_username || !director_username.trim()) return res.status(400).json({ error: 'Логин учредителя обязателен' });
+    { const v = validatePassword(director_password); if (!v.ok) return res.status(400).json({ error: v.error }); }
 
     const client = await pool.connect();
     try {
@@ -329,11 +329,11 @@ app.post('/api/companies', auth(['admin']), async (req, res) => {
         'INSERT INTO companies (name, address, phone, created_by, disabled_tools) VALUES ($1,$2,$3,$4,$5) RETURNING *',
         [name.trim(), address || '', phone || '', req.user.id, DEFAULT_DISABLED_TOOLS]
       );
-      const hash = await bcrypt.hash(gen_dir_password, 10);
+      const hash = await bcrypt.hash(director_password, 10);
       await client.query(
         `INSERT INTO users (username, password_hash, role, company_id, first_name, last_name, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [gen_dir_username.trim(), hash, 'founder', company.id,
+        [director_username.trim(), hash, 'founder', company.id,
          founder_first_name.trim(), (founder_last_name || '').trim() || null, req.user.id]
       );
       await client.query('COMMIT');
@@ -389,7 +389,7 @@ app.delete('/api/companies/:id', auth(['admin']), async (req, res) => {
 });
 
 // === BRANCHES ===
-app.get('/api/branches', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse', 'seller']), async (req, res) => {
+app.get('/api/branches', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse', 'seller']), async (req, res) => {
   let query = `
     SELECT b.*, c.name as company_name,
       (SELECT COUNT(*) FROM users u WHERE u.branch_id = b.id) as user_count,
@@ -419,7 +419,7 @@ app.get('/api/branches', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashie
   res.json(rows);
 });
 
-app.post('/api/branches', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.post('/api/branches', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const { company_id, name, address, phone, manager_username, manager_password } = req.body;
     const companyId = isCompanyLevel(req.user.role) ? req.user.company_id : company_id;
@@ -446,7 +446,7 @@ app.post('/api/branches', auth(['admin', 'gen_dir', 'founder']), async (req, res
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.put('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.put('/api/branches/:id', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -464,7 +464,7 @@ app.put('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, 
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/api/branches/:id', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.delete('/api/branches/:id', auth(['admin', 'director', 'founder']), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
@@ -637,7 +637,7 @@ async function rfmEnsureFresh(companyId) {
   await rfmRecompute(companyId);
 }
 
-app.get('/api/customers/segments', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/customers/segments', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     await rfmEnsureFresh(companyId);
@@ -678,7 +678,7 @@ app.get('/api/customers/segments', auth(['admin', 'gen_dir', 'founder', 'manager
 
 // === ABC / XYZ analysis ===
 // A/B/C — share of revenue. X/Y/Z — coefficient of variation across last 90 days of sales.
-app.get('/api/inventory/abc-xyz', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/inventory/abc-xyz', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -752,7 +752,7 @@ app.get('/api/inventory/abc-xyz', auth(['admin', 'gen_dir', 'founder', 'manager'
 });
 
 // === Pricing analyzer — margin by product ===
-app.get('/api/pricing/analyze', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/pricing/analyze', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -809,7 +809,7 @@ app.get('/api/pricing/analyze', auth(['admin', 'gen_dir', 'founder', 'manager'])
 });
 
 // === Risk Control — unified alerts feed ===
-app.get('/api/risks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/risks', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -965,7 +965,7 @@ app.get('/api/risks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
 });
 
 // === Supplier debts (all unpaid incomes company-wide) ===
-app.get('/api/suppliers/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+app.get('/api/suppliers/debts', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   try {
     const branchId = getBranchFilter(req.user, req.query);
     const params = [req.user.company_id];
@@ -992,12 +992,12 @@ app.get('/api/suppliers/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// === COMPANY DASHBOARD (gen_dir/founder/manager) ===
+// === COMPANY DASHBOARD (director/founder/manager) ===
 // Query params:
 //   from, to — ISO timestamps for sales period filter (default: lifetime)
 //   branch_id — optional drill-down for owner; manager is always pinned to own branch
 // Returns: { branches:[{...kpis}], totals:{}, sales_trend:[{date,revenue}], top_products:[], top_sellers:[], alerts:[] }
-app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -1527,7 +1527,7 @@ app.get('/api/company/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager'
 //   day   → 30 баров по дням      week → 12 баров по неделям (Пн-старт)
 //   month → 12 баров по месяцам   year → 5 баров по годам
 // prev_buckets — аналогичный диапазон сразу ДО текущего (для сравнения бар-к-бару).
-app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/company/sales-chart', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -1628,7 +1628,7 @@ app.get('/api/company/sales-chart', auth(['admin', 'gen_dir', 'founder', 'manage
 // накапливается по мере открытия дашборда (паттерн compute-on-read + write-through).
 // Менеджер жёстко скоупится своим филиалом, поэтому «Валовая прибыль» у него —
 // только его филиал; сводная прибыль по компании менеджеру недоступна.
-app.get('/api/company/branch-daily', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/company/branch-daily', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -1990,7 +1990,7 @@ async function bhiAlerts(companyId) {
   return { bhi: today.bhi, falling_streak: fallingStreak, alert_level: level, weakest_pillar: today.weakest_pillar };
 }
 
-app.get('/api/bhi/monthly', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bhi/monthly', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const now = new Date();
@@ -2027,7 +2027,7 @@ app.get('/api/bhi/monthly', auth(['admin', 'gen_dir', 'founder', 'manager']), as
   } catch (e) { console.error('bhi monthly', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/bhi/day', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bhi/day', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const today = new Date().toISOString().slice(0, 10);
@@ -2043,7 +2043,7 @@ app.get('/api/bhi/day', auth(['admin', 'gen_dir', 'founder', 'manager']), async 
   } catch (e) { console.error('bhi day', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/bhi/alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bhi/alerts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try { res.json(await bhiAlerts(req.user.company_id)); }
   catch (e) { console.error('bhi alerts', e); res.status(500).json({ error: e.message }); }
 });
@@ -2067,7 +2067,7 @@ function cmplEffectiveUrgency(row) {
 }
 
 // Сводка-тайлы + разбивка по категориям + список жалоб.
-app.get('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/complaints', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // null = вся компания (владелец)
@@ -2167,7 +2167,7 @@ app.get('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager']),
 });
 
 // Создать жалобу + запись 'created' в историю.
-app.post('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/complaints', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -2214,7 +2214,7 @@ app.post('/api/crm/complaints', auth(['admin', 'gen_dir', 'founder', 'manager'])
 });
 
 // Сменить статус new/in_progress/rejected (НЕ resolved — для решения отдельный endpoint) + история.
-app.patch('/api/crm/complaints/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/crm/complaints/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -2244,7 +2244,7 @@ app.patch('/api/crm/complaints/:id/status', auth(['admin', 'gen_dir', 'founder',
 });
 
 // Решить жалобу: resolution + компенсация + оценка → status=resolved.
-app.patch('/api/crm/complaints/:id/resolve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/crm/complaints/:id/resolve', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -2330,7 +2330,7 @@ const bdayBranchExists = (branchId) =>
     : '';
 
 // GET /api/crm/birthdays?branch_id&days=7 — ближайшие ДР в окне [сегодня; +days].
-app.get('/api/crm/birthdays', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/birthdays', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -2402,7 +2402,7 @@ app.get('/api/crm/birthdays', auth(['admin', 'gen_dir', 'founder', 'manager']), 
 });
 
 // GET /api/crm/events?branch_id&period=day|week|month|year — сводка поздравлений/событий.
-app.get('/api/crm/events', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/events', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -2472,7 +2472,7 @@ app.get('/api/crm/events', auth(['admin', 'gen_dir', 'founder', 'manager']), asy
 
 // POST /api/crm/birthdays/:customer_id/send-greeting  body: { channel }
 // Скидка по RFM-сегменту; промокод BD+id+год; dedup ON CONFLICT. Без реальной отправки.
-app.post('/api/crm/birthdays/:customer_id/send-greeting', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/birthdays/:customer_id/send-greeting', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -2527,7 +2527,7 @@ app.post('/api/crm/birthdays/:customer_id/send-greeting', auth(['admin', 'gen_di
 // использованным. Связи промокод↔продажа нет, поэтому отметка ручная — именно она
 // делает реальными метрики «Использовано»/«конверсия»/«выручка» в сводке событий
 // (без неё они были бы вечно 0). Менеджер — только клиент своего филиала.
-app.post('/api/crm/birthdays/:customer_id/redeem', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/birthdays/:customer_id/redeem', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -2609,7 +2609,7 @@ async function refCreditBonus(companyId, customerId, amount, source, sourceId, v
 // GET /api/crm/referrals/top — дашборд реферальной программы.
 // Метрики: активные рефереры, новые рефералы, выручка рефералов, выплачено бонусов,
 // ROI = выручка ÷ бонусы. Топ рефереров + список рефералов. Менеджер → свой филиал.
-app.get('/api/crm/referrals/top', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/referrals/top', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null, уже скоупит менеджера
@@ -2712,7 +2712,7 @@ app.get('/api/crm/referrals/top', auth(['admin', 'gen_dir', 'founder', 'manager'
 
 // POST /api/crm/referrals/code — создать/вернуть промокод FRIEND-<customer_id>.
 // body: { customer_id }.
-app.post('/api/crm/referrals/code', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/referrals/code', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const customerId = parseInt(req.body.customer_id, 10);
@@ -2740,7 +2740,7 @@ app.post('/api/crm/referrals/code', auth(['admin', 'gen_dir', 'founder', 'manage
 
 // POST /api/crm/referrals/use — зарегистрировать промокод за новым клиентом.
 // body: { code, referred_id }. Создаёт referral(pending) со скидкой из настроек.
-app.post('/api/crm/referrals/use', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/referrals/use', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const code = String(req.body.code || '').trim().toUpperCase();
@@ -2779,7 +2779,7 @@ app.post('/api/crm/referrals/use', auth(['admin', 'gen_dir', 'founder', 'manager
 // POST /api/crm/referrals/:id/activate — пометить activated и начислить бонус рефереру.
 // Проверяет минимальный порог первой покупки. Идемпотентно (не активирует дважды).
 // body (опц): { first_purchase_id, first_purchase_amount }.
-app.post('/api/crm/referrals/:id/activate', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/crm/referrals/:id/activate', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -2853,7 +2853,7 @@ app.post('/api/crm/referrals/:id/activate', auth(['admin', 'gen_dir', 'founder',
 });
 
 // GET /api/crm/bonuses/:customer_id — баланс + история транзакций клиента.
-app.get('/api/crm/bonuses/:customer_id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/bonuses/:customer_id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const customerId = parseInt(req.params.customer_id, 10);
@@ -2914,7 +2914,7 @@ function fcastReason(key, delta) {
   return 'Сегмент стабилен — переходы сбалансированы';
 }
 
-app.get('/api/crm/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/crm/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     // Скоуп: forecast строится на customer_rfm / customer_rfm_history — у этих таблиц
@@ -3295,7 +3295,7 @@ async function alertSync(companyId, branchId, userId) {
 
 // GET /api/analytics/alerts?branch_id&status&module
 // Пересчитывает (compute-on-read) и возвращает summary + items.
-app.get('/api/analytics/alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/alerts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // менеджер пинится своим филиалом
@@ -3355,7 +3355,7 @@ app.get('/api/analytics/alerts', auth(['admin', 'gen_dir', 'founder', 'manager']
 });
 
 // PATCH /api/analytics/alerts/:id/resolve — ручное закрытие алерта
-app.patch('/api/analytics/alerts/:id/resolve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/analytics/alerts/:id/resolve', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -3381,7 +3381,7 @@ app.patch('/api/analytics/alerts/:id/resolve', auth(['admin', 'gen_dir', 'founde
 
 // === Сравнение филиалов (branch-compare) — OWNER only ======================
 // Кросс-филиальная прибыль/маржа недоступна менеджеру (правило прибыли монолита):
-// auth ТОЛЬКО ['admin','gen_dir','founder']. Метрики per-branch собираются теми же
+// auth ТОЛЬКО ['admin','director','founder']. Метрики per-branch собираются теми же
 // агрегатами, что и /api/company/dashboard (стр. 835–896), но GROUP BY branch_id по
 // ВСЕМ филиалам компании. BHI — company-level (bhiGetToday), NPS — данных нет → null.
 
@@ -3409,7 +3409,7 @@ const BCMP_METRICS = [
   { key: 'revenue_per_employee', label: 'Выручка/сотрудник',     higher: true,  fmt: 'money' },
 ];
 
-app.get('/api/analytics/branches/compare', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/analytics/branches/compare', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     // Единый канон периода: 'month' = календарный месяц (как founder/trends). days — фактич. дни окна.
@@ -3620,7 +3620,7 @@ function trendsAnalyze(values, direction) {
   return { growth_pct: growth, trend, status, status_label };
 }
 
-app.get('/api/analytics/trends', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/trends', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -3934,7 +3934,7 @@ async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
 }
 
 // GET /api/analytics/anomalies?branch_id&period=day|week|month
-app.get('/api/analytics/anomalies', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/anomalies', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     let scope;
@@ -4005,7 +4005,7 @@ app.get('/api/analytics/anomalies', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // PATCH /api/analytics/anomalies/:id/review  { status, note }
-app.patch('/api/analytics/anomalies/:id/review', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/analytics/anomalies/:id/review', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -4143,7 +4143,7 @@ async function cohortEnsureFresh(companyId, branchId) {
 }
 
 // GET /api/analytics/cohorts?branch_id&months — таблица когорт, кривая, сводка.
-app.get('/api/analytics/cohorts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/cohorts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -4240,7 +4240,7 @@ app.get('/api/analytics/cohorts', auth(['admin', 'gen_dir', 'founder', 'manager'
 //   алерты — alertSync/alerts (долги/склад/жалобы).
 // Спека упоминает pos_transactions/employees/payables/attendance — в монолите этого нет,
 //   адаптировано на stock_outcome/users/stock_outcome(просрочка); attendance — данных нет → не выдумываем.
-// Только founder/gen_dir/admin (кросс-филиальный экран; менеджер не допускается).
+// Только founder/director/admin (кросс-филиальный экран; менеджер не допускается).
 // Всё compute-on-read, без cron.
 
 // Порог красной маржи (из спеки): margin < 20% → critical.
@@ -4258,7 +4258,7 @@ function fbdTopIssue({ margin, revenue, deadStockCost, overdueDebt, oosCount, st
   return null;
 }
 
-app.get('/api/analytics/founder-dashboard', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/analytics/founder-dashboard', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const now = new Date();
@@ -4489,7 +4489,7 @@ const FUNNEL_RECO = {
 };
 
 // GET /api/analytics/funnel?branch_id&period=day|week|month|year
-app.get('/api/analytics/funnel', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/funnel', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -4592,7 +4592,7 @@ app.get('/api/analytics/funnel', auth(['admin', 'gen_dir', 'founder', 'manager']
 
 // POST /api/analytics/funnel/inputs  { branch_id?, ad_views, visitors }
 // Ручной ввод показов/посетителей за ТЕКУЩИЙ месяц. Upsert по (company, COALESCE(branch,0), period).
-app.post('/api/analytics/funnel/inputs', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/analytics/funnel/inputs', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -4653,7 +4653,7 @@ function prDeltaPct(cur, prev) {
   return Math.round(((cur - prev) / Math.abs(prev)) * 1000) / 10;
 }
 
-app.get('/api/analytics/report', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/report', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -5020,7 +5020,7 @@ async function basketEnsureFresh(companyId, branchId) {
 }
 
 // GET /api/analytics/basket/pairs?branch_id — топ пар + имена товаров.
-app.get('/api/analytics/basket/pairs', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/basket/pairs', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -5097,7 +5097,7 @@ app.get('/api/analytics/basket/pairs', auth(['admin', 'gen_dir', 'founder', 'man
 });
 
 // GET /api/analytics/basket/recommend?product_id=&branch_id — что докупают к товару.
-app.get('/api/analytics/basket/recommend', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/basket/recommend', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -5191,7 +5191,7 @@ function ueStatus(value, bench, higher = true) {
   }
 }
 
-app.get('/api/analytics/unit-economics', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/analytics/unit-economics', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -5466,7 +5466,7 @@ app.get('/api/analytics/unit-economics', auth(['admin', 'gen_dir', 'founder', 'm
 });
 
 // Ручной ввод площади/аренды филиала для экономики на м² (данных нет в системе).
-app.patch('/api/branches/:id/area', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.patch('/api/branches/:id/area', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const bid = parseInt(req.params.id, 10);
     if (!Number.isFinite(bid)) return res.status(400).json({ error: 'bad branch id' });
@@ -5488,7 +5488,7 @@ app.patch('/api/branches/:id/area', auth(['admin', 'gen_dir', 'founder']), async
 });
 
 // ================== ССП (Balanced Scorecard) ==================
-// Конвенции: /api/ (без v1), роли admin/founder=CRUD, admin/gen_dir/founder/manager=view.
+// Конвенции: /api/ (без v1), роли admin/founder=CRUD, admin/director/founder/manager=view.
 // completion% = SUM(fact в году) / plan_year * 100. Отдел = взвешенная средняя его метрик.
 // Прогноз — линейная экстраполяция текущего темпа на 3 года (compute-on-read, без cron).
 
@@ -5696,7 +5696,7 @@ app.post('/api/bsc/strategies', auth(['admin', 'founder']), async (req, res) => 
 });
 
 // GET /api/bsc/dashboard — общий итог, прогресс по времени, отделы с completion%. (view)
-app.get('/api/bsc/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bsc/dashboard', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const strat = await bscActiveStrategy(req.user.company_id);
     if (!strat) return res.json({ strategy: null, departments: [] });
@@ -5721,7 +5721,7 @@ app.get('/api/bsc/dashboard', auth(['admin', 'gen_dir', 'founder', 'manager']), 
 });
 
 // GET /api/bsc/table — метрики × годы (план/факт/%). (view)
-app.get('/api/bsc/table', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bsc/table', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const strat = await bscActiveStrategy(req.user.company_id);
     if (!strat) return res.json({ strategy: null, departments: [] });
@@ -5743,9 +5743,9 @@ app.get('/api/bsc/table', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/bsc/fact — внести факт по метрике. (admin/founder/gen_dir/manager)
+// POST /api/bsc/fact — внести факт по метрике. (admin/founder/director/manager)
 // body: { metric_id, fact_date, fact_value }
-app.post('/api/bsc/fact', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/bsc/fact', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const { metric_id, fact_date, fact_value } = req.body || {};
     if (!metric_id) return res.status(400).json({ error: 'metric_id обязателен' });
@@ -5773,7 +5773,7 @@ app.post('/api/bsc/fact', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
 });
 
 // GET /api/bsc/forecast — линейный прогноз: при текущем темпе какой % будет к концу года 3. (view)
-app.get('/api/bsc/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/bsc/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const strat = await bscActiveStrategy(req.user.company_id);
     if (!strat) return res.json({ strategy: null, departments: [], recommendations: [] });
@@ -5893,7 +5893,7 @@ const TASK_SELECT = `
 // GET /api/tasks?branch_id&view=kanban|list&status&period
 // kanban → { columns:{todo:[],in_progress:[],done:[]}, metrics }
 // list   → { items:[], metrics }
-app.get('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     try { if (typeof generateTasksFromTemplates === 'function') await generateTasksFromTemplates(companyId); } catch (e) { console.error('gen tasks from templates', e.message); }
@@ -5959,7 +5959,7 @@ app.get('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
 });
 
 // POST /api/tasks — создать ручную задачу
-app.post('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -5999,7 +5999,7 @@ app.post('/api/tasks', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
 
 // PATCH /api/tasks/:id/status — перевод статуса (todo→in_progress→done/cancelled)
 // проставляет started_at (при первом in_progress) и completed_at (при done)
-app.patch('/api/tasks/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -6036,7 +6036,7 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager
 
 // POST /api/tasks/from-alert { alert_id, assignee_id? } — создать задачу из алерта
 // source=system, source_alert_id; приоритет наследуется от severity алерта (critical|warning|info)
-app.post('/api/tasks/from-alert', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/tasks/from-alert', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const alertId = parseInt(req.body.alert_id, 10);
@@ -6086,7 +6086,7 @@ app.post('/api/tasks/from-alert', auth(['admin', 'gen_dir', 'founder', 'manager'
 // Префикс /api/ (без /api/v1 — конвенция монолита). Уникальный префикс хелперов: cl* / CL_*.
 //   GET   /api/checklists/today?branch_id          — шаблоны + статус за сегодня
 //   PATCH /api/checklists/items/:item_id/check     — отметить пункт (result_id, is_done, note)
-//   POST  /api/checklists/templates                — создать шаблон (founder/admin/gen_dir)
+//   POST  /api/checklists/templates                — создать шаблон (founder/admin/director)
 //   GET   /api/checklists/history?branch_id&days   — история выполнения
 // ============================================================================
 const CL_TYPES = ['morning', 'evening', 'weekly', 'custom'];
@@ -6144,7 +6144,7 @@ async function clEnsureCompletion(client, templateId, branchId, dateStr) {
 }
 
 // GET /api/checklists/today?branch_id — шаблоны компании + статус выполнения за сегодня.
-app.get('/api/checklists/today', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/checklists/today', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   let inTx = false;
   try {
@@ -6251,7 +6251,7 @@ app.get('/api/checklists/today', auth(['admin', 'gen_dir', 'founder', 'manager']
 
 // PATCH /api/checklists/items/:item_id/check — отметить пункт (is_done, note).
 // :item_id = id строки результата (checklist_item_results.id) из /today (items[].id).
-app.patch('/api/checklists/items/:item_id/check', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/checklists/items/:item_id/check', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   let inTx = false;
   try {
@@ -6316,8 +6316,8 @@ app.patch('/api/checklists/items/:item_id/check', auth(['admin', 'gen_dir', 'fou
   }
 });
 
-// POST /api/checklists/templates — создать шаблон с пунктами. Только founder/admin/gen_dir.
-app.post('/api/checklists/templates', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+// POST /api/checklists/templates — создать шаблон с пунктами. Только founder/admin/director.
+app.post('/api/checklists/templates', auth(['admin', 'director', 'founder']), async (req, res) => {
   const client = await pool.connect();
   let inTx = false;
   try {
@@ -6372,7 +6372,7 @@ app.post('/api/checklists/templates', auth(['admin', 'gen_dir', 'founder']), asy
 });
 
 // GET /api/checklists/history?branch_id&days — история начатых/завершённых чеклистов.
-app.get('/api/checklists/history', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/checklists/history', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -6449,7 +6449,7 @@ function taSaPeriodDays(period) {
 
 // GET /api/tasks/analytics?branch_id&period=week|month|quarter|year
 // Спека: эндпоинт /api/v1/tasks/analytics — в монолите префикс v1 запрещён → /api/tasks/analytics.
-app.get('/api/tasks/analytics', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/tasks/analytics', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     // Скоуп филиалов внутри компании (менеджер пинится своим филиалом, чужой branch_id → 403).
     let scope;
@@ -6717,7 +6717,7 @@ function ttNextRun(recurrence) {
 }
 
 // GET /api/task-templates — список шаблонов + метрики. Менеджер видит свой филиал (+ общие branch_id IS NULL).
-app.get('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/task-templates', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null
@@ -6806,7 +6806,7 @@ app.get('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager']),
 });
 
 // POST /api/task-templates — создать шаблон. Founder-уровень + менеджер (скоуп филиалом).
-app.post('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/task-templates', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -6856,7 +6856,7 @@ app.post('/api/task-templates', auth(['admin', 'gen_dir', 'founder', 'manager'])
 });
 
 // PATCH /api/task-templates/:id — переключить is_active (вкл/выкл шаблона).
-app.patch('/api/task-templates/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/task-templates/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -6882,7 +6882,7 @@ app.patch('/api/task-templates/:id', auth(['admin', 'gen_dir', 'founder', 'manag
 });
 
 // === ЖУРНАЛ СОБЫТИЙ (event-journal) — company-scoped, иммутабельный, с фильтрами и сводкой ===
-// Менеджер скоупится своим филиалом. Founder/gen_dir видят всю компанию (можно сузить branch_id).
+// Менеджер скоупится своим филиалом. Founder/director видят всю компанию (можно сузить branch_id).
 // Не ломает существующий GET /api/audit-log.
 const EJ_PERIOD_DAYS = { day: 1, week: 7, month: 30, year: 365 };
 const EJ_MODULES = ['pos', 'inventory', 'finance', 'hr', 'crm', 'purchase', 'settings'];
@@ -6934,7 +6934,7 @@ function ejBuildWhere(req) {
   return { where: 'WHERE ' + conds.join(' AND '), params };
 }
 
-app.get('/api/audit-log/journal', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/audit-log/journal', auth(['founder', 'director', 'manager']), async (req, res) => {
   try {
     const { where, params } = ejBuildWhere(req);
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
@@ -6994,7 +6994,7 @@ app.get('/api/audit-log/journal', auth(['founder', 'gen_dir', 'manager']), async
 });
 
 // Только подозрительные (отдельная панель). Те же скоуп/период/фильтры.
-app.get('/api/audit-log/suspicious', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/audit-log/suspicious', auth(['founder', 'director', 'manager']), async (req, res) => {
   try {
     req.query.suspicious = 'true';
     const { where, params } = ejBuildWhere(req);
@@ -7131,7 +7131,7 @@ app.get('/api/auth/me', auth(), async (req, res) => {
 });
 
 // === USERS ===
-app.get('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/users', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   let query = `SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.company_id, u.branch_id,
     u.is_blocked, u.created_at, u.last_login_at, u.created_by,
     cb.username as created_by_name, cb.role as created_by_role,
@@ -7148,7 +7148,7 @@ app.get('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (r
 
 // Гранулярные доступы пользователя: какие инструменты скрыты (blocked_tools) + доступ к AI (ai_enabled).
 // Только учредитель (своей компании) и админ. Менеджер доступы не выдаёт.
-app.put('/api/users/:id/permissions', auth(['admin', 'founder', 'gen_dir']), async (req, res) => {
+app.put('/api/users/:id/permissions', auth(['admin', 'founder', 'director']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -7165,10 +7165,10 @@ app.put('/api/users/:id/permissions', auth(['admin', 'founder', 'gen_dir']), asy
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/users', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const { username, password, role, branch_id, company_id, first_name, last_name } = req.body;
-    // «Директор сети» (gen_dir) — активная роль: видит свои филиалы, без стратегических финансов.
+    // «Директор» (director) — активная роль: видит свои филиалы, без стратегических финансов.
     { const v = validatePassword(password); if (!v.ok) return res.status(400).json({ error: v.error }); }
     // БЕЗОПАСНОСТЬ: назначать роль строго ниже своей (admin — любую). Защита от эскалации:
     // учредитель клиента не выпишет admin, менеджер — учредителя и т.д.
@@ -7189,7 +7189,7 @@ app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
     }
     // Company-level roles — never attach a branch
     if (isCompanyLevel(role)) branchId = null;
-    // Pre-check: only one founder/gen_dir per company
+    // Pre-check: only one founder/director per company
     if (isCompanyLevel(role) && companyId) {
       const dup = await pool.query('SELECT id, username FROM users WHERE role=$1 AND company_id=$2 LIMIT 1', [role, companyId]);
       if (dup.rows[0]) {
@@ -7204,7 +7204,7 @@ app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
       );
       res.json(rows[0]);
     } catch (e) {
-      if (e.code === '23505' && (e.constraint === 'one_gen_dir_per_company' || e.constraint === 'one_founder_per_company')) {
+      if (e.code === '23505' && (e.constraint === 'one_director_per_company' || e.constraint === 'one_founder_per_company')) {
         return res.status(409).json({ error: 'У компании уже есть такой пользователь с этой ролью' });
       }
       if (e.code === '23505') return res.status(409).json({ error: 'Логин уже занят' });
@@ -7216,7 +7216,7 @@ app.post('/api/users', auth(['admin', 'gen_dir', 'founder', 'manager']), async (
 // Матрица назначения ролей: кто какую роль может создать/выдать. Защита от эскалации
 // привилегий в мульти-тенанте (напр. учредитель клиента не выпишет себе admin,
 // а менеджер — учредителя). Назначать можно только роли СТРОГО НИЖЕ своей; admin — любые.
-const ROLE_RANK = { admin: 5, founder: 4, gen_dir: 3, manager: 2, cashier: 1, warehouse: 1, seller: 1 };
+const ROLE_RANK = { admin: 5, founder: 4, director: 3, manager: 2, cashier: 1, warehouse: 1, seller: 1 };
 function canAssignRole(actorRole, targetRole) {
   if (actorRole === 'admin') return true;
   if (targetRole === 'admin') return false;
@@ -7225,16 +7225,16 @@ function canAssignRole(actorRole, targetRole) {
 
 // Returns true if the calling user is allowed to mutate the target user.
 // Non-admin can only touch users in their own company; manager additionally restricted to own branch
-// and forbidden from touching admin/founder/gen_dir roles.
+// and forbidden from touching admin/founder/director roles.
 function canMutateUser(actor, target) {
   if (actor.role === 'admin') return true;
   if (!target) return false;
   if (target.company_id !== actor.company_id) return false;
   if (actor.role === 'manager') {
     if (target.branch_id !== actor.branch_id) return false;
-    if (['admin', 'founder', 'gen_dir', 'manager'].includes(target.role)) return false;
+    if (['admin', 'founder', 'director', 'manager'].includes(target.role)) return false;
   }
-  if (actor.role === 'gen_dir' || actor.role === 'founder') {
+  if (actor.role === 'director' || actor.role === 'founder') {
     if (target.role === 'admin') return false;
   }
   // БЕЗОПАСНОСТЬ: нельзя мутировать пользователя с рангом >= своего (директор не может тронуть
@@ -7243,7 +7243,7 @@ function canMutateUser(actor, target) {
   return true;
 }
 
-app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.put('/api/users/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -7285,7 +7285,7 @@ app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
     try {
       await pool.query(`UPDATE users SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
     } catch (e) {
-      if (e.code === '23505' && (e.constraint === 'one_gen_dir_per_company' || e.constraint === 'one_founder_per_company')) {
+      if (e.code === '23505' && (e.constraint === 'one_director_per_company' || e.constraint === 'one_founder_per_company')) {
         return res.status(409).json({ error: 'У компании уже есть такой пользователь с этой ролью' });
       }
       if (e.code === '23505') return res.status(409).json({ error: 'Логин уже занят' });
@@ -7297,7 +7297,7 @@ app.put('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
 
 // Профиль сотрудника: заполняют учредитель (своя компания) и менеджер (своя ветка, только
 // подчинённые роли — enforced через canMutateUser). Фото грузится через /api/upload/photo.
-app.put('/api/users/:id/profile', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.put('/api/users/:id/profile', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -7318,7 +7318,7 @@ app.put('/api/users/:id/profile', auth(['admin', 'founder', 'gen_dir', 'manager'
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.delete('/api/users/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -7332,7 +7332,7 @@ app.delete('/api/users/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/users/:id/block', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.put('/api/users/:id/block', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
@@ -7362,7 +7362,7 @@ app.post('/api/auth/change-password', auth(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/users/reset-password', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/users/reset-password', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const { user_id, password } = req.body;
     const targetId = parseInt(user_id, 10);
@@ -7550,7 +7550,7 @@ app.put('/api/products/:id', auth(['admin', 'cashier', 'warehouse', 'manager']),
   }
 });
 
-app.delete('/api/products/:id', auth(['admin', 'manager', 'gen_dir', 'founder']), async (req, res) => {
+app.delete('/api/products/:id', auth(['admin', 'manager', 'director', 'founder']), async (req, res) => {
   try {
     // Soft-delete — preserves history. Use a real DELETE later via cleanup task if truly needed.
     const { rows: [cur] } = await pool.query('SELECT id, name_ru, branch_id, company_id FROM products WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
@@ -7693,7 +7693,7 @@ app.get('/api/stock/outcome-list', auth(), async (req, res) => {
   const conds = [];
   if (branchId) { conds.push(`so.branch_id = $${params.length+1}`); params.push(branchId); }
   // Tenant isolation: non-admin без branch-фильтра всё равно ограничен своей компанией
-  // (иначе founder/gen_dir по «Все филиалы» видел бы продажи чужих компаний).
+  // (иначе founder/director по «Все филиалы» видел бы продажи чужих компаний).
   if (req.user.role !== 'admin' && req.user.company_id) {
     conds.push(`p.company_id = $${params.length+1}`); params.push(req.user.company_id);
   }
@@ -7727,7 +7727,7 @@ app.get('/api/stock/outcome-list', auth(), async (req, res) => {
 // Каждая строка stock_outcome = продажа N единиц одного товара (чек-группировки
 // в текущей схеме нет, поэтому показываем построчно). Фильтры: период, филиал,
 // способ оплаты, тип (B2B = есть клиент в базе / B2C = розница без клиента), поиск.
-app.get('/api/sales/history', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/sales/history', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     let scope;
     try { scope = await getUserBranchIds(req.user, req.query); }
@@ -8035,7 +8035,7 @@ async function computeFinModel(scope) {
   return { months, projection, growth_pct: Math.round(growth * 1000) / 10 };
 }
 
-app.get('/api/finance/cashflow', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/finance/cashflow', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ income: 0, expense: 0, balance: 0, by_day: [], forecast_7d: [] });
@@ -8043,7 +8043,7 @@ app.get('/api/finance/cashflow', auth(['admin', 'founder', 'gen_dir', 'manager']
   } catch (e) { console.error('cashflow err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/finance/break-even', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/finance/break-even', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ revenue: 0, fixed_costs: 0, break_even_revenue: null });
@@ -8051,7 +8051,7 @@ app.get('/api/finance/break-even', auth(['admin', 'founder', 'gen_dir', 'manager
   } catch (e) { console.error('break-even err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/finance/model', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/finance/model', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ months: [], projection: [] });
@@ -8063,7 +8063,7 @@ app.get('/api/finance/model', auth(['admin', 'founder', 'gen_dir', 'manager']), 
 // Интеграции: честные статусы (env-based) — фейковых «Активна» больше нет.
 // Безопасность: реальные пользователи по ролям, смены ролей, AI-запросы.
 // Масштабирование: реальные филиалы и валюты из транзакций.
-app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (req, res) => {
+app.get('/api/settings/overview', auth(['admin', 'founder', 'director']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const [companyQ, branchesQ, usersQ, roleChangesQ, aiUsageQ, currenciesQ] = await Promise.all([
@@ -8104,8 +8104,8 @@ app.get('/api/settings/overview', auth(['admin', 'founder', 'gen_dir']), async (
 });
 
 // ── Интеграции: реальное подключение и синхронизация внешних сервисов ──────
-// Self-serve для владельца (founder/gen_dir/admin). Секреты в company_integrations.config.
-const INTEG_ROLES = ['admin', 'founder', 'gen_dir'];
+// Self-serve для владельца (founder/director/admin). Секреты в company_integrations.config.
+const INTEG_ROLES = ['admin', 'founder', 'director'];
 
 async function tgApi(token, method, body) {
   const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -8241,7 +8241,7 @@ app.delete('/api/integrations/telegram', auth(INTEG_ROLES), async (req, res) => 
 // === HR OVERVIEW (картотека + мотивация — реальные данные) ===
 // Сотрудники компании с реальной активностью: продажи за 30 дней,
 // последняя активность, стаж. Один эндпоинт обслуживает Картотеку и Мотивацию.
-app.get('/api/hr/overview', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/hr/overview', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ employees: [] });
@@ -8283,7 +8283,7 @@ app.get('/api/hr/overview', auth(['admin', 'founder', 'gen_dir', 'manager']), as
   } catch (e) { console.error('hr/overview err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/stock/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse', 'cashier']), async (req, res) => {
+app.get('/api/stock/pending', auth(['admin', 'founder', 'director', 'manager', 'warehouse', 'cashier']), async (req, res) => {
   const branchId = getBranchFilter(req.user, req.query);
   const params = [];
   let where = `so.status = 'pending'`;
@@ -8360,9 +8360,9 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
 
     await client.query('BEGIN');
     // Seller sales go to PENDING — warehouse/manager must verify before stock is decremented.
-    // Trusted roles (admin, founder, gen_dir, manager, warehouse) auto-approve.
+    // Trusted roles (admin, founder, director, manager, warehouse) auto-approve.
     // Cashier sales also go pending (no change).
-    const autoApprove = ['admin', 'founder', 'gen_dir', 'manager', 'warehouse'].includes(req.user.role);
+    const autoApprove = ['admin', 'founder', 'director', 'manager', 'warehouse'].includes(req.user.role);
     const status = autoApprove ? 'approved' : 'pending';
 
     const { rows } = await client.query(
@@ -8651,7 +8651,7 @@ app.delete('/api/stock/outcome/:id/cancel', auth(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'gen_dir', 'manager', 'warehouse']), async (req, res) => {
+app.put('/api/stock/outcome/:id/approve', auth(['admin', 'founder', 'director', 'manager', 'warehouse']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -8884,7 +8884,7 @@ app.get('/api/stock/balance', auth(), async (req, res) => {
 });
 
 // === CASH CATEGORIES (presets for description) ===
-app.get('/api/cash/categories', auth(['cashier', 'manager', 'gen_dir', 'founder', 'admin']), async (req, res) => {
+app.get('/api/cash/categories', auth(['cashier', 'manager', 'director', 'founder', 'admin']), async (req, res) => {
   try {
     const { type } = req.query; // 'income' or 'expense'
     if (type && !['income','expense'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
@@ -8898,7 +8898,7 @@ app.get('/api/cash/categories', auth(['cashier', 'manager', 'gen_dir', 'founder'
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/cash/categories', auth(['cashier', 'manager', 'gen_dir', 'founder']), async (req, res) => {
+app.post('/api/cash/categories', auth(['cashier', 'manager', 'director', 'founder']), async (req, res) => {
   try {
     const { name, type } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Название обязательно' });
@@ -8914,9 +8914,9 @@ app.post('/api/cash/categories', auth(['cashier', 'manager', 'gen_dir', 'founder
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/api/cash/categories/:id', auth(['cashier', 'manager', 'gen_dir', 'founder']), async (req, res) => {
+app.delete('/api/cash/categories/:id', auth(['cashier', 'manager', 'director', 'founder']), async (req, res) => {
   try {
-    // Only allow delete within own branch (gen_dir within own company)
+    // Only allow delete within own branch (director within own company)
     const { rows } = await pool.query('SELECT branch_id FROM cash_categories WHERE id=$1', [req.params.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
     if (req.user.role !== 'admin') {
@@ -8933,7 +8933,7 @@ app.delete('/api/cash/categories/:id', auth(['cashier', 'manager', 'gen_dir', 'f
 });
 
 // === CASH ===
-app.get('/api/cash/balance', auth(['cashier', 'manager', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/cash/balance', auth(['cashier', 'manager', 'director', 'founder']), async (req, res) => {
   try {
     let scope;
     try { scope = await getUserBranchIds(req.user, req.query); }
@@ -8982,7 +8982,7 @@ app.get('/api/cash/balance', auth(['cashier', 'manager', 'gen_dir', 'founder']),
 // ── Cash REPORT — period-aware aggregate for the cashier's «Отчёт» tab.
 // Returns: settled income, pending income, expense, profit, sales (by method/seller/day/product),
 // outstanding debts, foreign-currency breakdown.
-app.get('/api/cash/report', auth(['cashier', 'manager', 'gen_dir', 'founder', 'admin']), async (req, res) => {
+app.get('/api/cash/report', auth(['cashier', 'manager', 'director', 'founder', 'admin']), async (req, res) => {
   try {
     let scope;
     try { scope = await getUserBranchIds(req.user, req.query); }
@@ -9131,9 +9131,9 @@ app.get('/api/cash/report', auth(['cashier', 'manager', 'gen_dir', 'founder', 'a
 // === SETTLEMENT (seller → cashier money handover) ===
 // Cashier sees sellers with un-handed-over cash, accepts it, and marks records settled.
 
-// List sellers with unsettled balance (cashier/manager/admin/founder/gen_dir for the branch)
+// List sellers with unsettled balance (cashier/manager/admin/founder/director for the branch)
 // Individual unsettled cash_income rows (one per sale) — for the new per-sale confirmation flow
-app.get('/api/cash/settlement/sales', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+app.get('/api/cash/settlement/sales', auth(['admin', 'founder', 'director', 'manager', 'cashier']), async (req, res) => {
   try {
     const branchId = getBranchFilter(req.user, req.query);
     const params = [];
@@ -9159,7 +9159,7 @@ app.get('/api/cash/settlement/sales', auth(['admin', 'founder', 'gen_dir', 'mana
 });
 
 // Confirm a SINGLE cash_income (one sale) — preferred over the bulk-by-seller endpoint
-app.post('/api/cash/settlement/accept-one', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+app.post('/api/cash/settlement/accept-one', auth(['admin', 'founder', 'director', 'manager', 'cashier']), async (req, res) => {
   const client = await pool.connect();
   try {
     const { cash_id, received_amount } = req.body;
@@ -9208,7 +9208,7 @@ app.post('/api/cash/settlement/accept-one', auth(['admin', 'founder', 'gen_dir',
   } finally { client.release(); }
 });
 
-app.get('/api/cash/settlement/pending', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+app.get('/api/cash/settlement/pending', auth(['admin', 'founder', 'director', 'manager', 'cashier']), async (req, res) => {
   try {
     const branchId = getBranchFilter(req.user, req.query);
     const params = [];
@@ -9234,7 +9234,7 @@ app.get('/api/cash/settlement/pending', auth(['admin', 'founder', 'gen_dir', 'ma
 });
 
 // Detailed list of one seller's unsettled sales
-app.get('/api/cash/settlement/seller/:id', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+app.get('/api/cash/settlement/seller/:id', auth(['admin', 'founder', 'director', 'manager', 'cashier']), async (req, res) => {
   try {
     const sellerId = parseInt(req.params.id);
     const branchId = getBranchFilter(req.user, req.query);
@@ -9253,7 +9253,7 @@ app.get('/api/cash/settlement/seller/:id', auth(['admin', 'founder', 'gen_dir', 
 
 // Accept money handed over by a seller → mark all their unsettled records settled.
 // Optional `received_amount` for verification: if mismatch, log a cash_expense (недостача) or cash_income (излишек).
-app.post('/api/cash/settlement/accept', auth(['admin', 'founder', 'gen_dir', 'manager', 'cashier']), async (req, res) => {
+app.post('/api/cash/settlement/accept', auth(['admin', 'founder', 'director', 'manager', 'cashier']), async (req, res) => {
   const client = await pool.connect();
   try {
     const { seller_id, received_amount } = req.body;
@@ -9382,9 +9382,9 @@ app.post('/api/cash/expense', auth(['cashier', 'manager']), async (req, res) => 
   }
 });
 
-// === TEAM KPI === manager/gen_dir/founder see employees of their branch/company.
+// === TEAM KPI === manager/director/founder see employees of their branch/company.
 // Admin is intentionally excluded — system admin doesn't monitor business KPI.
-app.get('/api/team/kpi', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/team/kpi', auth(['founder', 'director', 'manager']), async (req, res) => {
   try {
     const { from, to } = req.query; // optional ISO date strings
     const params = [];
@@ -9445,7 +9445,7 @@ app.get('/api/team/kpi', auth(['founder', 'gen_dir', 'manager']), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/cash/profit', auth(['director', 'founder', 'manager']), async (req, res) => {
   try {
     let scope;
     try { scope = await getUserBranchIds(req.user, req.query); }
@@ -9486,7 +9486,7 @@ app.get('/api/cash/profit', auth(['gen_dir', 'founder', 'manager']), async (req,
 });
 
 // === UPLOAD ===
-app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse', 'founder', 'gen_dir', 'manager']), (req, res) => {
+app.post('/api/upload/photo', auth(['admin', 'cashier', 'warehouse', 'founder', 'director', 'manager']), (req, res) => {
   upload.single('photo')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message || 'Ошибка загрузки файла' });
     if (!req.file) return res.status(400).json({ error: 'Файл не найден' });
@@ -9504,7 +9504,7 @@ app.get('/api/role-change-log', auth(['admin']), async (req, res) => {
 
 // === FULL BUSINESS REPORT (xlsx) ===
 // Manager → own branch. Gen_dir/founder → can pass branch_id, otherwise all branches in company.
-app.get('/api/reports/full', auth(['manager', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/reports/full', auth(['manager', 'director', 'founder']), async (req, res) => {
   try {
     const { from, to } = req.query;
     const explicitBranch = getBranchFilter(req.user, req.query);
@@ -9725,7 +9725,7 @@ app.get('/api/reports/full', auth(['manager', 'gen_dir', 'founder']), async (req
       stActive:'Активен', stBlocked:'Заблокирован',
       total: 'ИТОГО:',
       // Roles
-      roleFounder:'Учредитель', roleGenDir:'Ген. директор', roleManager:'Менеджер',
+      roleFounder:'Учредитель', roleGenDir:'Директор', roleManager:'Менеджер',
       roleCashier:'Кассир', roleWarehouse:'Кладовщик', roleSeller:'Продавец', roleAdmin:'Админ',
       dash: '—',
     };
@@ -9778,7 +9778,7 @@ app.get('/api/reports/full', auth(['manager', 'gen_dir', 'founder']), async (req
       dash: '—',
     };
     const L = lang === 'uz' ? dictUz : dictRu;
-    const ROLE_LBL = { founder:L.roleFounder, gen_dir:L.roleGenDir, manager:L.roleManager, cashier:L.roleCashier, warehouse:L.roleWarehouse, seller:L.roleSeller, admin:L.roleAdmin };
+    const ROLE_LBL = { founder:L.roleFounder, director:L.roleGenDir, manager:L.roleManager, cashier:L.roleCashier, warehouse:L.roleWarehouse, seller:L.roleSeller, admin:L.roleAdmin };
     const STATUS_LBL = { approved:L.stApproved, pending:L.stPending, rejected:L.stRejected };
     const fmtDate = d => d ? new Date(d) : null;
     const localeCode = lang === 'uz' ? 'uz-UZ' : 'ru-RU';
@@ -10285,7 +10285,7 @@ app.get('/api/suppliers', auth(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/suppliers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+app.post('/api/suppliers', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   try {
     const { name, phone, email, contact_person, address, note } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
@@ -10298,7 +10298,7 @@ app.post('/api/suppliers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cash
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.put('/api/suppliers/:id', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+app.put('/api/suppliers/:id', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   try {
     const { name, phone, email, contact_person, address, note } = req.body;
     const { rows } = await pool.query(
@@ -10312,7 +10312,7 @@ app.put('/api/suppliers/:id', auth(['admin', 'gen_dir', 'founder', 'manager', 'c
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/api/suppliers/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.delete('/api/suppliers/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     await pool.query(
       'UPDATE suppliers SET deleted_at=NOW() WHERE id=$1 AND company_id=$2',
@@ -10344,7 +10344,7 @@ app.get('/api/suppliers/:id/debts', auth(), async (req, res) => {
 });
 
 // Pay a supplier-debt income (we are paying THEM)
-app.post('/api/stock/income/:id/pay', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
+app.post('/api/stock/income/:id/pay', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   const client = await pool.connect();
   try {
     const { amount, payment_method, note } = req.body;
@@ -10453,7 +10453,7 @@ app.get('/api/customers', auth(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/customers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
+app.post('/api/customers', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
     const { name, phone, note, source } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
@@ -10466,7 +10466,7 @@ app.post('/api/customers', auth(['admin', 'gen_dir', 'founder', 'manager', 'cash
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.put('/api/customers/:id', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
+app.put('/api/customers/:id', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
     const { name, phone, note, source } = req.body;
     const src = source === undefined ? undefined : (source && source.trim() ? source.trim().slice(0, 40) : null);
@@ -10480,7 +10480,7 @@ app.put('/api/customers/:id', auth(['admin', 'gen_dir', 'founder', 'manager', 'c
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.delete('/api/customers/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.delete('/api/customers/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     await pool.query(
       'UPDATE customers SET deleted_at = NOW() WHERE id=$1 AND company_id=$2',
@@ -10516,7 +10516,7 @@ app.get('/api/customers/:id/history', auth(), async (req, res) => {
 });
 
 // === DEBTS — unpaid (or partially paid) outcomes ===
-app.get('/api/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
+app.get('/api/debts', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
     const branchId = getBranchFilter(req.user, req.query);
     const params = [req.user.company_id];
@@ -10547,7 +10547,7 @@ app.get('/api/debts', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']
 });
 
 // Record a debt payment against an outcome. Creates a cash_income for the amount.
-app.post('/api/stock/outcome/:id/pay', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier']), async (req, res) => {
+app.post('/api/stock/outcome/:id/pay', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   const client = await pool.connect();
   try {
     const { amount, payment_method, note } = req.body;
@@ -10660,7 +10660,7 @@ app.get('/api/stock/outcome/edit-requests', auth(), async (req, res) => {
 });
 
 // Cashier/manager/admin approves a pending edit request → apply changes
-app.post('/api/stock/outcome/edit-requests/:id/approve', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+app.post('/api/stock/outcome/edit-requests/:id/approve', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -10712,7 +10712,7 @@ app.post('/api/stock/outcome/edit-requests/:id/approve', auth(['admin', 'gen_dir
   } finally { client.release(); }
 });
 
-app.post('/api/stock/outcome/edit-requests/:id/reject', auth(['admin', 'gen_dir', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
+app.post('/api/stock/outcome/edit-requests/:id/reject', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   try {
     const { rows: [er] } = await pool.query('SELECT * FROM sale_edit_requests WHERE id=$1', [req.params.id]);
     if (!er) return res.status(404).json({ error: 'Request not found' });
@@ -10854,13 +10854,13 @@ app.post('/api/shifts/:id/close', auth(['cashier', 'manager', 'admin']), async (
 });
 
 // === AUDIT LOG view (admin / company management) ===
-app.get('/api/audit-log', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/audit-log', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const { entity_type, action, limit } = req.query;
     const isAdmin = req.user.role === 'admin';
     const params = [];
     const conds = [];
-    // Тенант-скоуп: владельцы (founder/gen_dir) видят журнал ТОЛЬКО своей компании.
+    // Тенант-скоуп: владельцы (founder/director) видят журнал ТОЛЬКО своей компании.
     // admin (SaaS-оператор) видит платформенно, но без финансовых деталей (ниже).
     if (!isAdmin) {
       params.push(req.user.company_id);
@@ -11065,7 +11065,7 @@ app.delete('/api/admin/team/:id', auth(['admin']), async (req, res) => {
 // === «ВОЙТИ КАК» (impersonation) — WoW-команда заходит в любую компанию под любой ролью ===
 // Только реальный admin может выписать scoped-токен. Токен несёт выбранные role/company/branch
 // + act_as, поэтому все обычные эндпоинты скоупятся так, будто это реальный сотрудник компании.
-const IMPERSONATABLE_ROLES = new Set(['founder', 'gen_dir', 'manager', 'cashier', 'warehouse', 'seller']);
+const IMPERSONATABLE_ROLES = new Set(['founder', 'director', 'manager', 'cashier', 'warehouse', 'seller']);
 
 app.get('/api/admin/impersonate/targets', auth(['admin']), async (req, res) => {
   try {
@@ -11089,7 +11089,7 @@ app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
     if (!IMPERSONATABLE_ROLES.has(role)) return res.status(400).json({ error: 'Недопустимая роль' });
     const co = await pool.query('SELECT id, name FROM companies WHERE id = $1', [company_id]);
     if (!co.rows[0]) return res.status(404).json({ error: 'Компания не найдена' });
-    const isCoLevel = (role === 'founder' || role === 'gen_dir');
+    const isCoLevel = (role === 'founder' || role === 'director');
     let branchName = null;
     if (!isCoLevel && !reqBranch) return res.status(400).json({ error: 'Для этой роли нужно выбрать филиал' });
     if (reqBranch) {
@@ -11182,7 +11182,7 @@ app.post('/api/admin/features/toggle', auth(['admin']), async (req, res) => {
 // Get feature keys enabled for current user's company. Used by frontend FeaturesContext.
 // === Панель управления виджетами: учредитель включает/выключает инструменты для всей компании ===
 // Хранится в companies.disabled_tools[]. Читать может владелец-роль, менять — ТОЛЬКО учредитель.
-app.get('/api/company/tool-settings', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/company/tool-settings', auth(['founder', 'director', 'manager']), async (req, res) => {
   try {
     if (!req.user.company_id) return res.json({ disabled_tools: [], disabled_widgets: [] });
     const { rows } = await pool.query("SELECT COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]);
@@ -11224,7 +11224,7 @@ app.get('/api/me/features', auth(), async (req, res) => {
 });
 
 // === MARKETING: Personas (JTBD / avatars / pains) ===
-const MKT_ROLES = ['admin','founder','gen_dir','manager'];
+const MKT_ROLES = ['admin','founder','director','manager'];
 
 app.get('/api/marketing/personas', auth(MKT_ROLES), async (req, res) => {
   try {
@@ -11558,7 +11558,7 @@ const AI_API_URL = process.env.AI_API_URL || 'https://api.deepseek.com/chat/comp
 const AI_API_KEY = process.env.AI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
 const DEEPSEEK_URL = AI_API_URL; // алиас для существующих вызовов fetch
-const AI_ROLES = ['admin','founder','gen_dir'];
+const AI_ROLES = ['admin','founder','director'];
 // Гейт AI-доступа: учредитель/админ компании может отключить AI конкретному пользователю (users.ai_enabled).
 const aiGate = async (req, res, next) => {
   try {
@@ -11901,7 +11901,7 @@ async function buildSystemPrompt(user, lang) {
     } catch {}
   }
   if (user.role) {
-    const roleMap = { founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер', admin: 'Администратор SaaS' };
+    const roleMap = { founder: 'Учредитель', director: 'Директор', manager: 'Менеджер', admin: 'Администратор SaaS' };
     lines.push(`Роль собеседника: ${roleMap[user.role] || user.role}.`);
     if (user.role === 'manager') lines.push('Менеджер — данные ниже ТОЛЬКО по его филиалу, не по всей компании.');
   }
@@ -12202,7 +12202,7 @@ app.post('/api/ai/suggest', auth(AI_ROLES), aiGate, async (req, res) => {
 // Объяснение «состояния бизнеса» по графику. Доступно и менеджеру, НО:
 // менеджеру даём БЕЗ денежных сумм — только относительный idx и доли (он их и присылает),
 // и системный промпт СТРОГО запрещает называть суммы. Учредитель — полные цифры.
-app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager']), aiGate, async (req, res) => {
+app.post('/api/ai/explain-state', auth(['admin', 'founder', 'director', 'manager']), aiGate, async (req, res) => {
   try {
     if (!AI_API_KEY) return res.status(503).json({ error: 'AI не настроен. Администратор должен задать DEEPSEEK_API_KEY.' });
     const { question, trend, biz_state, lang } = req.body || {};
@@ -12251,7 +12251,7 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'gen_dir', 'manager'
 });
 
 // === Ручной ввод активов/обязательств для «Состояния бизнеса» — только владелец ===
-const FIN_OWNER_ROLES = ['admin', 'founder', 'gen_dir'];
+const FIN_OWNER_ROLES = ['admin', 'founder', 'director'];
 const MANUAL_FIN = {
   'fixed-assets':    { table: 'fixed_assets',  cols: ['category', 'name', 'acquisition_cost', 'acquired_at', 'note'] },
   'loans':           { table: 'loans',         cols: ['lender', 'remaining_balance', 'annual_rate', 'monthly_payment', 'closed_at', 'note'] },
@@ -13477,7 +13477,7 @@ ensureSchema();
 
 // ===== stock-outcome-report =====
 // === Расход товара — агрегат stock_outcome по типам за период (read-only) ===
-app.get('/api/warehouse/outcome-summary', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/outcome-summary', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -13546,7 +13546,7 @@ app.get('/api/warehouse/outcome-summary', auth(['admin', 'gen_dir', 'founder', '
 
 // ===== stock-transfers =====
 // === Warehouse transfers — перемещения между складами ===
-app.get('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/transfers', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -13587,7 +13587,7 @@ app.get('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manage
   } catch (e) { console.error('warehouse/transfers GET err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/warehouse/transfers', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = req.user.company_id;
@@ -13639,7 +13639,7 @@ app.post('/api/warehouse/transfers', auth(['admin', 'gen_dir', 'founder', 'manag
   } finally { client.release(); }
 });
 
-app.patch('/api/warehouse/transfers/:id/receive', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/warehouse/transfers/:id/receive', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = req.user.company_id;
@@ -13675,7 +13675,7 @@ app.patch('/api/warehouse/transfers/:id/receive', auth(['admin', 'gen_dir', 'fou
 
 // ===== product-movements =====
 // === Warehouse — История движения товара (приход + расход с накопительным остатком) ===
-app.get('/api/warehouse/movements', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/movements', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -13819,7 +13819,7 @@ app.get('/api/warehouse/movements', auth(['admin', 'gen_dir', 'founder', 'manage
 
 // ===== turnover-deadstock =====
 // === Оборачиваемость и мёртвый сток ===
-app.get('/api/warehouse/turnover', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/turnover', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -13942,7 +13942,7 @@ app.get('/api/warehouse/turnover', auth(['admin', 'gen_dir', 'founder', 'manager
 
 // ===== eoq =====
 // === EOQ — оптимальный размер заказа (модель Уилсона) ===
-app.get('/api/warehouse/eoq', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/eoq', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14004,7 +14004,7 @@ app.get('/api/warehouse/eoq', auth(['admin', 'gen_dir', 'founder', 'manager']), 
 
 // ===== reorder-point =====
 // === Reorder Point (ROP) — точка заказа ===
-app.get('/api/warehouse/reorder-point', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/reorder-point', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14088,7 +14088,7 @@ app.get('/api/warehouse/reorder-point', auth(['admin', 'gen_dir', 'founder', 'ma
 
 // ===== safety-stock =====
 // === Safety stock — Z·sigma·sqrt(lead_time) по 90-дн истории спроса ===
-app.get('/api/warehouse/safety-stock', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/safety-stock', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14181,7 +14181,7 @@ app.get('/api/warehouse/safety-stock', auth(['admin', 'gen_dir', 'founder', 'man
 
 // ===== purchase-roi =====
 // === Purchase ROI — возврат на вложения по каждому товару ===
-app.get('/api/warehouse/purchase-roi', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/purchase-roi', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14245,7 +14245,7 @@ app.get('/api/warehouse/purchase-roi', auth(['admin', 'gen_dir', 'founder', 'man
 
 // ===== min-stock-alert =====
 // === Минимальный остаток / Алерт — read-only ===
-app.get('/api/warehouse/min-stock-alerts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/min-stock-alerts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14332,7 +14332,7 @@ app.get('/api/warehouse/min-stock-alerts', auth(['admin', 'gen_dir', 'founder', 
 });
 
 // ===== barcodes =====
-app.get('/api/warehouse/barcodes-coverage', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/barcodes-coverage', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14383,7 +14383,7 @@ app.get('/api/warehouse/barcodes-coverage', auth(['admin', 'gen_dir', 'founder',
 
 // ===== demand-forecast =====
 // === Прогноз потребности склада — когда и сколько закупать ===
-app.get('/api/warehouse/demand-forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/demand-forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // менеджер пинится своим филиалом
@@ -14512,7 +14512,7 @@ app.get('/api/warehouse/demand-forecast', auth(['admin', 'gen_dir', 'founder', '
 
 // ===== inventory-whatif =====
 // === What-if (Склад) — read-only baseline; вся математика сценариев на фронте ===
-app.get('/api/warehouse/whatif-base', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/whatif-base', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14610,7 +14610,7 @@ app.get('/api/warehouse/whatif-base', auth(['admin', 'gen_dir', 'founder', 'mana
 // === Инвентаризация склада (audit) — реальные данные ===
 // GET без id  -> список инвентаризаций (история, фильтр по периоду)
 // GET с id    -> детали одной инвентаризации + позиции (audit_items + имена товаров)
-app.get('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/audits', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -14662,7 +14662,7 @@ app.get('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']
 });
 
 // POST — старт инвентаризации: снапшот текущих остатков product_stock в audit_items.book_qty.
-app.post('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/warehouse/audits', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = req.user.company_id;
@@ -14704,7 +14704,7 @@ app.post('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager'
 });
 
 // PATCH — ввод факта по позиции (item_id + actual_qty) ЛИБО завершение (audit_id + finish:true).
-app.patch('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/warehouse/audits', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
 
@@ -14765,7 +14765,7 @@ app.patch('/api/warehouse/audits', auth(['admin', 'gen_dir', 'founder', 'manager
 
 // ===== defects =====
 // === Брак и списание — сводка потерь за период ===
-app.get('/api/warehouse/writeoff-summary', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/warehouse/writeoff-summary', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);           // менеджер авто-скоупится на свой филиал
@@ -14882,7 +14882,7 @@ function expensesWindow(query) {
 }
 
 // GET /api/finance/expenses/summary — агрегат по категориям (сумма, доля %, динамика к прошлому периоду)
-app.get('/api/finance/expenses/summary', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/finance/expenses/summary', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ total: 0, operating: 0, purchases: 0, categories: [] });
@@ -14932,7 +14932,7 @@ app.get('/api/finance/expenses/summary', auth(['admin', 'gen_dir', 'founder']), 
 });
 
 // GET /api/finance/expenses — реестр операций (дата/категория/сумма/комментарий/ответственный)
-app.get('/api/finance/expenses', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/finance/expenses', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) return res.json({ operations: [], truncated: false });
@@ -14972,12 +14972,12 @@ app.get('/api/finance/expenses', auth(['admin', 'gen_dir', 'founder']), async (r
 // ===== profitability =====
 // ===================================================================
 // Рентабельность — GET /api/finance/profitability + POST /api/finance/balance-entry
-// founder/gen_dir/admin (БЕЗ manager — финансы компании). Деньги UZS полным числом.
+// founder/director/admin (БЕЗ manager — финансы компании). Деньги UZS полным числом.
 // revenue/net_profit/cogs из stock_outcome + cash_expense; балансовые данные (активы/
 // капитал/амортизация/проценты/налоги) — ручной ввод в balance_entries (последняя запись).
 // ===================================================================
 
-app.get('/api/finance/profitability', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/finance/profitability', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15068,7 +15068,7 @@ app.get('/api/finance/profitability', auth(['admin', 'gen_dir', 'founder']), asy
   } catch (e) { console.error('profitability err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/finance/balance-entry', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.post('/api/finance/balance-entry', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.body); // null = вся компания
@@ -15095,7 +15095,7 @@ app.post('/api/finance/balance-entry', auth(['admin', 'gen_dir', 'founder']), as
 // БЕЗ новых таблиц: исходящие = неоплаченные stock_income (долг поставщикам),
 // входящие = дебиторка stock_outcome (долг клиентов), старт = касса (cash_income−cash_expense).
 // Только финансовые роли — менеджер не имеет доступа к финансам компании.
-app.get('/api/finance/payment-calendar', auth(['admin','gen_dir','founder']), async (req, res) => {
+app.get('/api/finance/payment-calendar', auth(['admin','director','founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);          // int|null
@@ -15216,7 +15216,7 @@ app.get('/api/finance/payment-calendar', auth(['admin','gen_dir','founder']), as
 // === Валютные операции (только учредитель/гендиректор) ===
 // stock_outcome.price / stock_income.price ХРАНЯТСЯ В UZS; exchange_rate = сум за 1$,
 // т.е. USD = quantity*price / exchange_rate, UZS = quantity*price (по канону server.js, ~стр.1008).
-app.get('/api/finance/currency', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/finance/currency', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15361,7 +15361,7 @@ async function syncTaxAccruals(companyId, year, ratePct) {
 }
 
 // GET /api/finance/taxes?year= — метрики + история платежей
-app.get('/api/finance/taxes', auth(['admin','gen_dir','founder']), async (req, res) => {
+app.get('/api/finance/taxes', auth(['admin','director','founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const year = parseInt(req.query.year) || new Date().getFullYear();
@@ -15418,7 +15418,7 @@ app.get('/api/finance/taxes', auth(['admin','gen_dir','founder']), async (req, r
 });
 
 // PATCH /api/finance/taxes/:id/pay — отметить платёж уплаченным
-app.patch('/api/finance/taxes/:id/pay', auth(['admin','gen_dir','founder']), async (req, res) => {
+app.patch('/api/finance/taxes/:id/pay', auth(['admin','director','founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id);
@@ -15435,7 +15435,7 @@ app.patch('/api/finance/taxes/:id/pay', auth(['admin','gen_dir','founder']), asy
 // Авто: касса (cash_income−cash_expense), дебиторка (unpaid stock_outcome),
 // запасы (product_stock×price_buy), кредиторка (unpaid stock_income).
 // Ручной баланс (balance_entries): обязательства, проценты по кредитам, собственный капитал, прочие активы.
-app.get('/api/finance/ratios', auth(['admin','gen_dir','founder']), async (req, res) => {
+app.get('/api/finance/ratios', auth(['admin','director','founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15578,7 +15578,7 @@ app.get('/api/finance/ratios', auth(['admin','gen_dir','founder']), async (req, 
 // Источники: stock_outcome+products (выручка/себестоимость), cash_expense
 // (постоянные расходы), cash_income−cash_expense (остаток в кассе).
 // auth БЕЗ manager — это финансы всей компании.
-app.get('/api/finance/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/finance/whatif-base', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     let scope; try { scope = await getUserBranchIds(req.user, req.query); } catch (e) { return res.status(e.statusCode || 500).json({ error: e.message }); }
     if (scope.restrictive && scope.ids.length === 0) {
@@ -15638,7 +15638,7 @@ app.get('/api/finance/whatif-base', auth(['admin', 'gen_dir', 'founder']), async
 // GET /api/procurement/history?period=day|week|month|year[&branch_id=]
 // Возвращает: summary, chart (помесячно), by_supplier (с долей %), rows (реестр).
 // Скоуп компании — JOIN products p (p.company_id); ветка — si.branch_id (getBranchFilter).
-app.get('/api/procurement/history', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/history', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15749,7 +15749,7 @@ app.get('/api/procurement/history', auth(['admin', 'gen_dir', 'founder', 'manage
 
 // ===== supplier-returns =====
 // === PROCUREMENT: ВОЗВРАТЫ ПОСТАВЩИКУ ===
-app.get('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/returns', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15821,7 +15821,7 @@ app.get('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manage
   } catch (e) { console.error('procurement/returns GET err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/procurement/returns', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
@@ -15839,7 +15839,7 @@ app.post('/api/procurement/returns', auth(['admin', 'gen_dir', 'founder', 'manag
   } catch (e) { console.error('procurement/returns POST err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.patch('/api/procurement/returns/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/procurement/returns/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { status, compensation_type } = req.body;
@@ -15861,7 +15861,7 @@ app.patch('/api/procurement/returns/:id', auth(['admin', 'gen_dir', 'founder', '
 // Балл 0-5: доставка в срок (60% · до 3.0) + качество/без брака (30% · до 1.5) + опыт/объём (10% · до 0.5).
 // Скоуп компании — через JOIN products (p.company_id); ветка — si.branch_id (getBranchFilter).
 // supplier_returns опциональна: LEFT JOIN через to_regclass-гард, иначе брак = 0.
-app.get('/api/procurement/ratings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/ratings', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -15953,7 +15953,7 @@ app.get('/api/procurement/ratings', auth(['admin', 'gen_dir', 'founder', 'manage
 // срочность: urgent (<=lead_time дней до 0), soon (<=lead_time*2 или 30д), normal;
 // дедлайн заказа = today + max(0, days_left - lead_time); рекоменд. объём = max(0, forecast+safety - stock);
 // сумма-ориентир = order_qty * price_buy (UZS). Скоуп компании через products.company_id, ветка — getBranchFilter.
-app.get('/api/procurement/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16065,7 +16065,7 @@ app.get('/api/procurement/forecast', auth(['admin', 'gen_dir', 'founder', 'manag
 
 // ===== what-if-purchases =====
 // === «Что если — Закупки» — baseline для сценарного моделирования (математика на фронте) ===
-app.get('/api/procurement/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/procurement/whatif-base', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16187,7 +16187,7 @@ app.get('/api/procurement/whatif-base', auth(['admin', 'gen_dir', 'founder']), a
 const PO_ACTIVE = `('draft','confirmed','in_transit')`;
 
 // Список заказов + KPI (активные / сумма активных / ближайшая поставка / просрочено)
-app.get('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/orders', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16234,7 +16234,7 @@ app.get('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manager
 });
 
 // Детали заказа + позиции + таймлайн
-app.get('/api/procurement/orders/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/orders/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { rows: oRows } = await pool.query(`
@@ -16267,7 +16267,7 @@ app.get('/api/procurement/orders/:id', auth(['admin', 'gen_dir', 'founder', 'man
 });
 
 // Создать заказ
-app.post('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/procurement/orders', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = req.user.company_id;
@@ -16300,7 +16300,7 @@ app.post('/api/procurement/orders', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // Изменить статус заказа
-app.patch('/api/procurement/orders/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/procurement/orders/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { status } = req.body;
@@ -16332,7 +16332,7 @@ function receivingsPeriodFrom(period) {
 }
 
 // GET список приёмок + KPI
-app.get('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/receivings', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16385,7 +16385,7 @@ app.get('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'man
 });
 
 // GET детали одной приёмки (позиции + замечания)
-app.get('/api/procurement/receivings/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/receivings/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16420,7 +16420,7 @@ app.get('/api/procurement/receivings/:id', auth(['admin', 'gen_dir', 'founder', 
 });
 
 // POST создать приёмку (+позиции). total_amount считается из позиций если не передан.
-app.post('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/procurement/receivings', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   const client = await pool.connect();
   try {
     const companyId = req.user.company_id;
@@ -16466,7 +16466,7 @@ app.post('/api/procurement/receivings', auth(['admin', 'gen_dir', 'founder', 'ma
 // С product_id   -> сравнение поставщиков: AVG/MIN цена закупки, объём, отсрочка,
 //                   лучший/текущий поставщик и экономия мес/год.
 // Скоуп компании через JOIN products p (p.company_id); ветка — si.branch_id (getBranchFilter).
-app.get('/api/procurement/compare', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/procurement/compare', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16579,7 +16579,7 @@ app.get('/api/procurement/compare', auth(['admin', 'gen_dir', 'founder', 'manage
 
 // ===== discounts =====
 // === Скидки и акции — список + KPI ===
-app.get('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/discounts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16636,7 +16636,7 @@ app.get('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), asyn
 });
 
 // === Создать акцию ===
-app.post('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/discounts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query) ?? (req.body.branch_id ? parseInt(req.body.branch_id) : null);
@@ -16657,7 +16657,7 @@ app.post('/api/discounts', auth(['admin', 'gen_dir', 'founder', 'manager']), asy
 });
 
 // === Обновить акцию (вкл/выкл, поля) ===
-app.patch('/api/discounts/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/discounts/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id);
@@ -16684,7 +16684,7 @@ app.patch('/api/discounts/:id', auth(['admin', 'gen_dir', 'founder', 'manager'])
 
 // ===== sales-top-products =====
 // ─── Топ товаров (sales-top-products) — read-only по stock_outcome (sale, approved) ───
-app.get('/api/sales/top-products', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/sales/top-products', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16816,7 +16816,7 @@ app.get('/api/sales/top-products', auth(['admin', 'gen_dir', 'founder', 'manager
 // JOIN users (продавец = so.created_by). Чеки=COUNT, выручка=SUM(quantity*price) UZS,
 // ср.чек=выручка/чеки. Лидер дня, gap-ratio (топ/худший), потенциал (вся команда=ср.чек лидера).
 // Возвраты/план источника нет → null (фронт рисует прочерк). getBranchFilter для скоупа филиала.
-app.get('/api/operations/seller-avg-check', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/operations/seller-avg-check', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -16938,7 +16938,7 @@ app.get('/api/operations/seller-avg-check', auth(['admin', 'gen_dir', 'founder',
 // GET /api/operations/returns-report?branch_id&period — реестр возвратов + KPI + причины.
 // Read-only по stock_outcome (outcome_type='return', status='approved'). Причина = note.
 // Скоуп: JOIN products p (p.company_id) + getBranchFilter (so.branch_id). Деньги UZS полным числом.
-app.get('/api/operations/returns-report', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/operations/returns-report', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17028,7 +17028,7 @@ app.get('/api/operations/returns-report', auth(['admin', 'gen_dir', 'founder', '
 // ===== customer-campaigns =====
 // === Customer campaigns (Рассылки клиентам) ===
 // Список рассылок + агрегированная статистика + размер аудитории сегмента.
-app.get('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/marketing/campaigns', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17090,7 +17090,7 @@ app.get('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // Создать рассылку. sent_count = размер аудитории сегмента на момент отправки.
-app.post('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/marketing/campaigns', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
@@ -17126,7 +17126,7 @@ app.post('/api/marketing/campaigns', auth(['admin', 'gen_dir', 'founder', 'manag
 // ── Прогноз продаж (read-only): скользящее среднее + сезонность по дню недели ──
 // Источник: stock_outcome (status='approved', outcome_type='sale'). Скоуп: products.company_id + getBranchFilter.
 // Выручка = quantity*price (UZS). Без новых таблиц.
-app.get('/api/sales/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/sales/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17297,7 +17297,7 @@ app.get('/api/sales/forecast', auth(['admin', 'gen_dir', 'founder', 'manager']),
 
 // ===== sales-whatif =====
 // ===== GET /api/sales/whatif-base — baseline для «Что если — Продажи» (НОВЫЙ инструмент, не трогает finance/modeling) =====
-app.get('/api/sales/whatif-base', auth(['admin','gen_dir','founder','manager']), async (req, res) => {
+app.get('/api/sales/whatif-base', auth(['admin','director','founder','manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17391,7 +17391,7 @@ app.get('/api/sales/whatif-base', auth(['admin','gen_dir','founder','manager']),
 // Скоуп: reviews.company_id напрямую + getBranchFilter (reviews.branch_id).
 // Тип клиента (type) хранится в отзыве; «лояльные» = vip|regular, «разовые» = onetime|anonymous.
 // ----------------------------------------------------------------------------
-app.get('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/nps/reviews', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17446,7 +17446,7 @@ app.get('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), as
   }
 });
 
-app.post('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/nps/reviews', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { customer_id, branch_id, is_anonymous, score, comment, type, source } = req.body;
@@ -17483,7 +17483,7 @@ app.post('/api/nps/reviews', auth(['admin', 'gen_dir', 'founder', 'manager']), a
 // GET /api/sales/scripts — каталог скриптов + агрегированная статистика по применениям.
 // Скоуп: company_id из токена; конверсия = доля script_usage.result='success'.
 // attributed_revenue — выручка (UZS, quantity*price) продавцов, применявших скрипты за 30 дней.
-app.get('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/sales/scripts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17566,7 +17566,7 @@ app.get('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']), 
 });
 
 // POST /api/sales/scripts — создать скрипт.
-app.post('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/sales/scripts', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { title, situation, steps, active } = req.body || {};
@@ -17584,7 +17584,7 @@ app.post('/api/sales/scripts', auth(['admin', 'gen_dir', 'founder', 'manager']),
 });
 
 // PATCH /api/sales/scripts/:id — обновить скрипт (в т.ч. активность).
-app.patch('/api/sales/scripts/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/sales/scripts/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id);
@@ -17607,7 +17607,7 @@ app.patch('/api/sales/scripts/:id', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // POST /api/sales/scripts/:id/usage — зафиксировать применение скрипта.
-app.post('/api/sales/scripts/:id/usage', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/sales/scripts/:id/usage', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const scriptId = parseInt(req.params.id);
@@ -17629,7 +17629,7 @@ app.post('/api/sales/scripts/:id/usage', auth(['admin', 'gen_dir', 'founder', 'm
 // ===== leadgen =====
 // ===== Лид-трекер (leadgen) — воронка лидов =====
 // GET список + метрики (всего / в работе / конверсия / ср.время) + помесячный график.
-app.get('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -17691,7 +17691,7 @@ app.get('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager'])
 });
 
 // POST новый лид
-app.post('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query) || req.user.branch_id || null;
@@ -17711,7 +17711,7 @@ app.post('/api/marketing/leads', auth(['admin', 'gen_dir', 'founder', 'manager']
 });
 
 // PATCH статус лида (won/lost проставляет closed_at)
-app.patch('/api/marketing/leads/:id/status', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/marketing/leads/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { status } = req.body || {};
@@ -17738,7 +17738,7 @@ app.patch('/api/marketing/leads/:id/status', auth(['admin', 'gen_dir', 'founder'
 // JOIN products p (p.company_id); ветка менеджера — so.branch_id (getBranchFilter).
 // Уровни по сумме покупок клиента: Стандарт (<500к), Золото (500к–1.5млн), Платина (1.5млн+).
 // Баллы = floor(total_spent / 1000 * rate). rate: 1.0 / 1.5 / 2.0.
-const LOYALTY_ROLES = ['admin', 'gen_dir', 'founder', 'manager'];
+const LOYALTY_ROLES = ['admin', 'director', 'founder', 'manager'];
 
 // Уровни и параметры начисления — единый источник для всех трёх эндпоинтов.
 const LOYALTY_TIERS = [
@@ -17868,7 +17868,7 @@ app.get('/api/marketing/loyalty/top', auth(LOYALTY_ROLES), async (req, res) => {
 // ===== Расписание и смены (schedules) =====
 
 // GET — недельный график + предупреждения (незакрытые смены / переработки > 40ч) + шаблоны
-app.get('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/schedules', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
@@ -17965,7 +17965,7 @@ app.get('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), a
 });
 
 // POST — создать смену
-app.post('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/hr/schedules', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.body);
@@ -17984,7 +17984,7 @@ app.post('/api/hr/schedules', auth(['admin', 'gen_dir', 'founder', 'manager']), 
 });
 
 // PATCH — изменить смену (время / статус / часы)
-app.patch('/api/hr/schedules/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/hr/schedules/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -18008,7 +18008,7 @@ app.patch('/api/hr/schedules/:id', auth(['admin', 'gen_dir', 'founder', 'manager
 // ===== attendance =====
 // ===== Табель и явка (attendance) =====================================
 // GET агрегат за период (часы/опоздания/прогулы/% соблюдения) + явка сегодня + журнал.
-app.get('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), async (req,res)=>{
+app.get('/api/hr/attendance', auth(['admin','director','founder','manager']), async (req,res)=>{
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
@@ -18070,7 +18070,7 @@ app.get('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), asy
 });
 
 // POST отметка: action = 'checkin' | 'checkout' | 'manual'
-app.post('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), async (req,res)=>{
+app.post('/api/hr/attendance', auth(['admin','director','founder','manager']), async (req,res)=>{
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18124,7 +18124,7 @@ app.post('/api/hr/attendance', auth(['admin','gen_dir','founder','manager']), as
 // Таблица absences создаётся в ensureSchema (schemaSql).
 
 // GET /api/hr/absences/current — текущие отсутствия + график + метрики за период
-app.get('/api/hr/absences/current', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/absences/current', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18190,7 +18190,7 @@ app.get('/api/hr/absences/current', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // GET /api/hr/absences/balance — баланс отпускных дней (21 опл. день/год)
-app.get('/api/hr/absences/balance', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/absences/balance', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18228,7 +18228,7 @@ app.get('/api/hr/absences/balance', auth(['admin', 'gen_dir', 'founder', 'manage
 });
 
 // POST /api/hr/absences/request — создать заявку
-app.post('/api/hr/absences/request', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/hr/absences/request', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.body);
@@ -18250,7 +18250,7 @@ app.post('/api/hr/absences/request', auth(['admin', 'gen_dir', 'founder', 'manag
 });
 
 // PATCH /api/hr/absences/:id/approve — одобрить заявку
-app.patch('/api/hr/absences/:id/approve', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/hr/absences/:id/approve', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18273,7 +18273,7 @@ app.patch('/api/hr/absences/:id/approve', auth(['admin', 'gen_dir', 'founder', '
 
 // ===== salaries =====
 // ===== Зарплата (ФОТ) — свод + таблица по сотрудникам =====
-app.get('/api/hr/salaries', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/hr/salaries', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18348,7 +18348,7 @@ app.get('/api/hr/salaries', auth(['admin', 'gen_dir', 'founder']), async (req, r
 });
 
 // ===== Утвердить начисление сотрудника за период =====
-app.patch('/api/hr/salaries/:id/approve', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.patch('/api/hr/salaries/:id/approve', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18388,7 +18388,7 @@ app.patch('/api/hr/salaries/:id/approve', auth(['admin', 'gen_dir', 'founder']),
 });
 
 // ===== Отметить выплату =====
-app.patch('/api/hr/salaries/:id/pay', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.patch('/api/hr/salaries/:id/pay', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const employeeId = parseInt(req.params.id, 10);
@@ -18408,7 +18408,7 @@ app.patch('/api/hr/salaries/:id/pay', auth(['admin', 'gen_dir', 'founder']), asy
 // Скоуп компании через JOIN products p (p.company_id); скоуп филиала через so.branch_id.
 // Без новых таблиц. Рабочих часов нет → "выручка/час" считаем как выручку на активный
 // (час×день) слот сотрудника; точные часы появятся при учёте посещаемости (attendance).
-app.get('/api/hr/productivity', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/productivity', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18532,7 +18532,7 @@ app.get('/api/hr/productivity', auth(['admin', 'gen_dir', 'founder', 'manager'])
 
 // ===== hr-adjustments =====
 // ===== HR: Штрафы и бонусы (employee_adjustments) =====
-app.get('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18604,7 +18604,7 @@ app.get('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (req
   } catch (e) { console.error('hr/adjustments GET err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.post('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { employee_id, type, category, amount, note } = req.body;
@@ -18631,7 +18631,7 @@ app.post('/api/hr/adjustments', auth(['admin', 'gen_dir', 'founder']), async (re
 });
 
 // ===== hr-forecast =====
-app.get('/api/hr/forecast', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/hr/forecast', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18758,7 +18758,7 @@ app.get('/api/hr/forecast', auth(['admin', 'gen_dir', 'founder']), async (req, r
 // ── HR «Что если» — baseline для сценарных расчётов ──────────────────
 // Возвращает базу: ФОТ (оценка), выручка/мес, валовая маржа %, ср. ЗП продавца,
 // число продавцов, рабочих дней. Скользящие 30 дней = «месяц». Без новых таблиц.
-app.get('/api/hr/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req, res) => {
+app.get('/api/hr/whatif-base', auth(['admin', 'director', 'founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18822,7 +18822,7 @@ app.get('/api/hr/whatif-base', auth(['admin', 'gen_dir', 'founder']), async (req
 // ===== HR · Обучение (training) — курсы по должностям, уроки, прогресс =====
 
 // GET /api/hr/training — KPI + список курсов по должностям + активные ученики
-app.get('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/training', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -18934,7 +18934,7 @@ app.get('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), as
 });
 
 // GET /api/hr/training/:id — уроки одного курса (только курсы своей компании)
-app.get('/api/hr/training/:id', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/hr/training/:id', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const courseId = parseInt(req.params.id);
@@ -18960,7 +18960,7 @@ app.get('/api/hr/training/:id', auth(['admin', 'gen_dir', 'founder', 'manager'])
 });
 
 // POST /api/hr/training/progress/update — отметить урок пройденным/непройденным
-app.post('/api/hr/training/progress/update', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/hr/training/progress/update', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const employeeId = parseInt(req.body.employee_id);
@@ -18988,7 +18988,7 @@ app.post('/api/hr/training/progress/update', auth(['admin', 'gen_dir', 'founder'
 });
 
 // POST /api/hr/training — создать курс вручную { position, title }
-app.post('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/hr/training', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const position = String(req.body.position || '').trim();
@@ -19003,7 +19003,7 @@ app.post('/api/hr/training', auth(['admin', 'gen_dir', 'founder', 'manager']), a
 });
 
 // POST /api/hr/training/:id/lesson — добавить урок в курс { title, video_url, duration_min }
-app.post('/api/hr/training/:id/lesson', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.post('/api/hr/training/:id/lesson', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const courseId = parseInt(req.params.id, 10);
@@ -19025,7 +19025,7 @@ app.post('/api/hr/training/:id/lesson', auth(['admin', 'gen_dir', 'founder', 'ma
 // =====================================================================
 
 // ===== Волна новых инструментов (wave1) =====
-app.get('/api/customers/churn', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/customers/churn', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19102,7 +19102,7 @@ app.get('/api/customers/churn', auth(['admin', 'founder', 'gen_dir', 'manager'])
 // === ABC-анализ клиентов (Парето 80/15/5) ===
 // Грейд A — клиенты, дающие до 80% выбранной метрики (выручка/прибыль/частота),
 // B — следующие 15%, C — последние 5%. Назначается по накопительной доле.
-app.get('/api/customers/abc', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/customers/abc', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19190,7 +19190,7 @@ app.get('/api/customers/abc', auth(['admin', 'founder', 'gen_dir', 'manager']), 
 // серию баланса на горизонт и вычисляет: первый разрыв, пиковый дефицит, нужную инъекцию.
 // Сценарии корректируют притоки/оттоки: pessimistic (in −20%, out +10%), optimistic (in +10%, out −10%).
 // Только финансовые роли — менеджер не имеет доступа к финансам компании.
-app.get('/api/finance/cash-gap', auth(['admin','gen_dir','founder']), async (req, res) => {
+app.get('/api/finance/cash-gap', auth(['admin','director','founder']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);          // int|null
@@ -19308,7 +19308,7 @@ app.get('/api/finance/cash-gap', auth(['admin','gen_dir','founder']), async (req
 // GET /api/hr/calc-defaults — реалистичные значения по умолчанию для калькулятора
 // найма/увольнения: средний оклад продавца, маржа компании, выручка на сотрудника.
 // Опционально для фронта (он считает всё сам), просто подставляет разумные дефолты.
-app.get('/api/hr/calc-defaults', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/hr/calc-defaults', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19377,7 +19377,7 @@ app.get('/api/hr/calc-defaults', auth(['admin', 'founder', 'gen_dir', 'manager']
 // GET /api/marketing/loss-funnel?branch_id&period=7|30|quarter
 // Воронка потерь: реюз тех же ступеней что и /analytics/funnel (показы→визиты→первая→повторная→лояльный/VIP),
 // но фокус на ОТВАЛАХ: сколько потеряно на каждом этапе, упущенная выручка по среднему чеку, худший этап.
-app.get('/api/marketing/loss-funnel', auth(['admin', 'gen_dir', 'founder', 'manager']), async (req, res) => {
+app.get('/api/marketing/loss-funnel', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const isManager = req.user.role === 'manager';
@@ -19524,7 +19524,7 @@ app.get('/api/marketing/loss-funnel', auth(['admin', 'gen_dir', 'founder', 'mana
   }
 });
 
-app.get('/api/marketing/competitors', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+app.get('/api/marketing/competitors', auth(['admin','founder','director','manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19575,7 +19575,7 @@ app.get('/api/marketing/competitors', auth(['admin','founder','gen_dir','manager
   }
 });
 
-app.post('/api/marketing/competitors', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+app.post('/api/marketing/competitors', auth(['admin','founder','director','manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { id, name, sku, avg_price, rating, service, locations, online, source } = req.body || {};
@@ -19622,7 +19622,7 @@ app.post('/api/marketing/competitors', auth(['admin','founder','gen_dir','manage
 // Источники как у /api/company/dashboard и /api/analytics/founder-dashboard:
 //   stock_outcome status='approved' (выручка/себестоимость/сделки), users (штат),
 //   customers (клиенты), повторные/retention/LTV по customer_id.
-app.get('/api/analytics/ab-point', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/analytics/ab-point', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null (менеджер пинится своим филиалом)
@@ -19728,7 +19728,7 @@ app.get('/api/analytics/ab-point', auth(['admin', 'founder', 'gen_dir', 'manager
 //   2) отменённые продажи stock_outcome status='rejected' (много отмен у продавца).
 // Каждому алерту присваивается ДЕТЕРМИНИРОВАННЫЙ строковый id (src:key), чтобы статус
 // (resolved/ignored), сохранённый в police_alerts, мог быть смёржен при следующем чтении.
-app.get('/api/police/alerts', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/police/alerts', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19865,7 +19865,7 @@ app.get('/api/police/alerts', auth(['admin', 'founder', 'gen_dir', 'manager']), 
 
 // POST статус алерта (resolve/ignore). id — детерминированный строковый ключ алерта.
 // Upsert по (company_id, rule_code=id): сохраняем только статус и метаданные для аудита.
-app.post('/api/police/alerts/:id/status', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.post('/api/police/alerts/:id/status', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const alertKey = String(req.params.id || '').slice(0, 120);
@@ -19922,12 +19922,12 @@ async function getHrCriteria(companyId) {
   };
 }
 
-app.get('/api/hr/criteria', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/hr/criteria', auth(['founder', 'director', 'manager']), async (req, res) => {
   try { res.json({ ...(await getHrCriteria(req.user.company_id)), defaults: HR_CRITERIA_DEFAULTS }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/hr/criteria', auth(['founder', 'gen_dir', 'manager']), async (req, res) => {
+app.put('/api/hr/criteria', auth(['founder', 'director', 'manager']), async (req, res) => {
   try {
     if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
     const b = req.body || {};
@@ -19960,7 +19960,7 @@ app.put('/api/hr/criteria', auth(['founder', 'gen_dir', 'manager']), async (req,
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-app.get('/api/hr/employee-health', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/hr/employee-health', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
@@ -19968,7 +19968,7 @@ app.get('/api/hr/employee-health', auth(['admin', 'founder', 'gen_dir', 'manager
     const periodDays = { week: 7, month: 30, quarter: 90 }[period];
 
     const ROLE_RU = {
-      founder: 'Учредитель', gen_dir: 'Ген. директор', manager: 'Менеджер',
+      founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
       cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец', admin: 'Администратор',
     };
 
@@ -20153,7 +20153,7 @@ app.get('/api/hr/employee-health', auth(['admin', 'founder', 'gen_dir', 'manager
 // Таймлайн дня каждого сотрудника: рабочее окно из attendance (приход/уход),
 // активные часы = часы рабочего окна, в которых были продажи продавца (stock_outcome),
 // простой = часы окна без продаж. Окно карты: 9:00-19:00. БЕЗ новых таблиц.
-app.get('/api/hr/workday-map', auth(['admin','founder','gen_dir','manager']), async (req, res) => {
+app.get('/api/hr/workday-map', auth(['admin','founder','director','manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query); // int|null — менеджер пинится своим филиалом
@@ -20292,7 +20292,7 @@ app.get('/api/hr/workday-map', auth(['admin','founder','gen_dir','manager']), as
   }
 });
 
-app.get('/api/hr/fire-analysis', auth(['admin', 'founder', 'gen_dir', 'manager']), async (req, res) => {
+app.get('/api/hr/fire-analysis', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);

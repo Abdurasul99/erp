@@ -6,14 +6,14 @@ import { useTranslation } from '../useTranslation.js';
 import { AuthContext } from '../App.jsx';
 
 const getRoles = (t) => [
-  { key: 'gen_dir',   label: t('genDirRole'),   desc: t('genDirRoleDesc') },
+  { key: 'director',   label: t('genDirRole'),   desc: t('genDirRoleDesc') },
   { key: 'manager',   label: t('managerRole'),   desc: t('managerRoleDesc') },
   { key: 'cashier',   label: t('cashierRole'),   desc: t('cashierRoleDesc') },
   { key: 'warehouse', label: t('warehouseRole'), desc: t('warehouseRoleDesc') },
   { key: 'seller',    label: t('sellerRole'),    desc: t('sellerRoleDesc') },
 ];
-const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
-const roleBadge = { founder: 'badge-blue', gen_dir: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
+const ROLE_KEYS = { founder: 'founderRole', director: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
+const roleBadge = { founder: 'badge-blue', director: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
 
 export default function UserManager() {
@@ -21,7 +21,7 @@ export default function UserManager() {
   const { user: currentUser } = useContext(AuthContext);
   const ROLES = getRoles(t);
   const isAdmin = currentUser?.role === 'admin';
-  const isGenDir = currentUser?.role === 'gen_dir';
+  const isGenDir = currentUser?.role === 'director';
   const canAdd = isAdmin || isGenDir;
 
   const [users, setUsers]       = useState([]);
@@ -202,7 +202,7 @@ export default function UserManager() {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: canAdd ? 'minmax(300px,380px) 1fr' : '1fr', gap: '20px', alignItems: 'start' }}>
-      {/* Add form — only for admin/gen_dir */}
+      {/* Add form — only for admin/director */}
       {canAdd && (
         <div className="card" style={{ alignSelf: 'start' }}>
           <div className="section-title">{t('addUser')}</div>

@@ -4,7 +4,7 @@
 // `wired: true` → backed by real live data and existing components.
 // `wired: false` → placeholder mockup (user will detail tools per department later).
 // Per-role tool visibility is centralized in HIDDEN_TOOLS + getSectionsForRole below
-// (founder sees all; gen_dir/manager have hidden sets per the access matrix). A
+// (founder sees all; director/manager have hidden sets per the access matrix). A
 // section-level `roles` (e.g. settings) hides the whole section from other roles.
 
 // Виджеты Главной (Asosiy). Общий источник для Dashboard (что рисовать) и
@@ -226,7 +226,7 @@ export const SECTIONS = [
     color: '#6B7280',
     desc: 'Интеграции · безопасность · масштабирование',
     metrics: [],
-    roles: ['founder', 'gen_dir'],
+    roles: ['founder', 'director'],
     tools: [
       { id: 'panel-manager', icon: '🎛️', title: 'Управление панелью', desc: 'Включить/выключить любой инструмент для компании', wired: true },
       { id: 'integrations', icon: '🔌', title: 'Интеграции', desc: 'Реальный статус подключений', wired: true },
@@ -241,8 +241,8 @@ export const SECTIONS = [
 // Учредитель видит всё. Ниже — что СКРЫТО у роли. Скоупинг данных (свои филиалы)
 // обеспечивается на сервере; здесь — только видимость инструментов в панели.
 const HIDDEN_TOOLS = {
-  // Директор сети — без стратегических финансов (прибыль/маржа/налоги/модели).
-  gen_dir: new Set([
+  // Директор — без стратегических финансов (прибыль/маржа/налоги/модели).
+  director: new Set([
     'ab-point', 'pnl', 'cashflow', 'modeling', 'fin-model', 'break-even',
     'profitability', 'payment-calendar', 'currency-ops', 'taxes',
     'financial-ratios', 'fin-whatif', 'cash-gap', 'global-whatif',

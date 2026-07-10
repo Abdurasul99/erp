@@ -2263,7 +2263,7 @@ export const OWNER_UZ = {
   'Масштабирование': 'Masshtablash', 'Филиалы · валюты': 'Filiallar · valyutalar',
 
   // — Оболочка / роли —
-  'Учредитель': 'Muassis', 'Ген. директор': 'Bosh direktor', 'Менеджер': 'Menejer',
+  'Учредитель': 'Muassis', 'Директор': 'Bosh direktor', 'Менеджер': 'Menejer',
   'Мой филиал': 'Mening filialim', 'Все филиалы': 'Barcha filiallar', 'Один филиал': 'Bitta filial',
   'Менеджер видит только свой филиал': "Menejer faqat o'z filialini ko'radi",
   'Сводка по всей компании': "Butun kompaniya bo'yicha xulosa", 'Только этот филиал': 'Faqat shu filial',

@@ -26,13 +26,13 @@ export default function Desktop() {
   const navigate = useNavigate();
 
   const isAdmin = user?.role === 'admin';
-  const isGenDir = user?.role === 'gen_dir' || user?.role === 'founder';
+  const isGenDir = user?.role === 'director' || user?.role === 'founder';
   const isManager = user?.role === 'manager';
   const canSeeWarehouse = ['cashier', 'warehouse', 'manager'].includes(user?.role);
   const canSeeCash = ['cashier', 'manager'].includes(user?.role);
-  const canSeeProfit = ['gen_dir', 'founder', 'manager'].includes(user?.role);
-  const canSeeCustomers = ['cashier', 'manager', 'gen_dir', 'founder'].includes(user?.role);
-  const canSeeSuppliers = ['warehouse', 'cashier', 'manager', 'gen_dir', 'founder'].includes(user?.role);
+  const canSeeProfit = ['director', 'founder', 'manager'].includes(user?.role);
+  const canSeeCustomers = ['cashier', 'manager', 'director', 'founder'].includes(user?.role);
+  const canSeeSuppliers = ['warehouse', 'cashier', 'manager', 'director', 'founder'].includes(user?.role);
 
   // Default section based on role
   const { t, lang } = useTranslation();

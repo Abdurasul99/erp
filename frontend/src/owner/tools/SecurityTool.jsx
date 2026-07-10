@@ -8,7 +8,7 @@ import { useTt } from '../tt.js';
 const ROLE_MATRIX = [
   { role: 'Admin (SaaS)',   catalog: 'RW', sales: 'RW', finance: 'RW', hr: 'RW', settings: 'RW', ai: '✓' },
   { role: 'Учредитель',     catalog: 'RW', sales: 'RW', finance: 'RW', hr: 'RW', settings: 'RW', ai: '✓' },
-  { role: 'Ген. директор',  catalog: 'RW', sales: 'RW', finance: 'RW', hr: 'RW', settings: 'RW', ai: '✓' },
+  { role: 'Директор',  catalog: 'RW', sales: 'RW', finance: 'RW', hr: 'RW', settings: 'RW', ai: '✓' },
   { role: 'Менеджер',       catalog: 'RW', sales: 'RW', finance: 'R · свой филиал', hr: 'R', settings: '—', ai: '—' },
   { role: 'Кассир',         catalog: 'R',  sales: 'RW', finance: 'R · касса', hr: '—', settings: '—', ai: '—' },
   { role: 'Складовщик',     catalog: 'RW', sales: 'R · подтверждение', finance: '—', hr: '—', settings: '—', ai: '—' },
@@ -16,7 +16,7 @@ const ROLE_MATRIX = [
 ];
 
 const ROLE_RU = {
-  admin: 'Админ', founder: 'Учредитель', gen_dir: 'Ген. директор',
+  admin: 'Админ', founder: 'Учредитель', director: 'Директор',
   manager: 'Менеджер', cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
 };
 

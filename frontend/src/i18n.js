@@ -121,7 +121,7 @@ export const translations = {
     deleteConfirm: 'будет удалён безвозвратно.',
     // Roles
     adminRole: 'Администратор', adminRoleDesc: 'Управление системой',
-    genDirRole: 'Директор сети', genDirRoleDesc: 'Свои филиалы · без стратегических финансов',
+    genDirRole: 'Директор', genDirRoleDesc: 'Свои филиалы · без стратегических финансов',
     founderRole: 'Учредитель', founderRoleDesc: 'Учредитель компании',
     managerRole: 'Менеджер', managerRoleDesc: 'Управляет филиалом',
     cashierRole: 'Кассир', cashierRoleDesc: 'Касса + склад',
@@ -130,14 +130,14 @@ export const translations = {
     // Companies
     companies: 'Компании', addCompany: 'Добавить', branches: 'Филиалы',
     companyName: 'Название компании', address: 'Адрес', phone: 'Телефон',
-    genDirOptional: 'Генеральный директор (опционально)',
+    genDirOptional: 'Директор (опционально)',
     managerOptional: 'Менеджер филиала (опционально)',
     branchName: 'Название филиала', branchPlaceholder: 'Напр: Центральный офис',
     noBranches: 'Нет филиалов', noCompanies: 'Нет компаний. Создайте первую.',
     branchCount: 'филиал(ов)', employees: 'сотрудников', redistribution: 'Перераспределить', staff: 'Сотрудники',
     editCompany: 'Редактировать компанию', editBranch: 'Редактировать филиал',
     createCompany: 'Создать', createBranch: 'Создать',
-    // Company overview (gen_dir)
+    // Company overview (director)
     companyOverview: 'Обзор компании', companyBranches: 'Филиалы компании',
     totalRevenue: 'Общая выручка', stockValue: 'Склад (стоимость)',
     // User fields
@@ -333,7 +333,7 @@ export const translations = {
     deleteConfirm: 'qaytarib bo\'lmas tarzda o\'chiriladi.',
     // Roles
     adminRole: 'Administrator', adminRoleDesc: 'Tizimni boshqarish',
-    genDirRole: 'Tarmoq direktori', genDirRoleDesc: 'O\'z filiallari · strategik moliyasiz',
+    genDirRole: 'Direktor', genDirRoleDesc: 'O\'z filiallari · strategik moliyasiz',
     // Профиль сотрудника (ключи = русские строки, ru берётся из ключа)
     'Профиль': 'Profil', 'Должность': 'Lavozim', 'Телефон': 'Telefon',
     'Дата рождения': 'Tug\'ilgan sana', 'Дата приёма': 'Ishga qabul sanasi',

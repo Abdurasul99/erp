@@ -10,16 +10,16 @@ import { SECTIONS } from '../owner/modules.js';
 const ALL_TOOL_IDS = SECTIONS.flatMap(s => (s.tools || []).map(t => t.id));
 const PERMS_SECTIONS = SECTIONS.filter(s => s.tools && s.tools.length);
 
-const ROLE_KEYS = { founder: 'founderRole', gen_dir: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
-const roleBadge = { founder: 'badge-blue', gen_dir: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
-const roleColor = { founder: '#7c3aed', gen_dir: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
+const ROLE_KEYS = { founder: 'founderRole', director: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
+const roleBadge = { founder: 'badge-blue', director: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
+const roleColor = { founder: '#7c3aed', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
 
-const roleColor2 = { admin: '#6B6F8A', founder: '#7c3aed', gen_dir: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
+const roleColor2 = { admin: '#6B6F8A', founder: '#7c3aed', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
 const creatorBadge = (role) => {
   if (role === 'admin') return { bg: 'rgba(107,111,138,.1)', color: '#6B6F8A' };
   if (role === 'founder') return { bg: 'rgba(124,58,237,.1)', color: '#7c3aed' };
-  if (role === 'gen_dir') return { bg: 'rgba(67,56,202,.1)', color: '#4338ca' };
+  if (role === 'director') return { bg: 'rgba(67,56,202,.1)', color: '#4338ca' };
   if (role === 'manager') return { bg: 'rgba(67,56,202,.08)', color: '#4338ca' };
   return { bg: 'rgba(156,163,175,.1)', color: '#9EA3BF' };
 };
@@ -65,12 +65,12 @@ export default function AdminPanel() {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
   const getBranches = (companyId) => allBranches.filter(b => b.company_id === companyId);
-  // Company-level roles (founder, gen_dir) are not branch-level — exclude from branch lists
-  const isCompanyLevel = (r) => r === 'founder' || r === 'gen_dir';
+  // Company-level roles (founder, director) are not branch-level — exclude from branch lists
+  const isCompanyLevel = (r) => r === 'founder' || r === 'director';
   const getBranchUsers = (branchId) => allUsers.filter(u => u.branch_id === branchId && !isCompanyLevel(u.role));
   const getCompanyDirectors = (companyId) => allUsers.filter(u => u.company_id === companyId && isCompanyLevel(u.role));
   const getCompanyFounder   = (companyId) => allUsers.find(u => u.company_id === companyId && u.role === 'founder');
-  const getCompanyGenDir    = (companyId) => allUsers.find(u => u.company_id === companyId && u.role === 'gen_dir');
+  const getCompanyGenDir    = (companyId) => allUsers.find(u => u.company_id === companyId && u.role === 'director');
   const unassignedUsers = allUsers.filter(u => !u.company_id && u.role !== 'admin');
 
   const stats = [
@@ -399,11 +399,11 @@ export default function AdminPanel() {
                   </div>
                   <div style={{ marginBottom: '10px' }}>
                     <label className="label">{t('founderLogin')} *</label>
-                    <input className="input" value={modalData.gen_dir_username || ''} onChange={e => setModalData({ ...modalData, gen_dir_username: e.target.value })} placeholder="login" required />
+                    <input className="input" value={modalData.director_username || ''} onChange={e => setModalData({ ...modalData, director_username: e.target.value })} placeholder="login" required />
                   </div>
                   <div>
                     <label className="label">{t('founderPassword')} *</label>
-                    <input className="input" type="password" value={modalData.gen_dir_password || ''} onChange={e => setModalData({ ...modalData, gen_dir_password: e.target.value })} placeholder={t('minPassword')} required />
+                    <input className="input" type="password" value={modalData.director_password || ''} onChange={e => setModalData({ ...modalData, director_password: e.target.value })} placeholder={t('minPassword')} required />
                   </div>
                 </div>
               )}
@@ -444,20 +444,20 @@ export default function AdminPanel() {
                 const existingGenDir  = cid && getCompanyGenDir(cid);
                 const blockFounder = existingFounder && existingFounder.id !== modalData.id;
                 const blockGenDir  = existingGenDir  && existingGenDir.id  !== modalData.id;
-                const roles = ['founder','gen_dir','manager','cashier','warehouse','seller'].filter(r => {
+                const roles = ['founder','director','manager','cashier','warehouse','seller'].filter(r => {
                   if (r === 'founder' && blockFounder) return false;
-                  if (r === 'gen_dir' && blockGenDir) return false;
+                  if (r === 'director' && blockGenDir) return false;
                   return true;
                 });
                 // Coerce current value to a valid choice
                 let currentRole = modalData.role || 'cashier';
-                if ((currentRole === 'founder' && blockFounder) || (currentRole === 'gen_dir' && blockGenDir)) currentRole = 'manager';
+                if ((currentRole === 'founder' && blockFounder) || (currentRole === 'director' && blockGenDir)) currentRole = 'manager';
                 return (
                   <div style={{ marginBottom: '12px' }}>
                     <label className="label">{t('role')}</label>
                     <select className="input" value={currentRole} onChange={e => {
                       const newRole = e.target.value;
-                      const companyLevel = newRole === 'founder' || newRole === 'gen_dir';
+                      const companyLevel = newRole === 'founder' || newRole === 'director';
                       setModalData({ ...modalData, role: newRole, branch_id: companyLevel ? null : modalData.branch_id });
                     }}>
                       {roles.map(r => <option key={r} value={r}>{t(ROLE_KEYS[r])}</option>)}
@@ -478,7 +478,7 @@ export default function AdminPanel() {
                   {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
-              {modalData.company_id && modalData.role !== 'gen_dir' && modalData.role !== 'founder' && (
+              {modalData.company_id && modalData.role !== 'director' && modalData.role !== 'founder' && (
                 <div style={{ marginBottom: '12px' }}>
                   <label className="label">{t('branch')}</label>
                   <select className="input" value={modalData.branch_id || ''} onChange={e => setModalData({ ...modalData, branch_id: e.target.value ? parseInt(e.target.value) : null })}>

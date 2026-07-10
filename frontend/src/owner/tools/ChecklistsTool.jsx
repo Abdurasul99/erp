@@ -27,7 +27,7 @@ export default function ChecklistsTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
   const { user } = useContext(AuthContext);
-  const canCreate = ['admin', 'gen_dir', 'founder'].includes(user?.role);
+  const canCreate = ['admin', 'director', 'founder'].includes(user?.role);
 
   const [tab, setTab] = useState('today');
   const [data, setData] = useState(null);

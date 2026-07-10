@@ -31,7 +31,7 @@ function deltaDisplay(pct) {
 // Русские названия ролей для списков сотрудников
 const ROLE_RU = {
   seller: 'продавец', cashier: 'кассир', warehouse: 'складовщик',
-  manager: 'менеджер', gen_dir: 'ген. директор', founder: 'учредитель', admin: 'админ',
+  manager: 'менеджер', director: 'ген. директор', founder: 'учредитель', admin: 'админ',
 };
 
 // Метки для разбивки по способу оплаты.
@@ -549,7 +549,7 @@ function BhiChart({ points, goal, tt, lang }) {
 }
 
 // Карточка BHI. Владелец (founder) видит балл + 4 пилляра + цель + тренд;
-// директор (gen_dir) — дополнительно 8 блоков; менеджер — только балл и зону
+// директор (director) — дополнительно 8 блоков; менеджер — только балл и зону
 // (без разбивки по пилляров). BHI — безденежный показатель здоровья компании.
 function BhiCard({ role }) {
   const { tt, lang } = useTt();
@@ -658,8 +658,8 @@ function BhiCard({ role }) {
         </div>
       )}
 
-      {/* 8 блоков — только директор (gen_dir) */}
-      {(role === 'founder' || role === 'gen_dir') && data.blocks && (
+      {/* 8 блоков — только директор (director) */}
+      {(role === 'founder' || role === 'director') && data.blocks && (
         <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 8 }}>
           {Object.entries(data.blocks).map(([k, b]) => (
             <div key={k} style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 9px', borderRadius: 7, background: b.active ? 'var(--bg-2)' : 'transparent', opacity: b.active ? 1 : .45 }}>
@@ -805,7 +805,7 @@ export default function Dashboard() {
     ? (branchId ? (allBranches.find(x => x.id === branchId)?.name || `${tt('Филиал')} #${branchId}`) : tt('Все филиалы'))
     : (role === 'manager' ? tt('Мой филиал') : '');
 
-  // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/gen_dir — суммарно по всем)
+  // Single-branch summary — для cashflow-карточки (показывается всегда: для manager — его филиал, для founder/director — суммарно по всем)
   const branchSummary = (() => {
     if (!isOwner && branches.length === 1) {
       return {

@@ -12,7 +12,7 @@ export default function InterfaceSelect() {
   const roleLabel = {
     admin: uz ? 'Administrator' : 'Администратор',
     founder: uz ? 'Ta\'sischi' : 'Учредитель',
-    gen_dir: uz ? 'Tarmoq direktori' : 'Директор сети',
+    director: uz ? 'Direktor' : 'Директор',
     manager: uz ? 'Menejer' : 'Менеджер',
     cashier: uz ? 'Kassir' : 'Кассир',
     warehouse: uz ? 'Omborchi' : 'Складовщик',

@@ -7,7 +7,7 @@ import { useTt } from '../tt.js';
 // Мотивация = реальный лидерборд продаж за 30 дней.
 // Конкурс «кто больше продал» работает из коробки на настоящих цифрах.
 const MEDAL = ['🥇', '🥈', '🥉'];
-const ROLE_RU = { seller: 'продавец', cashier: 'кассир', warehouse: 'складовщик', manager: 'менеджер', gen_dir: 'ген. директор', founder: 'учредитель' };
+const ROLE_RU = { seller: 'продавец', cashier: 'кассир', warehouse: 'складовщик', manager: 'менеджер', director: 'ген. директор', founder: 'учредитель' };
 
 export default function MotivationTool() {
   const { tt } = useTt();
