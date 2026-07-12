@@ -7080,10 +7080,11 @@ app.post('/api/auth/login', async (req, res) => {
       company_disabled_tools: companyDisabled,
       company_disabled_widgets: companyDisabledWidgets,
     };
+    // По просьбе владельца: НЕТ таймаута сессии на логине — токен практически бессрочный.
     const token = jwt.sign({
       id: payload.id, username: payload.username, role: payload.role,
       company_id: payload.company_id, branch_id: payload.branch_id,
-    }, JWT_SECRET, { expiresIn: '24h' });
+    }, JWT_SECRET, { expiresIn: '3650d' });
     pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [rows[0].id]).catch(() => {});
     res.json({ token, user: payload });
   } catch (e) {
@@ -11102,7 +11103,7 @@ app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
       id: req.user.id, username: req.user.username, role,
       company_id, branch_id: effBranch,
       act_as: true, imp_by: req.user.id, imp_name: req.user.username,
-    }, JWT_SECRET, { expiresIn: '24h' });
+    }, JWT_SECRET, { expiresIn: '30d' });
     audit(req, 'impersonate', 'company', company_id, null,
       { as_role: role, branch_id: effBranch, company: co.rows[0].name }, { module: 'settings', description: `Вход как ${role} в «${co.rows[0].name}»` });
     res.json({
