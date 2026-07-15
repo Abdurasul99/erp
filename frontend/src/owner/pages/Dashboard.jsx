@@ -114,7 +114,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
   const W = 1000, H = 200, TOP = 10, BOT = H - 4;
   const xAt = (i) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
   const yAt = (v) => TOP + (1 - ((v || 0) - yMin) / (yMax - yMin)) * (BOT - TOP);
-  const GREEN = '#34D399', RED = '#F87171';
+  const GREEN = '#16A34A', RED = '#DC2626';
   const seg = (a, b) => (b >= a ? GREEN : RED);
   const grid = [0, 1, 2, 3, 4].map(k => yMin + ((yMax - yMin) * k) / 4);
   const left = hover != null ? (xAt(hover) / W) * 100 : 0;
@@ -164,7 +164,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
             {hover != null && <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={BOT} stroke="rgba(0,0,0,.2)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
           </svg>
           {hover != null && (
-            <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: '#05070C', border: '1px solid rgba(255,255,255,.14)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
+            <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: '#14284B', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
               {isOwner ? (
                 <>
                   <div>{tt('Выручка')}: {fmtMoneyFull(rev[hover])}</div>
@@ -241,7 +241,7 @@ function StateAsk({ trend, bizState, lang }) {
 function BizStateBar({ bs, isOwner, onEdit }) {
   const { tt } = useTt();
   if (!bs) return null;
-  const GREEN = '#34D399', RED = '#F87171';
+  const GREEN = '#16A34A', RED = '#DC2626';
   // Нет данных для баланса — не показываем вводящий в заблуждение «Капитал 100%».
   const hasData = isOwner ? ((bs.assets || 0) > 0 || (bs.liabilities || 0) > 0)
     : ((bs.equity_ratio || 0) !== 0 || (bs.liability_ratio || 0) !== 0);
@@ -391,16 +391,16 @@ const CHART_GRAN_OPTIONS = [
 // valueKey — поле из totals для верхней цифры; barColor — цвет дневного бара.
 const CASHFLOW_TABS = [
   { key: 'income',  label: 'Приход',          valueKey: 'cash_income',  sign: '+', color: 'var(--green)', sub: 'сум · в кассу',  periodTag: true,  barColor: '#16A34A' },
-  { key: 'expense', label: 'Расход',          valueKey: 'cash_expense', sign: '−', color: 'var(--red)',   sub: 'сум · из кассы', periodTag: true,  barColor: '#F87171' },
+  { key: 'expense', label: 'Расход',          valueKey: 'cash_expense', sign: '−', color: 'var(--red)',   sub: 'сум · из кассы', periodTag: true,  barColor: '#DC2626' },
   { key: 'profit',  label: 'Валовая прибыль', valueKey: 'gross_profit', sign: '',  color: null,           sub: 'сум · продажи − себестоимость', periodTag: false, barColor: '#1D4ED8' },
   { key: 'stock',   label: 'Склад',           valueKey: 'stock_value',  sign: '',  color: 'var(--text)',  sub: 'сум · стоимость остатков',      periodTag: false, nowTag: true, barColor: '#0EA5E9' },
 ];
 
 // BHI — подписи пилляров/блоков и цвета зон (для карточки на дашборде).
 const BHI_ZONE = {
-  normal:    { color: '#34D399', tone: 'green',  label: 'Норма' },
-  attention: { color: '#FBBF24', tone: 'yellow', label: 'Внимание' },
-  critical:  { color: '#F87171', tone: 'red',    label: 'Критично' },
+  normal:    { color: '#16A34A', tone: 'green',  label: 'Норма' },
+  attention: { color: '#D97706', tone: 'yellow', label: 'Внимание' },
+  critical:  { color: '#DC2626', tone: 'red',    label: 'Критично' },
 };
 const BHI_PILLAR_LABEL = { fin: 'Финансы', ops: 'Операции', people: 'Персонал', market: 'Рынок' };
 const BHI_BLOCK_LABEL = {
@@ -409,8 +409,8 @@ const BHI_BLOCK_LABEL = {
   people_productivity: 'Выручка / чел', people_activity: 'Активность',
   market_growth: 'Новые клиенты', market_retention: 'Удержание',
 };
-const bhiScoreColor = (s) => (s == null ? '#3D465E' : s >= 75 ? '#34D399' : s >= 50 ? '#FBBF24' : '#F87171');
-const bhiZoneColor = (v) => (v >= 75 ? '#34D399' : v >= 50 ? '#FBBF24' : '#F87171');
+const bhiScoreColor = (s) => (s == null ? '#B8C2D4' : s >= 75 ? '#16A34A' : s >= 50 ? '#D97706' : '#DC2626');
+const bhiZoneColor = (v) => (v >= 75 ? '#16A34A' : v >= 50 ? '#D97706' : '#DC2626');
 const fmtBhiDay = (d, lang) => fmtDate(d, { day: 'numeric', month: 'short' }, lang);
 
 // График «Динамика BHI по дням» по макету sage-pony: градиентная шкала зон,
@@ -487,7 +487,7 @@ function BhiChart({ points, goal, tt, lang }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
           <div style={{ fontSize: narrow ? 12 : 13, fontWeight: 800, color: 'var(--text2)' }}>{tt('Динамика BHI по дням')}{single ? <span style={{ fontWeight: 700, color: 'var(--text3)' }}> · {tt('данные накапливаются')}</span> : null}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: '#818CF8', display: 'inline-block' }} />BHI</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: '#1E5AE8', display: 'inline-block' }} />BHI</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, borderTop: '2px dashed #8590A2', display: 'inline-block' }} />{tt('Цель')}</span>
             {!narrow && <span style={{ fontWeight: 600 }}>· {tt('наведи на точку — детали дня')}</span>}
           </div>
@@ -503,35 +503,35 @@ function BhiChart({ points, goal, tt, lang }) {
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: H, display: 'block' }}>
           <defs>
             <linearGradient id="bhiLine" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset={tOff} stopColor={'#818CF8'} /><stop offset={tOff} stopColor={'#FBBF24'} />
+              <stop offset={tOff} stopColor={'#1E5AE8'} /><stop offset={tOff} stopColor={'#D97706'} />
             </linearGradient>
             <linearGradient id="bhiArea" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset={'0'} stopColor={'#818CF8'} stopOpacity={'0.14'} />
-              <stop offset={tOff} stopColor={'#818CF8'} stopOpacity={'0.03'} />
+              <stop offset={'0'} stopColor={'#1E5AE8'} stopOpacity={'0.14'} />
+              <stop offset={tOff} stopColor={'#1E5AE8'} stopOpacity={'0.03'} />
               <stop offset={tOff} stopColor="#FBBF24" stopOpacity="0.02" />
               <stop offset="1" stopColor="#FBBF24" stopOpacity="0.05" />
             </linearGradient>
           </defs>
           {gridVals.map(g => (
             <g key={g}>
-              <line x1={padL} y1={Y(g)} x2={W - padR} y2={Y(g)} stroke="rgba(255,255,255,.07)" strokeWidth="1" />
+              <line x1={padL} y1={Y(g)} x2={W - padR} y2={Y(g)} stroke="rgba(20,40,75,.08)" strokeWidth="1" />
               <text x={padL - 6} y={Y(g) + fAxis * 0.35} textAnchor="end" fontSize={fAxis} fill="#9094B0">{g}</text>
             </g>
           ))}
           {/* заливка под кривой */}
           {areaD && <path d={areaD} fill="url(#bhiArea)" stroke="none" />}
           {/* цель — пунктир на всю ширину */}
-          <line x1={padL} y1={Y(goal)} x2={W - padR} y2={Y(goal)} stroke={'#5B6478'} strokeWidth={'1.4'} strokeDasharray={'7 5'} />
+          <line x1={padL} y1={Y(goal)} x2={W - padR} y2={Y(goal)} stroke={'#93A5C4'} strokeWidth={'1.4'} strokeDasharray={'7 5'} />
           {/* сглаженная линия BHI (зелёная выше цели, оранжевая ниже) */}
           {lineD && <path d={lineD} fill="none" stroke="url(#bhiLine)" strokeWidth={wLine} strokeLinecap="round" strokeLinejoin="round" />}
           {/* плашка «Цель 75» слева на пунктире */}
           <g>
-            <rect x={padL} y={Y(goal) - (fGoal * 0.5 + 4)} width={pillW} height={fGoal + 8} rx={5} fill={'#1E2333'} stroke={'#3D465E'} strokeWidth={'0.8'} />
+            <rect x={padL} y={Y(goal) - (fGoal * 0.5 + 4)} width={pillW} height={fGoal + 8} rx={5} fill={'#E9F1FB'} stroke={'#B8C2D4'} strokeWidth={'0.8'} />
             <text x={padL + pillW / 2} y={Y(goal) + fGoal * 0.34} textAnchor="middle" fontSize={fGoal} fill="#15803d" fontWeight="800">{goalLabel}</text>
           </g>
           {/* точки */}
           {points.map((p, i) => (
-            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#818CF8' : '#FBBF24'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
+            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#1E5AE8' : '#D97706'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
               <title>{(p.date ? fmtBhiDay(p.date, lang) + ': ' : '')}BHI {p.bhi}</title>
             </circle>
           ))}
@@ -1149,7 +1149,7 @@ export default function Dashboard() {
                   <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>✓ {tt('Всё спокойно')}</div>
                 ) : alerts.map((a, i) => (
                   <div key={i} className="list-item">
-                    <div style={{ width: 5, height: 34, borderRadius: 3, background: ({ red: '#F87171', yellow: '#D97706', blue: '#1D4ED8', purple: '#1D4ED8' })[a.tone] || '#6B7280' }} />
+                    <div style={{ width: 5, height: 34, borderRadius: 3, background: ({ red: '#DC2626', yellow: '#D97706', blue: '#1D4ED8', purple: '#1D4ED8' })[a.tone] || '#6B7280' }} />
                     <div style={{ flex: 1 }}>
                       <div className="list-item-title">{a.title}</div>
                       <div className="list-item-sub">{a.sub}</div>
