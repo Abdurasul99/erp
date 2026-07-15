@@ -10,6 +10,7 @@ import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import {
   SimulatorHub, ControlCenterHub, TasksHub, FunnelHub, CashForecastHub,
   FinHealthHub, PurchaseForecastHub, StockMathHub, HrAnalyticsHub, TeamHub, SegmentsHub,
+  ReportsHub, SupplierEvalHub, GoodsFlowHub, ReferencesHub, FeedbackHub,
 } from './tools/CombinedTools.jsx';
 
 // Live wareapp components — wrap these so owner-shell tools can use real data.
@@ -24,16 +25,13 @@ import GenDirUsers from '../components/GenDirUsers.jsx';
 // Инструменты (по одному экрану на карточку)
 import PanelManagerTool from './tools/PanelManagerTool.jsx';
 import FounderBoardTool from './tools/FounderBoardTool.jsx';
-import PeriodReportTool from './tools/PeriodReportTool.jsx';
 import UnitEconomicsTool from './tools/UnitEconomicsTool.jsx';
 import SspTool from './tools/SspTool.jsx';
 import BasketTool from './tools/BasketTool.jsx';
 import EventJournalTool from './tools/EventJournalTool.jsx';
 import BranchCompareTool from './tools/BranchCompareTool.jsx';
-import TrendsTool from './tools/TrendsTool.jsx';
 import CohortsTool from './tools/CohortsTool.jsx';
 import AbPointTool from './tools/AbPointTool.jsx';
-import ComplaintsTool from './tools/ComplaintsTool.jsx';
 import BirthdaysTool from './tools/BirthdaysTool.jsx';
 import ReferralsTool from './tools/ReferralsTool.jsx';
 import ClientForecastTool from './tools/ClientForecastTool.jsx';
@@ -41,15 +39,10 @@ import InventoryMgmtTool from './tools/InventoryMgmtTool.jsx';
 import PricingTool from './tools/PricingTool.jsx';
 import DebtsClientsTool from './tools/DebtsClientsTool.jsx';
 // Склад
-import StockOutcomeReportTool from './tools/StockOutcomeReportTool.jsx';
-import StockTransfersTool from './tools/StockTransfersTool.jsx';
-import ProductMovementsTool from './tools/ProductMovementsTool.jsx';
 import TurnoverDeadstockTool from './tools/TurnoverDeadstockTool.jsx';
 import PurchaseRoiTool from './tools/PurchaseRoiTool.jsx';
-import BarcodesTool from './tools/BarcodesTool.jsx';
 import InventoryAuditTool from './tools/InventoryAuditTool.jsx';
 import DefectsTool from './tools/DefectsTool.jsx';
-import ReferencesTool from './tools/ReferencesTool.jsx';
 // Финансы
 import ExpensesReportTool from './tools/ExpensesReportTool.jsx';
 import CurrencyOpsTool from './tools/CurrencyOpsTool.jsx';
@@ -60,10 +53,8 @@ import FinModelTool from './tools/FinModelTool.jsx';
 // Закупки
 import PurchaseHistoryTool from './tools/PurchaseHistoryTool.jsx';
 import SupplierReturnsTool from './tools/SupplierReturnsTool.jsx';
-import SupplierRatingsTool from './tools/SupplierRatingsTool.jsx';
 import ProcurementOrdersTool from './tools/ProcurementOrdersTool.jsx';
 import ReceivingsTool from './tools/ReceivingsTool.jsx';
-import SupplierCompareTool from './tools/SupplierCompareTool.jsx';
 import DebtsTool from './tools/DebtsTool.jsx';
 // Продажи
 import SalesHistoryTool from './tools/SalesHistoryTool.jsx';
@@ -82,7 +73,6 @@ import LtvTool from './tools/LtvTool.jsx';
 import CustomerCampaignsTool from './tools/CustomerCampaignsTool.jsx';
 import LoyaltyPointsTool from './tools/LoyaltyPointsTool.jsx';
 import CompetitorMirrorTool from './tools/CompetitorMirrorTool.jsx';
-import NpsReviewsTool from './tools/NpsReviewsTool.jsx';
 // Персонал
 import SchedulesTool from './tools/SchedulesTool.jsx';
 import AttendanceTool from './tools/AttendanceTool.jsx';
@@ -117,8 +107,7 @@ const RESOLVE = {
     'control-center': { Comp: ControlCenterHub },
     simulator:        { Comp: SimulatorHub },
     'branch-compare': { Comp: BranchCompareTool },
-    trends:           { Comp: TrendsTool },
-    'period-report':  { Comp: PeriodReportTool },
+    reports:          { Comp: ReportsHub },
     'basket-analysis':{ Comp: BasketTool },
     cohorts:          { Comp: CohortsTool },
     'unit-economics': { Comp: UnitEconomicsTool },
@@ -157,22 +146,18 @@ const RESOLVE = {
     'purchase-history':   { Comp: PurchaseHistoryTool },
     'supplier-returns':   { Comp: SupplierReturnsTool },
     'debts-suppliers':    { Comp: DebtsTool },
-    'supplier-ratings':   { Comp: SupplierRatingsTool },
-    'supplier-compare':   { Comp: SupplierCompareTool },
+    'supplier-eval':      { Comp: SupplierEvalHub },
   },
   warehouse: {
     stock:           { Comp: () => <LiveWrapper title="Товары и остатки" sub="Каталог · цены · фото · штрих-коды · печать ценников" Component={WarehouseBalance} /> },
     'inventory-mgmt':{ Comp: InventoryMgmtTool },
-    'stock-outcome-report': { Comp: StockOutcomeReportTool },
-    'stock-transfers':      { Comp: StockTransfersTool },
-    'product-movements':    { Comp: ProductMovementsTool },
+    'goods-flow':           { Comp: GoodsFlowHub },
     'turnover-deadstock':   { Comp: TurnoverDeadstockTool },
     'stock-math':           { Comp: StockMathHub },
     'purchase-roi':         { Comp: PurchaseRoiTool },
     defects:                { Comp: DefectsTool },
-    barcodes:               { Comp: BarcodesTool },
     audit:                  { Comp: InventoryAuditTool },
-    references:             { Comp: ReferencesTool },
+    references:             { Comp: ReferencesHub },
   },
   operations: {
     'sales-history':      { Comp: SalesHistoryTool },
@@ -205,8 +190,7 @@ const RESOLVE = {
     birthdays:       { Comp: BirthdaysTool },
     referrals:       { Comp: ReferralsTool },
     'client-forecast': { Comp: ClientForecastTool },
-    complaints:      { Comp: ComplaintsTool },
-    nps:             { Comp: NpsReviewsTool },
+    feedback:        { Comp: FeedbackHub },
   },
   settings: {
     'panel-manager': { Comp: PanelManagerTool },

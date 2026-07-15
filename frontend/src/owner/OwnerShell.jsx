@@ -1,9 +1,10 @@
 import React, { useContext, useState, useEffect, useRef, createContext } from 'react';
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
-import { getUserSections } from './modules.js';
+import { getUserSections, NAV_GROUPS } from './modules.js';
 import { useTt } from './tt.js';
 import { PageHeaderContext } from './PageHeaderContext.js';
+import CommandPalette from './CommandPalette.jsx';
 import api from '../api.js';
 import './styles.css';
 
@@ -87,6 +88,18 @@ export default function OwnerShell() {
   const [aiOpen, setAiOpen] = useState(false);
   // Меню профиля в топбаре (открывается по клику на аватар — раньше сразу был logout)
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  // Глобальный поиск по инструментам (Ctrl+K / Cmd+K)
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K' || e.key === 'л' || e.key === 'Л')) {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Заголовок текущей страницы — «публикуется» компонентом PageHeader в топбар.
   const [pageHead, setPageHead] = useState({ title: '', sub: null, actions: null });
@@ -133,24 +146,45 @@ export default function OwnerShell() {
           </div>
 
           <div style={{ marginTop: 4 }}>
-            {sections.map(s => (
-              <button
-                key={s.id}
-                onClick={() => navigate('/owner/' + (s.id === 'dashboard' ? '' : s.id))}
-                className={'o-link' + (activeSection === s.id ? ' active' : '')}
-                title={collapsed ? tt(s.title) : undefined}
-              >
-                {collapsed
-                  ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span>
-                  : <span>{tt(s.title)}</span>}
+            {/* Главная — вне групп, сверху */}
+            {sections.filter(s => s.id === 'dashboard').map(s => (
+              <button key={s.id} onClick={() => navigate('/owner')}
+                className={'o-link' + (activeSection === 'dashboard' ? ' active' : '')}
+                title={collapsed ? tt(s.title) : undefined}>
+                {collapsed ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span> : <span>{tt(s.title)}</span>}
               </button>
             ))}
+
+            {/* Трёхслойная навигация: Работа / Анализ / Система */}
+            {NAV_GROUPS.map(g => {
+              const groupSections = sections.filter(s => s.group === g.id);
+              if (groupSections.length === 0) return null;
+              return (
+                <div key={g.id}>
+                  {!collapsed && <div className="o-nav-group">{tt(g.label)}</div>}
+                  {collapsed && <div className="o-nav-sep" />}
+                  {groupSections.map(s => (
+                    <button
+                      key={s.id}
+                      onClick={() => navigate('/owner/' + s.id)}
+                      className={'o-link' + (activeSection === s.id ? ' active' : '')}
+                      title={collapsed ? tt(s.title) : undefined}
+                    >
+                      {collapsed
+                        ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span>
+                        : <span>{tt(s.title)}</span>}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
 
             {isOwner && aiEnabled && (
               <button
                 onClick={() => navigate('/owner/ai')}
                 className={'o-link o-link-ai' + (activeSection === 'ai' ? ' active' : '')}
                 title={collapsed ? tt('AI-помощник') : undefined}
+                style={{ marginTop: 8 }}
               >
                 {collapsed ? <span className="o-link-mono">AI</span> : <span>{tt('AI-помощник')}</span>}
               </button>
@@ -194,6 +228,12 @@ export default function OwnerShell() {
             ) : <div style={{ minWidth: 0, flex: 1 }} />}
 
             {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
+
+            {/* Глобальный поиск — Ctrl+K или клик */}
+            <button type="button" className="o-search-btn" onClick={() => setPaletteOpen(true)} title={tt('Найти инструмент…')}>
+              <span>{tt('Поиск')}</span>
+              <kbd>Ctrl K</kbd>
+            </button>
 
             {/* Фильтр периода — только в разделах, где данные зависят от периода. */}
             {showPeriod && (
@@ -284,6 +324,7 @@ export default function OwnerShell() {
         </div>
 
         {isOwner && aiEnabled && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} sections={sections} />
       </div>
      </PageHeaderContext.Provider>
     </BranchScope.Provider>

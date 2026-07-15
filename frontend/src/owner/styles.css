@@ -92,6 +92,69 @@
   font-size: 11px; font-weight: 700; width: 22px; text-align: center;
   letter-spacing: .3px; text-transform: uppercase; color: inherit;
 }
+/* Группы навигации («Работа» / «Анализ» / «Система») */
+.owner-shell .o-nav-group {
+  font-size: 10.5px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .6px;
+  padding: 14px 12px 5px;
+}
+.owner-shell .o-nav-sep { height: 1px; background: var(--border); margin: 10px 8px; }
+
+/* Кнопка глобального поиска в топбаре */
+.owner-shell .o-search-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 12px; cursor: pointer; font-family: inherit;
+  font-size: 13px; font-weight: 500; color: var(--text3);
+}
+.owner-shell .o-search-btn:hover { border-color: var(--border-strong); color: var(--text2); }
+.owner-shell .o-search-btn kbd {
+  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text3);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  background: var(--bg);
+}
+
+/* Command palette (Ctrl+K) */
+.owner-shell .cmdk-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(9, 30, 66, .32);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 12vh;
+}
+.owner-shell .cmdk {
+  width: min(560px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 20px 60px rgba(9, 30, 66, .25);
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.owner-shell .cmdk-input {
+  border: none; outline: none; width: 100%;
+  padding: 15px 18px; font-size: 15px; font-weight: 500;
+  color: var(--text); background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+.owner-shell .cmdk-input::placeholder { color: var(--text3); font-weight: 400; }
+.owner-shell .cmdk-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.owner-shell .cmdk-empty { padding: 22px; text-align: center; color: var(--text3); font-size: 13px; }
+.owner-shell .cmdk-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 8px; cursor: pointer;
+}
+.owner-shell .cmdk-item.active { background: var(--primary-50); }
+.owner-shell .cmdk-item-title { font-size: 13.5px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.owner-shell .cmdk-item-sec {
+  font-size: 10.5px; font-weight: 600; color: var(--text3);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 6px;
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.owner-shell .cmdk-item-sub { font-size: 11.5px; color: var(--text3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px; }
+.owner-shell .cmdk-enter { color: var(--primary); font-weight: 700; font-size: 13px; }
+.owner-shell .cmdk-foot {
+  display: flex; gap: 16px; padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text3); font-weight: 500;
+}
+
 .owner-shell .o-side-foot {
   margin-top: auto; padding: 12px 12px 4px;
   border-top: 1px solid var(--border);

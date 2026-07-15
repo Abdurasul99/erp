@@ -28,6 +28,14 @@ export const DASH_WIDGETS = [
 // Все 9 виджетов включены по умолчанию — пользователь скрывает ненужные тумблером (deny-list).
 export const DASH_DEFAULT = ['revenue-hero', 'bhi', 'kpi-tiles', 'cashflow', 'sales-chart', 'branch-compare', 'alerts', 'top-products', 'top-sellers'];
 
+// `group` — трёхслойная навигация в сайдбаре: work (ежедневная работа),
+// analysis (смотреть/анализировать), system (настроить). Главная — вне групп.
+export const NAV_GROUPS = [
+  { id: 'work',     label: 'Работа' },
+  { id: 'analysis', label: 'Анализ' },
+  { id: 'system',   label: 'Система' },
+];
+
 export const SECTIONS = [
   {
     id: 'dashboard',
@@ -40,16 +48,16 @@ export const SECTIONS = [
   {
     id: 'analytics',
     title: 'Аналитика',
+    group: 'analysis',
     color: '#1D4ED8',
-    desc: 'Дашборд учредителя · контроль · тренды · когорты · юнит-экономика · симулятор',
+    desc: 'Дашборд учредителя · контроль · отчёты · когорты · юнит-экономика · симулятор',
     metrics: ['revenue', 'profit', 'cash'],
     tools: [
       { id: 'founder-board',   title: 'Дашборд учредителя', desc: 'Сводка компании · филиалы · алерты', wired: true },
       { id: 'control-center',  title: 'Центр контроля',      desc: 'Алерты · аномалии · полиция магазина · риски · дефицит', wired: true, hub: 5 },
       { id: 'simulator',       title: 'Симулятор «Что если»', desc: 'Все сценарии: бизнес · продажи · склад · закупки · персонал · клиенты', wired: true, hub: 8 },
       { id: 'branch-compare',  title: 'Сравнение филиалов',  desc: 'Выручка · маржа · BHI по филиалам', wired: true },
-      { id: 'trends',          title: 'Тренды и динамика',   desc: '12-мес тренд метрик · авто-инсайты', wired: true },
-      { id: 'period-report',   title: 'Сводный отчёт',       desc: 'Итоги периода · улучшилось/ухудшилось', wired: true },
+      { id: 'reports',         title: 'Отчёты и тренды',     desc: '12-мес тренды · сводный отчёт за период', wired: true, hub: 2 },
       { id: 'basket-analysis', title: 'Анализ корзины',      desc: 'Совместные покупки · апселл', wired: true },
       { id: 'cohorts',         title: 'Когортный анализ',    desc: 'Ретеншн по месяцу первой покупки · LTV', wired: true },
       { id: 'unit-economics',  title: 'Юнит-экономика',      desc: 'LTV/CAC · на сделку · ROAS', wired: true },
@@ -61,6 +69,7 @@ export const SECTIONS = [
   {
     id: 'finance',
     title: 'Финансы',
+    group: 'work',
     color: '#16A34A',
     desc: 'Кассы · P&L · Cash flow · прогнозы · показатели',
     metrics: ['revenue', 'profit', 'cash'],
@@ -82,6 +91,7 @@ export const SECTIONS = [
   {
     id: 'marketing',
     title: 'Маркетинг',
+    group: 'analysis',
     color: '#EC4899',
     desc: 'Воронка · каналы · LTV · рассылки · лояльность',
     metrics: ['customers', 'new_customers', 'loyalty'],
@@ -100,6 +110,7 @@ export const SECTIONS = [
   {
     id: 'procurement',
     title: 'Закупки',
+    group: 'work',
     color: '#D97706',
     desc: 'Поставщики · приход · прогноз закупок',
     metrics: ['suppliers', 'supplier_debts', 'stock_value'],
@@ -112,36 +123,34 @@ export const SECTIONS = [
       { id: 'purchase-history',  title: 'История закупок',      desc: 'Реестр приходов · поставщики · динамика', wired: true },
       { id: 'supplier-returns',  title: 'Возвраты поставщику',  desc: 'Брак · недопоставка · компенсации', wired: true },
       { id: 'debts-suppliers',   title: 'Долги поставщикам',    desc: 'Что мы должны',              wired: true },
-      { id: 'supplier-ratings',  title: 'Рейтинг поставщиков',  desc: 'Доставка в срок · брак · опыт — балл 0-5', wired: true },
-      { id: 'supplier-compare',  title: 'Сравнение поставщиков', desc: 'Цены · качество · сроки',   wired: true },
+      { id: 'supplier-eval',     title: 'Оценка поставщиков',   desc: 'Рейтинг 0-5 · сравнение цен/качества/сроков', wired: true, hub: 2 },
     ],
   },
 
   {
     id: 'warehouse',
     title: 'Склад',
+    group: 'work',
     color: '#0EA5E9',
     desc: 'Остатки · движение · оборачиваемость · инвентаризация',
     metrics: ['stock_value', 'low_stock', 'sku_count'],
     tools: [
       { id: 'stock',              title: 'Товары и остатки',    desc: 'Каталог · цены · фото · штрих-коды', wired: true },
       { id: 'inventory-mgmt',     title: 'ABC/XYZ анализ',      desc: 'Точка заказа · мёртвый',     wired: true },
-      { id: 'stock-outcome-report', title: 'Расход товара',     desc: 'Продажи · списания брака · перемещения', wired: true },
-      { id: 'stock-transfers',    title: 'Перемещения',         desc: 'Между складами: отправка · приёмка', wired: true },
-      { id: 'product-movements',  title: 'История движения',    desc: 'Приход и расход · накопительный остаток', wired: true },
+      { id: 'goods-flow',         title: 'Движение товара',     desc: 'Расход · перемещения между складами · история', wired: true, hub: 3 },
       { id: 'turnover-deadstock', title: 'Оборачиваемость',     desc: 'Скорость оборота · мёртвый сток · замороженный капитал', wired: true },
       { id: 'stock-math',         title: 'Расчёты запасов',     desc: 'EOQ · точка заказа · страховой запас', wired: true, hub: 3 },
       { id: 'purchase-roi',       title: 'ROI закупки',         desc: 'Возврат на вложения по товарам', wired: true },
       { id: 'defects',            title: 'Брак и списание',     desc: 'Потери · доля от оборота · журнал', wired: true },
-      { id: 'barcodes',           title: 'Штрихкоды и QR',      desc: 'Покрытие SKU · EAN-13 · QR', wired: true },
       { id: 'audit',              title: 'Инвентаризация',      desc: 'Сверка факт vs учёт',        wired: true },
-      { id: 'references',         title: 'Справочники',          desc: 'Типы · бренды · единицы',    wired: true },
+      { id: 'references',         title: 'Справочники',          desc: 'Типы · бренды · единицы · штрихкоды', wired: true, hub: 2 },
     ],
   },
 
   {
     id: 'operations',
     title: 'Продажи',
+    group: 'work',
     color: '#16A34A',
     desc: 'Касса · история · скидки · возвраты · задачи',
     metrics: ['deals', 'avg_check', 'revenue'],
@@ -161,6 +170,7 @@ export const SECTIONS = [
   {
     id: 'hr',
     title: 'Персонал',
+    group: 'work',
     color: '#9333EA',
     desc: 'Команда · график · зарплата · аналитика',
     metrics: ['users', 'team_kpi', 'salary_fund'],
@@ -182,6 +192,7 @@ export const SECTIONS = [
   {
     id: 'support',
     title: 'Клиенты',
+    group: 'work',
     color: '#1D4ED8',
     desc: 'База · сегменты · долги · жалобы · NPS',
     metrics: ['customers', 'client_debts', 'nps'],
@@ -192,14 +203,14 @@ export const SECTIONS = [
       { id: 'birthdays',       title: 'Дни рождения',       desc: 'События · поздравления · промокоды', wired: true },
       { id: 'referrals',       title: 'Рефералы',           desc: 'Приведи друга · бонусы · ROI', wired: true },
       { id: 'client-forecast', title: 'Прогноз клиентов',   desc: 'Матрица переходов · отток · рост', wired: true },
-      { id: 'complaints',      title: 'Жалобы',             desc: 'Тикеты · разбор',            wired: true },
-      { id: 'nps',             title: 'NPS и отзывы',       desc: 'NPS · промоутеры · критики · отзывы', wired: true },
+      { id: 'feedback',        title: 'Отзывы и жалобы',    desc: 'NPS · промоутеры · критики · тикеты жалоб', wired: true, hub: 2 },
     ],
   },
 
   {
     id: 'settings',
     title: 'Настройки',
+    group: 'system',
     color: '#6B7280',
     desc: 'Интеграции · безопасность · масштабирование',
     metrics: [],

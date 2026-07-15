@@ -60,6 +60,18 @@ import AbcClientsTool from './AbcClientsTool.jsx';
 import SegmentationTool from './SegmentationTool.jsx';
 import ChurnTool from './ChurnTool.jsx';
 
+import TrendsTool from './TrendsTool.jsx';
+import PeriodReportTool from './PeriodReportTool.jsx';
+import SupplierRatingsTool from './SupplierRatingsTool.jsx';
+import SupplierCompareTool from './SupplierCompareTool.jsx';
+import StockOutcomeReportTool from './StockOutcomeReportTool.jsx';
+import StockTransfersTool from './StockTransfersTool.jsx';
+import ProductMovementsTool from './ProductMovementsTool.jsx';
+import ReferencesTool from './ReferencesTool.jsx';
+import BarcodesTool from './BarcodesTool.jsx';
+import NpsReviewsTool from './NpsReviewsTool.jsx';
+import ComplaintsTool from './ComplaintsTool.jsx';
+
 // Общий каркас хаба: сегмент-контрол вкладок + активный инструмент.
 // roles на вкладке ограничивает её видимость (напр. финансовые сценарии — только учредителю).
 function TabHub({ tabs, storageKey }) {
@@ -198,5 +210,46 @@ export function SegmentsHub() {
     { key: 'abc',      label: 'ABC-анализ', Comp: AbcClientsTool },
     { key: 'segments', label: 'Сегменты',   Comp: SegmentationTool },
     { key: 'churn',    label: 'Отток',      Comp: ChurnTool },
+  ]} />;
+}
+
+// «Отчёты и тренды» — 12-мес динамика + сводный отчёт периода.
+export function ReportsHub() {
+  return <TabHub storageKey="reports" tabs={[
+    { key: 'trends', label: 'Тренды',        Comp: TrendsTool },
+    { key: 'period', label: 'Сводный отчёт', Comp: PeriodReportTool },
+  ]} />;
+}
+
+// «Оценка поставщиков» — рейтинг + сравнение.
+export function SupplierEvalHub() {
+  return <TabHub storageKey="supeval" tabs={[
+    { key: 'ratings', label: 'Рейтинг',   Comp: SupplierRatingsTool },
+    { key: 'compare', label: 'Сравнение', Comp: SupplierCompareTool },
+  ]} />;
+}
+
+// «Движение товара» — расход, перемещения между складами, история.
+export function GoodsFlowHub() {
+  return <TabHub storageKey="goodsflow" tabs={[
+    { key: 'outcome',   label: 'Расход',      Comp: StockOutcomeReportTool },
+    { key: 'transfers', label: 'Перемещения', Comp: StockTransfersTool },
+    { key: 'history',   label: 'История',     Comp: ProductMovementsTool },
+  ]} />;
+}
+
+// «Справочники» — словари + штрихкоды.
+export function ReferencesHub() {
+  return <TabHub storageKey="references" tabs={[
+    { key: 'dicts',    label: 'Справочники', Comp: ReferencesTool },
+    { key: 'barcodes', label: 'Штрихкоды',   Comp: BarcodesTool },
+  ]} />;
+}
+
+// «Отзывы и жалобы» — NPS/отзывы + тикеты жалоб.
+export function FeedbackHub() {
+  return <TabHub storageKey="feedback" tabs={[
+    { key: 'nps',        label: 'NPS и отзывы', Comp: NpsReviewsTool },
+    { key: 'complaints', label: 'Жалобы',       Comp: ComplaintsTool },
   ]} />;
 }
