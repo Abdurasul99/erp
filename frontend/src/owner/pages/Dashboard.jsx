@@ -487,7 +487,7 @@ function BhiChart({ points, goal, tt, lang }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
           <div style={{ fontSize: narrow ? 12 : 13, fontWeight: 800, color: 'var(--text2)' }}>{tt('Динамика BHI по дням')}{single ? <span style={{ fontWeight: 700, color: 'var(--text3)' }}> · {tt('данные накапливаются')}</span> : null}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: '#0C66E4', display: 'inline-block' }} />BHI</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: '#4F46E5', display: 'inline-block' }} />BHI</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, borderTop: '2px dashed #8590A2', display: 'inline-block' }} />{tt('Цель')}</span>
             {!narrow && <span style={{ fontWeight: 600 }}>· {tt('наведи на точку — детали дня')}</span>}
           </div>
@@ -503,11 +503,11 @@ function BhiChart({ points, goal, tt, lang }) {
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: H, display: 'block' }}>
           <defs>
             <linearGradient id="bhiLine" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset={tOff} stopColor={'#0C66E4'} /><stop offset={tOff} stopColor={'#B65C02'} />
+              <stop offset={tOff} stopColor={'#4F46E5'} /><stop offset={tOff} stopColor={'#B65C02'} />
             </linearGradient>
             <linearGradient id="bhiArea" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset={'0'} stopColor={'#0C66E4'} stopOpacity={'0.14'} />
-              <stop offset={tOff} stopColor={'#0C66E4'} stopOpacity={'0.03'} />
+              <stop offset={'0'} stopColor={'#4F46E5'} stopOpacity={'0.14'} />
+              <stop offset={tOff} stopColor={'#4F46E5'} stopOpacity={'0.03'} />
               <stop offset={tOff} stopColor="#f59e0b" stopOpacity="0.04" />
               <stop offset="1" stopColor="#f59e0b" stopOpacity="0.16" />
             </linearGradient>
@@ -531,7 +531,7 @@ function BhiChart({ points, goal, tt, lang }) {
           </g>
           {/* точки */}
           {points.map((p, i) => (
-            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#0C66E4' : '#B65C02'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
+            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#4F46E5' : '#B65C02'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
               <title>{(p.date ? fmtBhiDay(p.date, lang) + ': ' : '')}BHI {p.bhi}</title>
             </circle>
           ))}
@@ -908,7 +908,7 @@ export default function Dashboard() {
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
                 {tt('ВЫРУЧКА')} · {periodLabel}
               </div>
-              <div style={{ fontSize: 30, fontWeight: 600, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.6, color: 'var(--text)' }}>
+              <div className={'grad-num'} style={{ fontSize: 32, fontWeight: 700, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.8 }}>
                 {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, color: 'var(--text3)' }}>{tt('сум')}</span>
               </div>
               {revDelta != null ? (
