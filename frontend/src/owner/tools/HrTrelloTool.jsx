@@ -76,7 +76,7 @@ export default function HrTrelloTool() {
     const p = PRIO[t.priority] || PRIO.medium;
     const nameShort = (t.assignee_name && t.assignee_name.trim()) || t.assignee_username || tt('Не назначен');
     return (
-      <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #E9EEF6', padding: '10px 11px', marginBottom: 8, boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}>
+      <div style={{ background: 'var(--surface)', borderRadius: 10, border: '1px solid #E9EEF6', padding: '10px 11px', marginBottom: 8, boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.c, flexShrink: 0, marginTop: 5 }} title={tt(p.l)} />
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -113,7 +113,7 @@ export default function HrTrelloTool() {
               </div>
 
               {col.key === 'todo' && adding === 'todo' && (
-                <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #E9EEF6', padding: 10, marginBottom: 8 }}>
+                <div style={{ background: 'var(--surface)', borderRadius: 10, border: '1px solid #E9EEF6', padding: 10, marginBottom: 8 }}>
                   <input autoFocus className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder={tt('Название задачи')} style={{ marginBottom: 7 }} onKeyDown={e => e.key === 'Enter' && addTask('todo')} />
                   <select className="input" value={form.assignee_id} onChange={e => setForm({ ...form, assignee_id: e.target.value })} style={{ marginBottom: 7 }}>
                     <option value="">{tt('— исполнитель —')}</option>
@@ -143,4 +143,4 @@ export default function HrTrelloTool() {
   );
 }
 
-const btnMove = { width: 22, height: 22, borderRadius: 6, border: '1px solid #E2E4F0', background: '#fff', cursor: 'pointer', fontSize: 10, color: 'var(--text2)', lineHeight: 1, padding: 0 };
+const btnMove = { width: 22, height: 22, borderRadius: 6, border: '1px solid #E2E4F0', background: 'var(--surface)', cursor: 'pointer', fontSize: 10, color: 'var(--text2)', lineHeight: 1, padding: 0 };

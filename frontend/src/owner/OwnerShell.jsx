@@ -282,7 +282,7 @@ export default function OwnerShell() {
                 <>
                   {/* оверлей — клик вне меню закрывает */}
                   <div onClick={() => setUserMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
-                  <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', background: '#fff', borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,.18)', border: '1px solid var(--line, #E9EEF6)', minWidth: 230, zIndex: 200, overflow: 'hidden' }}>
+                  <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', background: 'var(--surface)', borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,.18)', border: '1px solid var(--line, #E9EEF6)', minWidth: 230, zIndex: 200, overflow: 'hidden' }}>
                     {/* профиль-шапка */}
                     <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--line, #E9EEF6)', display: 'flex', gap: 11, alignItems: 'center' }}>
                       <div className="o-avatar" style={{ width: 42, height: 42, minWidth: 42, fontSize: 16 }}>{initials}</div>
@@ -424,7 +424,7 @@ function BranchPicker({ branches, value, onChange, tt }) {
       {open && (
         <div role="listbox" style={{
           position: 'absolute', top: 'calc(100% + 6px)', right: 0,
-          background: '#fff', border: '1px solid var(--border)', borderRadius: 10,
+          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
           boxShadow: '0 12px 32px rgba(26,27,46,.10), 0 4px 8px rgba(26,27,46,.05)',
           zIndex: 200, minWidth: 220, padding: 4, maxHeight: 360, overflowY: 'auto',
         }}>

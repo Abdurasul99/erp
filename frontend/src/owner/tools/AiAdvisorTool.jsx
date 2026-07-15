@@ -47,7 +47,7 @@ export default function AiAdvisorTool() {
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {['Почему продажи упали?', 'Что плохо продаётся?', 'Где теряем маржу?', 'Какие товары закупить?'].map(s => (
-            <button key={s} onClick={() => setQ(s)} style={{ padding: '6px 12px', borderRadius: 20, border: '1.5px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: 'var(--text2)', fontFamily: 'inherit' }}>{tt(s)}</button>
+            <button key={s} onClick={() => setQ(s)} style={{ padding: '6px 12px', borderRadius: 20, border: '1.5px solid var(--border)', background: 'var(--surface)', cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: 'var(--text2)', fontFamily: 'inherit' }}>{tt(s)}</button>
           ))}
         </div>
 

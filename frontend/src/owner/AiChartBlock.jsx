@@ -35,7 +35,7 @@ export default function AiChartBlock({ chartType }) {
     return (
       <div style={{
         marginTop: 10, padding: 16,
-        background: '#fff', borderRadius: 14,
+        background: 'var(--surface)', borderRadius: 14,
         border: '1px solid var(--border)',
         boxShadow: 'var(--shadow-sm)',
       }}>
@@ -60,7 +60,7 @@ export default function AiChartBlock({ chartType }) {
   return (
     <div style={{
       marginTop: 10, padding: 16,
-      background: '#fff', borderRadius: 14,
+      background: 'var(--surface)', borderRadius: 14,
       border: '1px solid var(--border)',
       boxShadow: 'var(--shadow-sm)',
     }}>

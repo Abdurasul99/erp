@@ -84,7 +84,7 @@ export default function AiChatDrawer({ open, onClose }) {
   return (
       <div style={{
         height: '100vh', minWidth: 0, overflow: 'hidden',
-        background: '#fff', borderLeft: '1px solid var(--border)',
+        background: 'var(--surface)', borderLeft: '1px solid var(--border)',
         boxShadow: '-8px 0 32px rgba(15,23,42,.08)',
         display: 'flex', flexDirection: 'column',
       }}>
@@ -178,7 +178,7 @@ export default function AiChatDrawer({ open, onClose }) {
               {followUps.slice(0, 5).map((q, i) => (
                 <button key={i} onClick={() => sendMessage(tt(q))} disabled={typing} style={{
                   padding: '7px 11px',
-                  background: '#fff',
+                  background: 'var(--surface)',
                   border: '1.5px solid var(--border-strong)',
                   borderRadius: 16,
                   cursor: 'pointer',

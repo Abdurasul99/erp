@@ -70,7 +70,7 @@ export default function PanelManagerTool() {
         {title}
       </span>
       <span style={{ width: 36, height: 20, borderRadius: 20, background: on ? 'var(--primary)' : '#CBD5E1', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
-        <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
+        <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: 'var(--surface)', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
       </span>
     </button>
   );

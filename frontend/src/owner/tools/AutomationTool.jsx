@@ -30,7 +30,7 @@ export default function AutomationTool() {
                 <td>
                   <button onClick={() => setFlows(fs => fs.map((x, j) => j === i ? { ...x, status: x.status === 'on' ? 'off' : 'on' } : x))}
                     style={{ width: 44, height: 24, borderRadius: 12, border: 'none', background: f.status === 'on' ? '#16A34A' : '#9CA3AF', cursor: 'pointer', position: 'relative', padding: 0 }}>
-                    <div style={{ position: 'absolute', top: 2, left: f.status === 'on' ? 22 : 2, width: 20, height: 20, borderRadius: '50%', background: '#fff', transition: 'left .2s' }} />
+                    <div style={{ position: 'absolute', top: 2, left: f.status === 'on' ? 22 : 2, width: 20, height: 20, borderRadius: '50%', background: 'var(--surface)', transition: 'left .2s' }} />
                   </button>
                 </td>
                 <td style={{ fontWeight: 700 }}>{tt(f.name)}</td>

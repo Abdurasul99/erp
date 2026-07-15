@@ -38,7 +38,7 @@ export default function B2BTool() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {deals.filter(d => d.stage === si).map(d => (
                 <div key={d.id} onClick={() => setOpen(d)} style={{
-                  background: '#fff', padding: 12, borderRadius: 10, cursor: 'pointer',
+                  background: 'var(--surface)', padding: 12, borderRadius: 10, cursor: 'pointer',
                   border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)',
                 }}>
                   <div style={{ fontSize: 10, color: 'var(--text3)' }}>{d.id}</div>
