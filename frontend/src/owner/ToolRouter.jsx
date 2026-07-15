@@ -173,6 +173,8 @@ import StorePoliceTool from './tools/StorePoliceTool.jsx';
 import EmployeeHealthTool from './tools/EmployeeHealthTool.jsx';
 import WorkdayMapTool from './tools/WorkdayMapTool.jsx';
 import FireAnalysisTool from './tools/FireAnalysisTool.jsx';
+import HrTrelloTool from './tools/HrTrelloTool.jsx';
+import SalesFunnelTool from './tools/SalesFunnelTool.jsx';
 
 const RESOLVE = {
   analytics: {
@@ -212,6 +214,7 @@ const RESOLVE = {
     'unit-economics': { Comp: UnitEconomicsTool },
   },
   marketing: {
+    'sales-funnel': { Comp: SalesFunnelTool },
     'competitor-mirror': { Comp: CompetitorMirrorTool },
     'loss-funnel':{ Comp: LossFunnelTool },
     'ca-analysis':  { Comp: PersonasTool },
@@ -286,6 +289,7 @@ const RESOLVE = {
     'basket-analysis':  { Comp: BasketTool },
   },
   hr: {
+    'hr-trello': { Comp: HrTrelloTool },
     'fire-analysis':   { Comp: FireAnalysisTool },
     'workday-map': { Comp: WorkdayMapTool },
     'employee-health': { Comp: EmployeeHealthTool },

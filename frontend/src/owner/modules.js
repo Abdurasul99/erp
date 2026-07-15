@@ -21,7 +21,8 @@ export const DASH_WIDGETS = [
   { id: 'top-sellers',    icon: '👤', label: '👤 Топ сотрудников' },
 ];
 // Набор по умолчанию (для новых пользователей без сохранённого выбора).
-export const DASH_DEFAULT = ['revenue-hero', 'bhi', 'kpi-tiles', 'cashflow', 'sales-chart', 'alerts', 'top-sellers'];
+// Все 9 виджетов включены по умолчанию — пользователь скрывает ненужные тумблером (deny-list).
+export const DASH_DEFAULT = ['revenue-hero', 'bhi', 'kpi-tiles', 'cashflow', 'sales-chart', 'branch-compare', 'alerts', 'top-products', 'top-sellers'];
 
 export const SECTIONS = [
   {
@@ -88,6 +89,7 @@ export const SECTIONS = [
     tools: [
       { id: 'competitor-mirror', icon: '🪞', title: "Зеркало конкурентов", desc: "Сравнение с конкурентами по 6 KPI · radar · win/lose", wired: true },
       { id: 'loss-funnel', icon: '🕳️', title: "Воронка потерь", desc: "Где отваливаются клиенты · упущенная выручка", wired: true },
+      { id: 'sales-funnel',   icon: '🎯', title: 'Воронка продаж',        desc: 'Планировщик: ступени · конверсии · потери · бюджет', wired: true },
       { id: 'ca-analysis',    icon: '🎯', title: 'Анализ ЦА (JTBD)',     desc: 'Аватары · боли · возражения', wired: true  },
       { id: 'content-plan',   icon: '🎬', title: 'Конструктор контента',  desc: 'Воронка · план/факт · аналитика', wired: true  },
       { id: 'channels',       icon: '📡', title: 'Каналы и ROI',          desc: 'Откуда клиенты · ROI · LTV по источнику', wired: true  },
@@ -184,6 +186,7 @@ export const SECTIONS = [
       { id: 'employee-health', icon: '❤️‍🩹', title: "Здоровье сотрудника", desc: "Детектор выгорания · score · тренд · зона риска", wired: true },
       { id: 'hire-fire-calc', icon: '🧮', title: "Калькулятор найма/увольнения", desc: "Окупаемость · чистый эффект · вердикт — найм или увольнение на лету", wired: true },
       { id: 'team-kpi',     icon: '👥', title: 'KPI команды',       desc: 'Продажи · смены · бонусы',     wired: true  },
+      { id: 'hr-trello',    icon: '📋', title: 'Trello — задачи команды', desc: 'Kanban-доска: ставь задачи сотрудникам, двигай по колонкам', wired: true },
       { id: 'users',        icon: '🧑‍💼', title: 'Сотрудники',         desc: 'Роли · филиалы · доступ',     wired: true  },
       { id: 'training',     icon: '🎓', title: 'Обучение',           desc: 'Видеоуроки · курсы по должностям · прогресс', wired: true },
       { id: 'schedules', icon: '🗓️', title: 'Расписание и смены', desc: 'Недельный график · смены · переработки', wired: true },

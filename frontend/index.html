@@ -3,11 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Wave ERP</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230F1B33'/%3E%3Cpath d='M10 27 Q 19 19 28 27 T 54 27' fill='none' stroke='%23ffffff' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M10 40 Q 19 32 28 40 T 54 40' fill='none' stroke='%232ECC71' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <title></title>
+    <script>
+      (() => {
+        const storefrontPath = /^\/(?:store|art-store)\/?$/.test(window.location.pathname);
+        const iconData = (svg) => `data:image/svg+xml,${encodeURIComponent(svg)}`;
+        const artStoreIcon = iconData(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#171713"/><text x="32" y="41" text-anchor="middle" fill="#F3EFE6" font-family="Georgia,serif" font-size="25">AS</text></svg>`);
+        const waveIcon = iconData(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0F1B33"/><path d="M10 27 Q 19 19 28 27 T 54 27" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/><path d="M10 40 Q 19 32 28 40 T 54 40" fill="none" stroke="#2ECC71" stroke-width="5" stroke-linecap="round"/></svg>`);
+
+        document.title = storefrontPath ? 'ART Store — современное искусство' : 'Wave ERP';
+        const favicon = document.createElement('link');
+        favicon.rel = 'icon';
+        favicon.type = 'image/svg+xml';
+        favicon.href = storefrontPath ? artStoreIcon : waveIcon;
+        document.head.appendChild(favicon);
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500;1,600&family=Nunito:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

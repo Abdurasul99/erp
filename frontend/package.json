@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",
+    "dev:https": "vite --config vite.https.config.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/verify_translations.js"
+    "test": "node --test test/https-config.test.mjs test/storefront.test.mjs test/storefront-intro.test.mjs test/storefront-render.test.mjs && node test/verify_translations.js"
   },
   "dependencies": {
     "axios": "^1.6.2",
+    "framer-motion": "^12.42.2",
     "html5-qrcode": "^2.3.8",
     "jsbarcode": "^3.11.6",
     "jspdf": "^4.2.1",

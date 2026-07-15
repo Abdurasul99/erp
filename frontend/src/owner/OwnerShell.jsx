@@ -85,6 +85,8 @@ export default function OwnerShell() {
 
   // AI chat drawer state
   const [aiOpen, setAiOpen] = useState(false);
+  // Меню профиля в топбаре (открывается по клику на аватар — раньше сразу был logout)
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   // Заголовок текущей страницы — «публикуется» компонентом PageHeader в топбар.
   const [pageHead, setPageHead] = useState({ title: '', sub: null, actions: null });
@@ -246,14 +248,47 @@ export default function OwnerShell() {
               </div>
             )}
 
-            <div className="o-user" onClick={logout} title={tt('Выйти')} style={{ cursor: 'pointer' }}>
-              <div className="o-avatar">{initials}</div>
-              <div style={{ lineHeight: 1.2, fontSize: 12 }}>
-                <div style={{ fontWeight: 800, fontSize: 13 }}>
-                  {user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user?.username}
+            <div style={{ position: 'relative' }}>
+              <div className="o-user" onClick={() => setUserMenuOpen(v => !v)} title={tt('Профиль')} style={{ cursor: 'pointer' }}>
+                <div className="o-avatar">{initials}</div>
+                <div style={{ lineHeight: 1.2, fontSize: 12 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13 }}>
+                    {user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user?.username}
+                  </div>
+                  <div style={{ color: 'var(--text3)' }}>{roleLabel}</div>
                 </div>
-                <div style={{ color: 'var(--text3)' }}>{roleLabel}</div>
+                <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--text3)', transition: 'transform .15s', transform: userMenuOpen ? 'rotate(180deg)' : 'none' }}>▾</span>
               </div>
+              {userMenuOpen && (
+                <>
+                  {/* оверлей — клик вне меню закрывает */}
+                  <div onClick={() => setUserMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
+                  <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', background: '#fff', borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,.18)', border: '1px solid var(--line, #E9EEF6)', minWidth: 230, zIndex: 200, overflow: 'hidden' }}>
+                    {/* профиль-шапка */}
+                    <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--line, #E9EEF6)', display: 'flex', gap: 11, alignItems: 'center' }}>
+                      <div className="o-avatar" style={{ width: 42, height: 42, minWidth: 42, fontSize: 16 }}>{initials}</div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user?.username}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text3)' }}>{roleLabel}{user?.username ? ` · @${user.username}` : ''}</div>
+                        {user?.company_name && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>🏢 {user.company_name}{role === 'manager' && user?.branch_name ? ` · ${user.branch_name}` : ''}</div>}
+                      </div>
+                    </div>
+                    {/* пункты */}
+                    {sections.some(s => s.id === 'settings') && (
+                      <button onClick={() => { setUserMenuOpen(false); navigate('/owner/settings'); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 700, color: 'var(--text1, #1D2440)', textAlign: 'left' }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#F4F7FE'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                        <span style={{ fontSize: 16 }}>⚙️</span> {tt('Настройки')}
+                      </button>
+                    )}
+                    <button onClick={() => { setUserMenuOpen(false); logout(); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', borderTop: '1px solid var(--line, #E9EEF6)', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 700, color: '#dc2626', textAlign: 'left' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#FFF1F1'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                      <span style={{ fontSize: 16 }}>🚪</span> {tt('Выйти')}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </header>
 

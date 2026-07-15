@@ -701,7 +701,20 @@ export default function Dashboard() {
   const [reloadTick, setReloadTick] = useState(0); // бамп после правки активов/обязательств
   // Кастомизация Главной: какие виджеты показывать (per-browser, мгновенно).
   const [widgets, setWidgets] = useState(() => {
-    try { const s = localStorage.getItem('dash_widgets'); if (s) return new Set(JSON.parse(s)); } catch {}
+    try {
+      const s = localStorage.getItem('dash_widgets');
+      if (s) {
+        const set = new Set(JSON.parse(s));
+        // Одноразовая миграция: вернуть «Топ товаров» и «Сравнение филиалов» тем, у кого сохранён
+        // старый набор без них (один раз — будущие ручные удаления уважаются).
+        if (!localStorage.getItem('dash_widgets_v3')) {
+          set.add('top-products'); set.add('branch-compare');
+          localStorage.setItem('dash_widgets', JSON.stringify([...set]));
+          localStorage.setItem('dash_widgets_v3', '1');
+        }
+        return set;
+      }
+    } catch {}
     return new Set(DASH_DEFAULT);
   });
   const [showWidgets, setShowWidgets] = useState(false);

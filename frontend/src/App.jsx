@@ -10,6 +10,8 @@ const Mobile     = lazy(() => import('./pages/Mobile.jsx'));
 const SellerView = lazy(() => import('./pages/SellerView.jsx'));
 const OwnerShell = lazy(() => import('./owner/OwnerShell.jsx'));
 const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
+const Storefront = lazy(() => import('./store/Storefront.jsx'));
+import { isPublicStorefrontPath } from './store/storeRouting.mjs';
 import { getLang, setLang } from './i18n.js';
 import api from './api.js';
 
@@ -88,6 +90,30 @@ function Splash() {
   );
 }
 
+function StorefrontLoading() {
+  return (
+    <div aria-label="Загрузка ART Store" style={{
+      minHeight: '100vh', background: '#F3EFE6', color: '#171713',
+      display: 'grid', placeItems: 'center', fontFamily: "'Cormorant Garamond', serif",
+    }}>
+      <div style={{ textAlign: 'center', fontSize: 24, letterSpacing: '.12em' }}>ART Store</div>
+    </div>
+  );
+}
+
+function PublicStorefrontApp() {
+  return (
+    <BrowserRouter>
+      <Suspense fallback={<StorefrontLoading />}>
+        <Routes>
+          <Route path="/store" element={<Storefront />} />
+          <Route path="/art-store" element={<Navigate to="/store" replace />} />
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+}
+
 // Плашка режима «войти как» (WoW). Видна во всех оболочках, пока активна impersonation.
 const IMP_ROLE_LABEL = {
   founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
@@ -116,7 +142,7 @@ function ImpersonationBanner() {
   );
 }
 
-export default function App() {
+function ErpApp() {
   // Start with no user — verification happens on mount
   const [user, setUser] = useState(null);
   // If there's a token, we need to verify it before rendering routes
@@ -248,4 +274,9 @@ export default function App() {
       </LangContext.Provider>
     </AuthContext.Provider>
   );
+}
+
+export default function App() {
+  const pathname = typeof window === 'undefined' ? '/' : window.location.pathname;
+  return isPublicStorefrontPath(pathname) ? <PublicStorefrontApp /> : <ErpApp />;
 }
