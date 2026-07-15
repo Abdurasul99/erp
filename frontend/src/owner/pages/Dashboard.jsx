@@ -67,7 +67,7 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
             fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace",
             opacity: v > 0 ? 1 : 0.55,
           }}>
-            <span style={{ color: labelColor, fontWeight: 700 }}>{m.icon} {tt(m.label)}</span>
+            <span style={{ color: labelColor, fontWeight: 700 }}>{tt(m.label)}</span>
             <span style={{ color: valueColor, fontWeight: 700 }}>
               {/* Долларовая касса показывается двухвалютно: сначала исходные $,
                   затем UZS-эквивалент по курсу сделки — «4 $ · 44 000 UZS». */}
@@ -215,7 +215,7 @@ function StateAsk({ trend, bizState, lang }) {
   const presets = [tt('Почему упала выручка?'), tt('Что с прибылью?'), tt('Что сделать, чтобы росло?')];
   return (
     <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>🤖 {tt('Спросить про график')}</div>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 8 }}>{tt('Спросить про график')}</div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
         {presets.map((p, i) => (
           <button key={i} className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setQ(p); ask(p); }}>{p}</button>
@@ -226,7 +226,7 @@ function StateAsk({ trend, bizState, lang }) {
           onKeyDown={e => { if (e.key === 'Enter' && !busy) ask(); }} style={{ flex: 1 }} />
         <button className="btn btn-primary btn-sm" disabled={busy || !q.trim()} onClick={() => ask()}>{busy ? '…' : tt('Спросить')}</button>
       </div>
-      {err && <div style={{ marginTop: 8, color: 'var(--red)', fontWeight: 600, fontSize: 12 }}>⚠️ {err}</div>}
+      {err && <div style={{ marginTop: 8, color: 'var(--red)', fontWeight: 600, fontSize: 12 }}>{err}</div>}
       {ans && (
         <div style={{ marginTop: 10, background: 'var(--bg-2)', borderRadius: 10, padding: '12px 14px', fontFamily: "'Inter', 'Nunito', system-ui, sans-serif", fontSize: 14, lineHeight: 1.7 }}>
           <RichText text={ans.replace(/\[\[CHART:[a-z_]+\]\]/gi, '').trim()} />
@@ -248,7 +248,7 @@ function BizStateBar({ bs, isOwner, onEdit }) {
   if (!hasData) {
     return (
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, color: 'var(--text3)', fontSize: 13 }}>
-        <span>📊 {tt('Нет данных для баланса')}</span>
+        <span>{tt('Нет данных для баланса')}</span>
         {isOwner && onEdit && <button className="btn btn-ghost btn-sm" onClick={onEdit}>✏️ {tt('Заполнить')}</button>}
       </div>
     );
@@ -282,8 +282,8 @@ function BizStateBar({ bs, isOwner, onEdit }) {
       )}
       {isOwner && bs.breakdown && (
         <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 16, flexWrap: 'wrap', fontFamily: "'JetBrains Mono', monospace" }}>
-          <span><b style={{ color: GREEN }}>{tt('Активы')}:</b> 💵{fmtMoney(b.cash)} · 📦{fmtMoney(b.inventory)} · 📥{fmtMoney(b.receivables)} · 🏭{fmtMoney(b.fixed_assets)}</span>
-          <span><b style={{ color: RED }}>{tt('Обязательства')}:</b> 📤{fmtMoney(b.payables)} · 🏦{fmtMoney(b.loans)} · 📋{fmtMoney(b.tax_payable)} · 💼{fmtMoney(b.wages_payable)}</span>
+          <span><b style={{ color: GREEN }}>{tt('Активы')}:</b> {fmtMoney(b.cash)} · {fmtMoney(b.inventory)} · {fmtMoney(b.receivables)} · {fmtMoney(b.fixed_assets)}</span>
+          <span><b style={{ color: RED }}>{tt('Обязательства')}:</b> {fmtMoney(b.payables)} · {fmtMoney(b.loans)} · {fmtMoney(b.tax_payable)} · {fmtMoney(b.wages_payable)}</span>
         </div>
       )}
     </div>
@@ -291,12 +291,12 @@ function BizStateBar({ bs, isOwner, onEdit }) {
 }
 
 const FIN_TABS = [
-  { key: 'fixed-assets', label: '🏭 Основные средства', amount: 'acquisition_cost', title: 'name', fields: [
+  { key: 'fixed-assets', label: 'Основные средства', amount: 'acquisition_cost', title: 'name', fields: [
     { name: 'category', label: 'Категория', type: 'select', options: [['equipment', 'Оборудование'], ['vehicle', 'Транспорт'], ['real_estate', 'Недвижимость']] },
     { name: 'name', label: 'Название', type: 'text' },
     { name: 'acquisition_cost', label: 'Стоимость (сум)', type: 'number' },
   ] },
-  { key: 'loans', label: '🏦 Кредиты', amount: 'remaining_balance', title: 'lender', fields: [
+  { key: 'loans', label: 'Кредиты', amount: 'remaining_balance', title: 'lender', fields: [
     { name: 'lender', label: 'Кредитор', type: 'text' },
     { name: 'remaining_balance', label: 'Остаток долга (сум)', type: 'number' },
   ] },
@@ -369,13 +369,8 @@ function FinManualEditor({ open, onClose, onChanged }) {
 function ChartHead({ icon, iconBg, iconColor, label, children }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14, minHeight: 44 }}>
-      <div style={{
-        width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-        background: iconBg, color: iconColor,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17,
-      }} aria-hidden="true">{icon}</div>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {label}
         </div>
         {children}
@@ -490,7 +485,7 @@ function BhiChart({ points, goal, tt, lang }) {
       {valid && (<>
         {/* заголовок + легенда (как в макете) */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
-          <div style={{ fontSize: narrow ? 12 : 13, fontWeight: 800, color: 'var(--text2)' }}>📈 {tt('Динамика BHI по дням')}{single ? <span style={{ fontWeight: 700, color: 'var(--text3)' }}> · {tt('данные накапливаются')}</span> : null}</div>
+          <div style={{ fontSize: narrow ? 12 : 13, fontWeight: 800, color: 'var(--text2)' }}>{tt('Динамика BHI по дням')}{single ? <span style={{ fontWeight: 700, color: 'var(--text3)' }}> · {tt('данные накапливаются')}</span> : null}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: 'linear-gradient(90deg,#f59e0b,#16a34a)', display: 'inline-block' }} />BHI</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, borderTop: '2px dashed #16a34a', display: 'inline-block' }} />{tt('Цель')}</span>
@@ -573,7 +568,7 @@ function BhiCard({ role }) {
   if (!data.blocks_active) {
     return (
       <Card icon="🧭" title={tt('Индекс здоровья бизнеса')} style={{ marginBottom: 16 }}>
-        <div style={{ color: 'var(--text3)', fontSize: 13 }}>📊 {tt('Недостаточно данных — индекс появится после ≥7 дней работы.')}</div>
+        <div style={{ color: 'var(--text3)', fontSize: 13 }}>{tt('Недостаточно данных — индекс появится после ≥7 дней работы.')}</div>
       </Card>
     );
   }
@@ -609,10 +604,10 @@ function BhiCard({ role }) {
               {dayDelta >= 0 ? '▲' : '▼'} {Math.abs(dayDelta)} {tt('к вчера')}
             </div>
           )}
-          <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>🎯 {tt('Цель')}: {data.goal}</div>
-          <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>📦 {data.blocks_active} {tt('активных блоков')}</div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>{tt('Цель')}: {data.goal}</div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>{data.blocks_active} {tt('активных блоков')}</div>
           {data.alert?.falling_streak >= 3 && (
-            <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 800, marginTop: 4 }}>⚠️ {tt('Падение')} {data.alert.falling_streak} {tt('дн. подряд')}</div>
+            <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 800, marginTop: 4 }}>{tt('Падение')} {data.alert.falling_streak} {tt('дн. подряд')}</div>
           )}
         </div>
       </div>
@@ -620,7 +615,7 @@ function BhiCard({ role }) {
       {/* предупреждение о падении (как в макете) */}
       {data.alert?.falling_streak >= 3 && (
         <div style={{ marginTop: 12, background: 'rgba(220,38,38,.08)', border: '1px solid rgba(220,38,38,.25)', borderRadius: 10, padding: '9px 12px', fontSize: 12.5, fontWeight: 700, color: 'var(--red)' }}>
-          ⚠️ {tt('Индекс падает')} {data.alert.falling_streak} {tt('дня подряд — требуется внимание руководства')}
+          {tt('Индекс падает')} {data.alert.falling_streak} {tt('дня подряд — требуется внимание руководства')}
         </div>
       )}
 
@@ -905,10 +900,10 @@ export default function Dashboard() {
             {/* Левая колонка — дата, выручка, дельта */}
             <div style={{ flex: '1 1 280px', minWidth: 240, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 11.5, fontWeight: 800, opacity: .85, textTransform: 'uppercase', letterSpacing: .8 }}>
-                📅 {todayLabel(lang)}
+                {todayLabel(lang)}
               </div>
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
-                💰 {tt('ВЫРУЧКА')} · {periodLabel}
+                {tt('ВЫРУЧКА')} · {periodLabel}
               </div>
               <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5, color: '#16a34a' }}>
                 {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, color: 'var(--text3)' }}>{tt('сум')}</span>
@@ -966,7 +961,7 @@ export default function Dashboard() {
                   }}>{branchSummary.icon}</div>
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                      💸 {tt('Денежный поток')}
+                      {tt('Денежный поток')}
                     </div>
                     <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', marginTop: 2 }}>{branchSummary.title}</div>
                     <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, marginTop: 2 }}>{branchSummary.sub}</div>
@@ -1006,7 +1001,7 @@ export default function Dashboard() {
             {/* Дневной график выбранной метрики (пиковый день — тёмный бар) */}
             <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text2)', marginBottom: 10 }}>
-                📅 {tt(currentCfTab.label)} {tt('по дням')}{cfMonthLabel ? ' · ' + cfMonthLabel : ''}
+                {tt(currentCfTab.label)} {tt('по дням')}{cfMonthLabel ? ' · ' + cfMonthLabel : ''}
               </div>
               {cfDailyLoading && !cfDaily ? <Skeleton height={150} /> : (
                 cfDailyValues.some(v => v !== 0)
@@ -1031,7 +1026,7 @@ export default function Dashboard() {
                 {/* Заголовок секции + ЕДИНЫЙ переключатель масштаба для ОБОИХ графиков */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>📊 {tt('Динамика продаж')}</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--text2)' }}>{tt('Динамика продаж')}</div>
                     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                       <button onClick={() => setChartOffset(o => o - 1)} title={tt('Раньше')}
                         style={{ width: 26, height: 26, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text2)', cursor: 'pointer', fontWeight: 800, fontSize: 15, lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>‹</button>
@@ -1116,7 +1111,7 @@ export default function Dashboard() {
                     {branches.map(b => (
                       <tr key={b.branch_id}>
                         <td style={{ fontWeight: 700 }}>
-                          🏭 {b.branch_name}{' '}
+                          {b.branch_name}{' '}
                           {b.margin_pct < 10 && b.sales_revenue > 0 && <Badge tone="red">{tt('маржа↓')}</Badge>}
                         </td>
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(b.sales_revenue)}</td>
@@ -1184,7 +1179,7 @@ export default function Dashboard() {
               </div>
             </Card>)}
 
-            {W('top-sellers') && (<Card icon="👤" title={tt('Топ сотрудников')} actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/hr/team-kpi')}>KPI →</button>}>
+            {W('top-sellers') && (<Card icon="👤" title={tt('Топ сотрудников')} actions={<button className="btn btn-ghost btn-sm" onClick={() => navigate('/owner/hr/team')}>KPI →</button>}>
               <div className="list">
                 {topSellers.length === 0 ? (
                   <div style={{ padding: '14px 0', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет данных')}</div>
@@ -1240,18 +1235,16 @@ export default function Dashboard() {
 function CompactTile({ icon, label, value, sub, delta, color, breakdown, countMode = null, usdOrig = 0 }) {
   return (
     <div style={{
-      background: '#fff',
-      borderRadius: 14,
+      background: 'var(--surface)',
+      borderRadius: 10,
       padding: '12px 14px',
-      border: '1px solid rgba(230,232,242,.6)',
-      borderLeft: `4px solid ${color}`,
-      boxShadow: 'var(--shadow)',
+      border: '1px solid var(--border)',
       flex: 1,
       display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
     }}>
       <div>
-        <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: .5 }}>
-          {icon} {label}
+        <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
+          {label}
         </div>
         <div style={{
           display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',

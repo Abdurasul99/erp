@@ -66,9 +66,8 @@ export default function PanelManagerTool() {
         border: '1.5px solid ' + (on ? 'var(--primary)' : 'var(--border)'),
         background: on ? 'var(--primary-50)' : 'var(--bg-2)',
       }}>
-      <span style={{ fontSize: 18 }}>{icon}</span>
-      <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: on ? 'var(--text)' : 'var(--text3)' }}>
-        {title}{locked ? ' 🔒' : ''}
+      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: on ? 'var(--text)' : 'var(--text3)' }}>
+        {title}
       </span>
       <span style={{ width: 36, height: 20, borderRadius: 20, background: on ? 'var(--primary)' : '#CBD5E1', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
         <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
@@ -111,8 +110,7 @@ export default function PanelManagerTool() {
               </div>
               <div style={gridStyle}>
                 {DASH_WIDGETS.map(w => (
-                  /* label уже содержит эмодзи в начале — срезаем его, чтобы иконка не задваивалась */
-                  <ToggleBtn key={w.id} icon={w.icon} title={tt(w.label).replace(/^\S+\s+/, '')} on={!disabledW.has(w.id)} onClick={() => toggleW(w.id)} />
+                  <ToggleBtn key={w.id} title={tt(w.label)} on={!disabledW.has(w.id)} onClick={() => toggleW(w.id)} />
                 ))}
               </div>
             </Card>

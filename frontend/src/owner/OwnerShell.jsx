@@ -123,7 +123,7 @@ export default function OwnerShell() {
       <div className={'owner-shell' + (collapsed ? ' collapsed' : '') + (aiOpen && isOwner ? ' ai-open' : '')}>
         <aside className="o-sidebar">
           <div className="o-brand" onClick={() => navigate('/owner')}>
-            <div className="o-brand-ico">🌊</div>
+            <div className="o-brand-ico">{(user?.company_name || 'W').slice(0, 1).toUpperCase()}</div>
             {!collapsed && (
               <div>
                 <div className="o-brand-name">{user?.company_name || 'WareApp'}</div>
@@ -138,53 +138,41 @@ export default function OwnerShell() {
                 key={s.id}
                 onClick={() => navigate('/owner/' + (s.id === 'dashboard' ? '' : s.id))}
                 className={'o-link' + (activeSection === s.id ? ' active' : '')}
-                title={collapsed ? s.title : undefined}
+                title={collapsed ? tt(s.title) : undefined}
               >
-                <span className="o-link-ico">{s.icon}</span>
-                {!collapsed && <span>{tt(s.title)}</span>}
-                {!collapsed && s.tools.length > 0 && <span className="o-link-badge">{s.tools.length}</span>}
+                {collapsed
+                  ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span>
+                  : <span>{tt(s.title)}</span>}
               </button>
             ))}
 
             {isOwner && aiEnabled && (
               <button
                 onClick={() => navigate('/owner/ai')}
-                className={'o-link' + (activeSection === 'ai' ? ' active' : '')}
+                className={'o-link o-link-ai' + (activeSection === 'ai' ? ' active' : '')}
                 title={collapsed ? tt('AI-помощник') : undefined}
-                style={activeSection === 'ai' ? undefined : {
-                  background: 'linear-gradient(135deg, rgba(124,58,237,.12), rgba(29,78,216,.18))',
-                  color: '#fff',
-                  marginTop: 8,
-                }}
               >
-                <span className="o-link-ico">🤖</span>
-                {!collapsed && <span>{tt('AI-помощник')}</span>}
-                {!collapsed && <span className="o-link-badge" style={{ background: 'linear-gradient(135deg, #D97706, #D97706)' }}>NEW</span>}
+                {collapsed ? <span className="o-link-mono">AI</span> : <span>{tt('AI-помощник')}</span>}
               </button>
             )}
           </div>
 
-          <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid rgba(255,255,255,.08)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
             {/* Quick AI popup — only for founder/director с включённым AI. Manager has no AI access. */}
             {isOwner && aiEnabled && (
-              <button onClick={() => setAiOpen(true)} className="o-link" style={{
-                background: 'linear-gradient(135deg, #1D4ED8, #1D4ED8)',
-                color: '#fff', fontWeight: 800,
-              }} title={collapsed ? tt('Быстрый чат') : undefined}>
-                <span className="o-link-ico">⚡</span>
-                {!collapsed && <span>{tt('Быстрый чат')}</span>}
-                {!collapsed && <span className="o-link-badge" style={{ background: 'rgba(255,255,255,.25)' }}>popup</span>}
+              <button onClick={() => setAiOpen(true)} className="o-link" title={collapsed ? tt('Быстрый чат') : undefined}>
+                {collapsed ? <span className="o-link-mono">Ч</span> : <span>{tt('Быстрый чат')}</span>}
               </button>
             )}
 
             {/* Collapse toggle */}
             <button onClick={() => setCollapsed(c => !c)} className="o-link" style={{ fontSize: 12 }} title={collapsed ? tt('Развернуть') : tt('Свернуть')}>
-              <span className="o-link-ico">{collapsed ? '»' : '«'}</span>
+              <span className="o-link-mono">{collapsed ? '»' : '«'}</span>
               {!collapsed && <span>{tt('Свернуть панель')}</span>}
             </button>
 
             {!collapsed && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,.6)', fontSize: 11, padding: '4px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text3)', fontSize: 11, padding: '4px 12px' }}>
                 <span className="o-dot" />
                 {tt('Все системы в норме')}
               </div>
@@ -195,26 +183,15 @@ export default function OwnerShell() {
         <div className="o-main">
           <header className="o-topbar">
             {/* Заголовок текущей страницы — вынесен сюда из контента (PageHeader → топбар).
-                Ведущий эмодзи названия выносим в иконку-квадрат — как в макетах (.h-icon). */}
-            {(() => {
-              const raw = pageHead.title;
-              const s = typeof raw === 'string' ? raw : '';
-              const sp = s.indexOf(' ');
-              const head = sp > 0 ? s.slice(0, sp) : '';
-              const isEmoji = head && !/[\p{L}\p{N}]/u.test(head);
-              const ico = isEmoji ? head : null;
-              const name = isEmoji ? s.slice(sp + 1) : raw;
-              if (!raw) return <div style={{ minWidth: 0, flex: 1 }} />;
-              return (
-                <div className="o-topbar-head">
-                  {ico && <div className="o-topbar-ico">{ico}</div>}
-                  <div className="o-topbar-copy">
-                    <div className="o-topbar-title">{name}</div>
-                    {pageHead.sub && <div className="o-topbar-sub" title={typeof pageHead.sub === 'string' ? pageHead.sub : undefined}>{pageHead.sub}</div>}
-                  </div>
+                Эмодзи вычищаются в PageHeader (ui.jsx) — здесь чистый текст. */}
+            {pageHead.title ? (
+              <div className="o-topbar-head">
+                <div className="o-topbar-copy">
+                  <div className="o-topbar-title">{pageHead.title}</div>
+                  {pageHead.sub && <div className="o-topbar-sub" title={typeof pageHead.sub === 'string' ? pageHead.sub : undefined}>{pageHead.sub}</div>}
                 </div>
-              );
-            })()}
+              </div>
+            ) : <div style={{ minWidth: 0, flex: 1 }} />}
 
             {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
 
@@ -244,7 +221,7 @@ export default function OwnerShell() {
               <BranchPicker branches={branches} value={branchId} onChange={setBranchId} tt={tt} />
             ) : (
               <div className="o-branch-pick" title={tt('Менеджер видит только свой филиал')}>
-                🏭 {currentBranchName}
+                {currentBranchName}
               </div>
             )}
 
@@ -272,19 +249,19 @@ export default function OwnerShell() {
                           {user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user?.username}
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--text3)' }}>{roleLabel}{user?.username ? ` · @${user.username}` : ''}</div>
-                        {user?.company_name && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>🏢 {user.company_name}{role === 'manager' && user?.branch_name ? ` · ${user.branch_name}` : ''}</div>}
+                        {user?.company_name && <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{user.company_name}{role === 'manager' && user?.branch_name ? ` · ${user.branch_name}` : ''}</div>}
                       </div>
                     </div>
                     {/* пункты */}
                     {sections.some(s => s.id === 'settings') && (
-                      <button onClick={() => { setUserMenuOpen(false); navigate('/owner/settings'); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 700, color: 'var(--text1, #1D2440)', textAlign: 'left' }}
-                        onMouseEnter={e => e.currentTarget.style.background = '#F4F7FE'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-                        <span style={{ fontSize: 16 }}>⚙️</span> {tt('Настройки')}
+                      <button onClick={() => { setUserMenuOpen(false); navigate('/owner/settings'); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 600, color: 'var(--text)', textAlign: 'left' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
+                        {tt('Настройки')}
                       </button>
                     )}
-                    <button onClick={() => { setUserMenuOpen(false); logout(); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', borderTop: '1px solid var(--line, #E9EEF6)', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 700, color: '#dc2626', textAlign: 'left' }}
+                    <button onClick={() => { setUserMenuOpen(false); logout(); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', borderTop: '1px solid var(--border)', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 600, color: '#dc2626', textAlign: 'left' }}
                       onMouseEnter={e => e.currentTarget.style.background = '#FFF1F1'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-                      <span style={{ fontSize: 16 }}>🚪</span> {tt('Выйти')}
+                      {tt('Выйти')}
                     </button>
                   </div>
                 </>
@@ -331,7 +308,7 @@ function PeriodFilter({ period, setPeriod, customFrom, customTo, setCustomRange,
     <div ref={ref} style={{ position: 'relative' }}>
       <button type="button" onClick={() => setOpen(o => !o)} className="o-branch-pick"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-        📅 {periodLabel} <span style={{ opacity: .6 }}>▾</span>
+        {periodLabel} <span style={{ opacity: .6 }}>▾</span>
       </button>
       {open && (
         <div style={{
@@ -379,10 +356,10 @@ function BranchPicker({ branches, value, onChange, tt }) {
   }, []);
 
   const current = value == null
-    ? { icon: '🌐', label: tt('Все филиалы'), sub: branches.length ? `${branches.length} ${tt('Филиал').toLowerCase()}` : null }
+    ? { label: tt('Все филиалы'), sub: branches.length ? `${branches.length} ${tt('Филиал').toLowerCase()}` : null }
     : (() => {
         const b = branches.find(x => x.id === value);
-        return { icon: '🏭', label: b?.name || '...', sub: tt('Один филиал') };
+        return { label: b?.name || '...', sub: tt('Один филиал') };
       })();
 
   return (
@@ -393,27 +370,24 @@ function BranchPicker({ branches, value, onChange, tt }) {
         onClick={() => setOpen(o => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        style={{ minWidth: 180, display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between' }}
+        style={{ minWidth: 160, display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between' }}
       >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <span style={{ fontSize: 16 }}>{current.icon}</span>
-          <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
-            <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{current.label}</span>
-            {current.sub && <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600 }}>{current.sub}</span>}
-          </span>
+        <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{current.label}</span>
+          {current.sub && <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 500 }}>{current.sub}</span>}
         </span>
         <span style={{ color: 'var(--text3)', fontSize: 11, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
       </button>
       {open && (
         <div role="listbox" style={{
           position: 'absolute', top: 'calc(100% + 6px)', right: 0,
-          background: '#fff', border: '1px solid var(--border)', borderRadius: 12,
-          boxShadow: '0 12px 32px rgba(26,27,46,.12), 0 4px 8px rgba(26,27,46,.06)',
+          background: '#fff', border: '1px solid var(--border)', borderRadius: 10,
+          boxShadow: '0 12px 32px rgba(26,27,46,.10), 0 4px 8px rgba(26,27,46,.05)',
           zIndex: 200, minWidth: 220, padding: 4, maxHeight: 360, overflowY: 'auto',
         }}>
           <BranchOption
             active={value == null}
-            icon="🌐" title={tt('Все филиалы')}
+            title={tt('Все филиалы')}
             sub={tt('Сводка по всей компании')}
             onClick={() => { onChange(null); setOpen(false); }}
           />
@@ -423,7 +397,7 @@ function BranchPicker({ branches, value, onChange, tt }) {
             : branches.map(b => (
               <BranchOption key={b.id}
                 active={value === b.id}
-                icon="🏭" title={b.name}
+                title={b.name}
                 sub={tt('Только этот филиал')}
                 onClick={() => { onChange(b.id); setOpen(false); }}
               />
@@ -434,7 +408,7 @@ function BranchPicker({ branches, value, onChange, tt }) {
   );
 }
 
-function BranchOption({ active, icon, title, sub, onClick }) {
+function BranchOption({ active, title, sub, onClick }) {
   return (
     <div
       role="option"
@@ -444,19 +418,18 @@ function BranchOption({ active, icon, title, sub, onClick }) {
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
-        padding: '9px 12px', cursor: 'pointer', borderRadius: 8,
+        padding: '9px 12px', cursor: 'pointer', borderRadius: 7,
         background: active ? 'var(--primary-50)' : 'transparent',
         outline: 'none',
       }}
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--bg-2)'; }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
     >
-      <span style={{ fontSize: 17 }}>{icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>{title}</div>
-        <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>{sub}</div>
+        <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text)' }}>{title}</div>
+        <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 500 }}>{sub}</div>
       </div>
-      {active && <span style={{ color: 'var(--primary)', fontWeight: 800 }}>✓</span>}
+      {active && <span style={{ color: 'var(--primary)', fontWeight: 700 }}>✓</span>}
     </div>
   );
 }

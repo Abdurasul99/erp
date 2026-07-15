@@ -5,18 +5,29 @@ import { PageHeaderContext } from './PageHeaderContext.js';
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
 
+// ═══ Минимализм: эмодзи убраны из интерфейса ЦЕНТРАЛЬНО ═══
+// Инструменты (60+ файлов) исторически передают эмодзи в title/label/icon —
+// вместо правки каждого файла все примитивы (Tile/Card/PageHeader/Badge/Pills)
+// прогоняют строки через stripEmoji. icon-пропсы принимаются, но не рендерятся.
+export const stripEmoji = (s) => {
+  if (typeof s !== 'string') return s;
+  const out = s.replace(/[\p{Extended_Pictographic}️‍⃣]/gu, '').replace(/\s{2,}/g, ' ').trim();
+  // «· текст» / «: текст» после вырезанного эмодзи в начале — подчистить
+  return out.replace(/^[·:•\-–]\s*/, '');
+};
+
 export function Tile({ icon, label, value, sub, delta, color = 'var(--text)' }) {
   const { tt } = useTt();
   return (
     <div className="tile">
-      <div className="tile-label">{icon} {label}</div>
+      <div className="tile-label">{stripEmoji(label)}</div>
       <div className="tile-value" style={{ color }}>{value}</div>
       {delta != null && (
         <div className={'tile-delta ' + (delta >= 0 ? 'up' : 'down')}>
           {delta >= 0 ? '▲' : '▼'} {Math.abs(Math.round(delta))}% {tt('к прошлому периоду')}
         </div>
       )}
-      {sub && <div className="tile-sub">{sub}</div>}
+      {sub && <div className="tile-sub">{stripEmoji(sub)}</div>}
     </div>
   );
 }
@@ -26,8 +37,7 @@ export function Card({ icon, title, actions, children, style }) {
     <div className="card" style={style}>
       {(title || actions) && (
         <div className="card-header">
-          {icon && <span className="card-header-icon">{icon}</span>}
-          {title && <span>{title}</span>}
+          {title && <span>{stripEmoji(title)}</span>}
           {actions && <div className="card-header-actions">{actions}</div>}
         </div>
       )}
@@ -37,7 +47,7 @@ export function Card({ icon, title, actions, children, style }) {
 }
 
 export function Badge({ tone = 'blue', children }) {
-  return <span className={'badge badge-' + tone}>{children}</span>;
+  return <span className={'badge badge-' + tone}>{typeof children === 'string' ? stripEmoji(children) : children}</span>;
 }
 
 export function Bars({ data, max, color = '#2563EB' }) {
@@ -264,7 +274,8 @@ export function Progress({ value, max = 100, color = 'var(--primary)' }) {
 export function PageHeader({ title, sub, actions }) {
   const setHeader = React.useContext(PageHeaderContext);
   React.useEffect(() => {
-    setHeader({ title, sub, actions });
+    // Эмодзи из заголовков вычищаются здесь — единая точка для всех инструментов.
+    setHeader({ title: stripEmoji(title), sub: stripEmoji(sub), actions });
     return () => setHeader({ title: '', sub: null, actions: null });
     // actions намеренно не в deps (JSX — новый объект каждый рендер → цикл); ок для статичных actions
   }, [title, sub, setHeader]);
@@ -292,19 +303,18 @@ export function Pills({ value, onChange, options, label = 'Выбор' }) {
           className={'pill' + (o.value === value ? ' active' : '')}
           aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
-          onKeyDown={(e) => onKey(e, i)}>{o.label}</button>
+          onKeyDown={(e) => onKey(e, i)}>{stripEmoji(o.label)}</button>
       ))}
     </div>
   );
 }
 
-export function ComingSoon({ icon = '🚧', title = 'В разработке', children }) {
+export function ComingSoon({ title = 'В разработке', children }) {
   const { tt } = useTt();
   return (
     <div className="card">
       <div className="coming-soon">
-        <div className="coming-soon-icon">{icon}</div>
-        <div className="coming-soon-title">{tt(title)}</div>
+        <div className="coming-soon-title">{stripEmoji(tt(title))}</div>
         <div style={{ maxWidth: 480 }}>{children}</div>
       </div>
     </div>
@@ -331,12 +341,11 @@ export function SkeletonCard({ lines = 3 }) {
   );
 }
 
-export function EmptyState({ icon = '📭', title, description, action }) {
+export function EmptyState({ icon, title, description, action }) {
   return (
     <div className="empty-state">
-      <div className="empty-state-icon">{icon}</div>
-      <div className="empty-state-title">{title}</div>
-      {description && <div className="empty-state-desc">{description}</div>}
+      <div className="empty-state-title">{stripEmoji(title)}</div>
+      {description && <div className="empty-state-desc">{stripEmoji(description)}</div>}
       {action}
     </div>
   );
@@ -364,15 +373,8 @@ export function FeatureGrid({ items }) {
     <div className="grid-3">
       {items.map((f, i) => (
         <div key={i} className="card" style={{ padding: '18px 20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-            <div style={{
-              width: 38, height: 38, borderRadius: 10,
-              background: 'rgba(29,78,216,.10)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', fontSize: 18,
-            }}>{f.icon}</div>
-            <div style={{ fontWeight: 800, fontSize: 14 }}>{f.title}</div>
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.5 }}>{f.desc}</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>{stripEmoji(f.title)}</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.5 }}>{stripEmoji(f.desc)}</div>
           {f.metric && (
             <div style={{ marginTop: 10, fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 800, color: 'var(--primary)' }}>
               {f.metric}

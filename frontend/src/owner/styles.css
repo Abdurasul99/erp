@@ -1,93 +1,104 @@
-/* Owner-shell scoped styles — additive to root styles.css (same design tokens).
-   The shell occupies the full viewport when active.  Scoped to .owner-shell to
-   avoid leaking layout into other pages (Login, SellerView, Mobile). */
+/* Owner-shell scoped styles — минималистичный редизайн (Jira / Apple).
+   Принципы: светлый сайдбар, hairline-границы, никаких градиентов и теней-свечений,
+   никаких эмодзи-иконок, сдержанная типографика (Inter), один акцентный синий.
+   Scoped to .owner-shell to avoid leaking into Login/SellerView/Mobile. */
 
 .owner-shell {
-  --sidebar-w: 250px;
-  --topbar-h: 60px;
+  --sidebar-w: 232px;
+  --topbar-h: 56px;
   --ai-w: 420px;
-  /* === Палитра «синий на белом». Scoped к .owner-shell — перекрывает токены :root
-     только для owner-инструментов, не трогая admin/seller/mobile.
-     Все 27 инструментов используют эти токены (var(--bg)/--surface/--text…) → мгновенный ре-тем. === */
-  --bg: #F7F8FA;
-  --bg-2: #EFF1F4;
+  /* === Палитра: нейтральный светлый, один акцент. Перекрывает :root токены
+     только внутри owner-shell. Все инструменты используют var(--bg)/--surface/--text… === */
+  --bg: #FAFBFC;
+  --bg-2: #F1F2F4;
   --surface: #FFFFFF;
-  --border: #EBECF0;
-  --border-strong: #DCDEE4;
-  --text: #16181D;
-  --text2: #5A616E;
-  --text3: #98A0AD;
+  --border: #E4E6EA;
+  --border-strong: #D5D8DE;
+  --text: #1D2129;
+  --text2: #57606B;
+  --text3: #8A93A0;
   --primary: #2563EB;
   --primary-dark: #1D4ED8;
-  --primary-50: #F2F5FA;
+  --primary-50: #EFF4FF;
   --orange: #2563EB;
   --orange-light: #60A5FA;
   --green: #16A34A;
   --red: #DC2626;
-  --yellow: #D97706;
+  --yellow: #B45309;
   --info: #1D4ED8;
+  --shadow-sm: 0 1px 2px rgba(9, 30, 66, .05);
+  --shadow: 0 1px 2px rgba(9, 30, 66, .05);
+  --shadow-lg: 0 8px 24px rgba(9, 30, 66, .10);
+  --radius: 10px;
+  --radius-sm: 8px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   height: 100vh;
-  background:
-    radial-gradient(1100px 700px at 90% -10%, rgba(37,99,235,.05), transparent 60%),
-    var(--bg);
+  background: var(--bg);
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.owner-shell input, .owner-shell textarea, .owner-shell select, .owner-shell button {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
+/* ── Сайдбар: светлый, текстовый, как в Jira ── */
 .owner-shell .o-sidebar {
-  background: linear-gradient(180deg, #1E3A8A 0%, #172554 100%);
-  color: #fff;
-  padding: 16px 10px;
+  background: #FCFCFD;
+  border-right: 1px solid var(--border);
+  color: var(--text2);
+  padding: 14px 10px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 .owner-shell .o-brand {
   display: flex; align-items: center; gap: 10px;
-  padding: 6px 10px 16px;
-  border-bottom: 1px solid rgba(255,255,255,.08);
+  padding: 4px 8px 14px;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 10px;
   cursor: pointer;
 }
 .owner-shell .o-brand-ico {
-  width: 38px; height: 38px; border-radius: 11px;
-  background: linear-gradient(135deg, #2563EB, #1D4ED8);
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--text);
+  color: #fff;
   display: flex; align-items: center; justify-content: center;
-  font-size: 19px;
-  box-shadow: 0 4px 12px rgba(37,99,235,.35);
+  font-size: 15px; font-weight: 700;
+  flex-shrink: 0;
 }
-.owner-shell .o-brand-name { font-weight: 900; font-size: 16px; letter-spacing: -0.3px; }
-.owner-shell .o-brand-sub  { font-size: 10px; color: rgba(255,255,255,.5); font-weight: 700; letter-spacing: .6px; text-transform: uppercase; margin-top: 1px; }
+.owner-shell .o-brand-name { font-weight: 700; font-size: 14px; letter-spacing: -0.2px; color: var(--text); }
+.owner-shell .o-brand-sub  { font-size: 10px; color: var(--text3); font-weight: 600; letter-spacing: .5px; text-transform: uppercase; margin-top: 1px; }
 
 .owner-shell .o-link {
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; border-radius: 10px;
-  color: rgba(255,255,255,.78);
-  text-decoration: none; font-size: 13px; font-weight: 600;
-  transition: all .15s var(--ease);
+  padding: 8px 12px; border-radius: 7px;
+  color: var(--text2);
+  text-decoration: none; font-size: 13.5px; font-weight: 500;
+  transition: background .12s ease, color .12s ease;
   cursor: pointer; user-select: none;
   background: none; border: none; text-align: left;
   font-family: inherit; width: 100%;
 }
-.owner-shell .o-link:hover { background: rgba(255,255,255,.06); color: #fff; }
+.owner-shell .o-link:hover { background: var(--bg-2); color: var(--text); }
 .owner-shell .o-link.active {
-  background: rgba(255,255,255,.16);
-  color: #fff; font-weight: 700;
-  box-shadow: inset 3px 0 0 #60A5FA;
+  background: var(--primary-50);
+  color: var(--primary-dark); font-weight: 600;
 }
-.owner-shell .o-link-ico { font-size: 15px; width: 22px; text-align: center; }
-.owner-shell .o-link-badge {
-  margin-left: auto; background: rgba(255,255,255,.18); color: #fff;
-  padding: 1px 7px; border-radius: 8px; font-size: 10px; font-weight: 800;
+.owner-shell .o-link-ai { color: var(--primary-dark); font-weight: 600; }
+.owner-shell .o-link-mono {
+  font-size: 11px; font-weight: 700; width: 22px; text-align: center;
+  letter-spacing: .3px; text-transform: uppercase; color: inherit;
 }
 .owner-shell .o-side-foot {
   margin-top: auto; padding: 12px 12px 4px;
-  border-top: 1px solid rgba(255,255,255,.08);
-  font-size: 11px; color: rgba(255,255,255,.6);
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text3);
   display: flex; align-items: center; gap: 8px;
 }
-.owner-shell .o-dot { width: 8px; height: 8px; border-radius: 50%; background: #22C55E; box-shadow: 0 0 6px #22C55E; }
+.owner-shell .o-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 
 .owner-shell .o-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .owner-shell .o-topbar {
@@ -102,243 +113,218 @@
   min-width: min(360px, 100%);
   flex: 1 1 360px;
 }
-.owner-shell .o-topbar-copy {
-  min-width: 0;
-}
+.owner-shell .o-topbar-copy { min-width: 0; }
 .owner-shell .o-topbar-actions {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   flex: 0 0 auto;
 }
-.owner-shell .o-topbar-ico {
-  width: 42px; height: 42px; border-radius: 12px; background: var(--bg-2);
-  display: flex; align-items: center; justify-content: center; font-size: 21px;
-  flex-shrink: 0; border: 1px solid var(--border);
-}
 .owner-shell .o-topbar-title {
-  font-size: 16px; font-weight: 800; color: var(--text); letter-spacing: -0.2px;
-  line-height: 1.18;
+  font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -0.2px;
+  line-height: 1.2;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 .owner-shell .o-topbar-sub {
-  font-size: 11px; color: var(--text3); font-weight: 600; margin-top: 2px;
+  font-size: 11.5px; color: var(--text3); font-weight: 400; margin-top: 2px;
   line-height: 1.35;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
 }
 .owner-shell .o-branch-pick {
   display: flex; align-items: center; gap: 6px;
-  background: var(--bg-2); padding: 6px 12px; border-radius: 10px;
-  font-size: 13px; font-weight: 700; color: var(--text);
+  background: var(--surface); padding: 6px 12px; border-radius: 8px;
+  font-size: 13px; font-weight: 500; color: var(--text);
   border: 1px solid var(--border); cursor: pointer;
 }
-.owner-shell .o-branch-pick:hover { border-color: var(--primary); }
+.owner-shell .o-branch-pick:hover { border-color: var(--border-strong); background: var(--bg); }
 .owner-shell .o-user {
   display: flex; align-items: center; gap: 10px;
-  padding: 6px 12px; border-radius: 20px;
-  background: var(--bg-2);
+  padding: 5px 10px; border-radius: 8px;
+  border: 1px solid transparent;
 }
+.owner-shell .o-user:hover { background: var(--bg-2); }
 .owner-shell .o-avatar {
-  width: 30px; height: 30px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary), var(--orange));
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--text);
   display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 800; font-size: 12px;
+  color: #fff; font-weight: 600; font-size: 11px;
 }
 .owner-shell .o-content {
   flex: 1; overflow-y: auto; padding: 22px;
 }
 
-/* Primitive cards / tiles. Scoped under .owner-shell so we don't collide
-   with the same class names used by older non-shell components. */
-.owner-shell .o-tile {
-  background: var(--surface);
-  border-radius: 16px; padding: 16px 18px;
-  border: 1px solid rgba(226,232,240,.85);
-  border-left-width: 1px;
-  box-shadow: var(--shadow);
-  transition: transform .2s var(--ease), box-shadow .2s var(--ease);
+/* ── Вкладки хабов (объединённые инструменты) — сегмент-контрол в стиле Apple ── */
+.owner-shell .hub-tabs {
+  display: inline-flex; flex-wrap: wrap; gap: 2px;
+  background: var(--bg-2); border-radius: 9px; padding: 3px;
+  margin-bottom: 16px;
 }
-.owner-shell .o-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-.owner-shell .o-tile-label { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
-.owner-shell .o-tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; line-height: 1.1; }
-.owner-shell .o-tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 600; }
-.owner-shell .o-tile-delta { font-size: 11px; font-weight: 800; margin-top: 4px; }
-.owner-shell .o-tile-delta.up { color: var(--green); }
-.owner-shell .o-tile-delta.down { color: var(--red); }
+.owner-shell .hub-tab {
+  padding: 7px 14px; border: none; background: transparent; border-radius: 7px;
+  cursor: pointer; font-weight: 500; font-size: 13px; color: var(--text2);
+  font-family: inherit; transition: background .12s ease, color .12s ease;
+  white-space: nowrap;
+}
+.owner-shell .hub-tab:hover { color: var(--text); }
+.owner-shell .hub-tab.active {
+  background: var(--surface); color: var(--text); font-weight: 600;
+  box-shadow: var(--shadow-sm); border: 1px solid var(--border);
+  padding: 6px 13px;
+}
 
-.owner-shell .o-card {
+/* ── Карточки / плитки: белые, hairline, без подъёма ── */
+.owner-shell .o-tile,
+.owner-shell .tile {
+  background: var(--surface);
+  border-radius: var(--radius); padding: 16px 18px;
+  border: 1px solid var(--border);
+  box-shadow: none;
+  transition: border-color .12s ease;
+}
+.owner-shell .o-tile:hover, .owner-shell .tile:hover { border-color: var(--border-strong); transform: none; box-shadow: none; }
+.owner-shell .o-tile-label, .owner-shell .tile-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+.owner-shell .o-tile-value, .owner-shell .tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 700; line-height: 1.1; }
+.owner-shell .o-tile-sub, .owner-shell .tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 500; }
+.owner-shell .o-tile-delta, .owner-shell .tile-delta { font-size: 11px; font-weight: 700; margin-top: 4px; }
+.owner-shell .o-tile-delta.up, .owner-shell .tile-delta.up { color: var(--green); }
+.owner-shell .o-tile-delta.down, .owner-shell .tile-delta.down { color: var(--red); }
+
+.owner-shell .o-card,
+.owner-shell .card {
   background: var(--surface);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: none;
   padding: 18px 22px;
-  border: 1px solid rgba(230, 232, 242, .6);
+  border: 1px solid var(--border);
 }
-.owner-shell .o-card-h {
+.owner-shell .o-card-h,
+.owner-shell .card-header {
   display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
-  font-weight: 800; font-size: 14px; color: var(--text);
+  font-weight: 600; font-size: 14px; color: var(--text);
 }
-.owner-shell .o-card-h-ico { font-size: 17px; }
-.owner-shell .o-card-h-actions { margin-left: auto; display: flex; gap: 6px; }
+.owner-shell .o-card-h-actions, .owner-shell .card-header-actions { margin-left: auto; display: flex; gap: 6px; }
 
 .owner-shell .o-pageh {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 18px; gap: 12px; flex-wrap: wrap;
 }
-.owner-shell .o-pageh-title { font-size: 22px; font-weight: 900; color: var(--text); letter-spacing: -0.3px; }
-.owner-shell .o-pageh-sub   { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 500; }
+.owner-shell .o-pageh-title, .owner-shell .page-title { font-size: 20px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
+.owner-shell .o-pageh-sub, .owner-shell .page-sub { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 400; }
+.owner-shell .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
 
-.owner-shell .o-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.owner-shell .o-grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
-.owner-shell .o-grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+.owner-shell .o-grid-2, .owner-shell .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.owner-shell .o-grid-3, .owner-shell .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.owner-shell .o-grid-4, .owner-shell .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
 
-.owner-shell .o-bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
-.owner-shell .o-bar  { flex: 1; background: linear-gradient(180deg, var(--primary), var(--primary-dark)); border-radius: 5px 5px 0 0; min-height: 4px; }
-.owner-shell .o-spark { width: 100%; height: 36px; }
+.owner-shell .o-bars, .owner-shell .bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
+.owner-shell .o-bar, .owner-shell .bars .bar { flex: 1; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 4px; }
+.owner-shell .o-spark, .owner-shell .sparkline { width: 100%; height: 36px; }
 
-.owner-shell .o-progress { height: 8px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
-.owner-shell .o-progress > div { height: 100%; background: linear-gradient(90deg, var(--primary), var(--orange)); border-radius: 6px; transition: width .3s ease; }
+.owner-shell .o-progress, .owner-shell .progress { height: 6px; background: var(--bg-2); border-radius: 4px; overflow: hidden; }
+.owner-shell .o-progress > div, .owner-shell .progress .progress-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width .3s ease; }
 
-.owner-shell .o-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 7px; font-size: 11px; font-weight: 700; }
-.owner-shell .o-badge.green  { background: #DCFCE7; color: #16A34A; }
-.owner-shell .o-badge.red    { background: #FEE2E2; color: #DC2626; }
-.owner-shell .o-badge.yellow { background: #FEF9C3; color: #92400E; }
-.owner-shell .o-badge.blue   { background: #DBEAFE; color: #1D4ED8; }
-.owner-shell .o-badge.purple { background: #EDE9FE; color: #7C3AED; }
-.owner-shell .o-badge.orange { background: #FFEDD5; color: #C2410C; }
-.owner-shell .o-badge.gray   { background: #F3F4F6; color: #6B7280; }
+/* Бейджи — приглушённые, маленький радиус (Jira lozenge) */
+.owner-shell .o-badge, .owner-shell .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+.owner-shell .o-badge.green,  .owner-shell .badge-green  { background: #E6F4EA; color: #166534; }
+.owner-shell .o-badge.red,    .owner-shell .badge-red    { background: #FDEBEB; color: #B91C1C; }
+.owner-shell .o-badge.yellow, .owner-shell .badge-yellow { background: #FDF3DC; color: #92400E; }
+.owner-shell .o-badge.blue,   .owner-shell .badge-blue   { background: #E8F0FE; color: #1D4ED8; }
+.owner-shell .badge-cyan   { background: #E0F5FA; color: #0E7490; }
+.owner-shell .o-badge.purple, .owner-shell .badge-purple { background: #F0EBFB; color: #6D28D9; }
+.owner-shell .o-badge.orange, .owner-shell .badge-orange { background: #FDEEDF; color: #C2410C; }
+.owner-shell .o-badge.gray,   .owner-shell .badge-gray   { background: #F1F2F4; color: #57606B; }
 
-.owner-shell .o-list { display: flex; flex-direction: column; }
-.owner-shell .o-li   { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(226,232,240,.85); }
-.owner-shell .o-li:last-child { border-bottom: none; }
-.owner-shell .o-li-title { font-weight: 700; font-size: 13px; color: var(--text); }
-.owner-shell .o-li-sub   { font-size: 12px; color: var(--text3); margin-top: 2px; }
+.owner-shell .o-list, .owner-shell .list { display: flex; flex-direction: column; }
+.owner-shell .o-li, .owner-shell .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.owner-shell .o-li:last-child, .owner-shell .list-item:last-child { border-bottom: none; }
+.owner-shell .o-li-title, .owner-shell .list-item-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.owner-shell .o-li-sub, .owner-shell .list-item-sub { font-size: 12px; color: var(--text3); margin-top: 2px; }
 
-.owner-shell .o-pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
-.owner-shell .o-pill  { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
-.owner-shell .o-pill.active { background: var(--primary); color: #FFFFFF; box-shadow: var(--shadow-sm); }
+/* Pills — сегмент-контрол как в macOS: активная белая с hairline */
+.owner-shell .o-pills, .owner-shell .pills { display: inline-flex; gap: 2px; background: var(--bg-2); padding: 3px; border-radius: 9px; }
+.owner-shell .o-pill, .owner-shell .pills .pill { padding: 6px 13px; border: 1px solid transparent; background: transparent; border-radius: 7px; cursor: pointer; font-weight: 500; font-size: 12.5px; color: var(--text2); font-family: inherit; }
+.owner-shell .o-pill.active, .owner-shell .pills .pill.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow-sm); border-color: var(--border); }
 
-.owner-shell .o-coming {
+.owner-shell .o-coming, .owner-shell .coming-soon {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 50px 20px; text-align: center; color: var(--text3);
 }
-.owner-shell .o-coming-ico { font-size: 44px; margin-bottom: 14px; }
-.owner-shell .o-coming-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+.owner-shell .o-coming-title, .owner-shell .coming-soon-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
 
+/* Карточки инструментов на странице раздела */
 .owner-shell .o-tool-card {
-  background: #fff; border-radius: 14px; padding: 18px 20px;
+  background: var(--surface); border-radius: var(--radius); padding: 16px 18px;
   cursor: pointer; border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  transition: all .2s var(--ease);
+  box-shadow: none;
+  transition: border-color .12s ease, background .12s ease;
 }
-.owner-shell .o-tool-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--primary); }
-.owner-shell .o-tool-ico {
-  width: 46px; height: 46px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px; margin-bottom: 12px;
-}
-.owner-shell .o-tool-title { font-weight: 800; font-size: 15px; margin-bottom: 4px; color: var(--text); }
-.owner-shell .o-tool-desc  { font-size: 12.5px; color: var(--text2); line-height: 1.5; }
-.owner-shell .o-tool-cta   { margin-top: 10px; font-size: 12px; font-weight: 700; }
+.owner-shell .o-tool-card:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--border-strong); }
+.owner-shell .o-tool-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; color: var(--text); }
+.owner-shell .o-tool-desc  { font-size: 12.5px; color: var(--text2); line-height: 1.5; font-weight: 400; }
+.owner-shell .o-tool-cta   { margin-top: 12px; font-size: 12px; font-weight: 500; }
 
-.owner-shell .o-section-hero {
-  border-radius: 16px; padding: 24px 28px; margin-bottom: 22px; color: #fff;
-}
-.owner-shell .o-section-hero-eyebrow { font-size: 11px; font-weight: 800; opacity: .8; text-transform: uppercase; letter-spacing: .6px; }
-.owner-shell .o-section-hero-title   { font-size: 26px; font-weight: 900; margin-top: 4px; letter-spacing: -0.5px; }
-.owner-shell .o-section-hero-desc    { font-size: 14px; opacity: .85; margin-top: 6px; max-width: 600px; }
+/* Заголовок раздела — плоский, без градиентного блока */
+.owner-shell .o-section-head { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.owner-shell .o-section-head-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.4px; }
+.owner-shell .o-section-head-desc  { font-size: 13.5px; color: var(--text2); margin-top: 5px; max-width: 640px; font-weight: 400; }
+.owner-shell .o-section-head-meta  { margin-top: 10px; font-size: 12px; color: var(--text3); display: flex; gap: 16px; }
 
-/* Таблицы как в макетах: бежевый заголовок (#EDE8DC=var(--bg-2)), uppercase, тёплые
-   разделители. Покрываем И .o-card, И голые <table> внутри .card (как в owner-tools). */
+/* Таблицы: тихий заголовок без заливки, hairline-разделители */
 .owner-shell .o-card table, .owner-shell .card table { width: 100%; border-collapse: collapse; }
 .owner-shell .o-card thead th,
 .owner-shell .card thead th {
-  background: var(--bg-2); padding: 9px 13px; text-align: left;
-  font-size: 11px; font-weight: 700; color: var(--text2);
+  background: transparent; padding: 8px 13px; text-align: left;
+  font-size: 11px; font-weight: 600; color: var(--text3);
   text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 1px solid var(--border);
 }
-.owner-shell .o-card thead th:first-child,
-.owner-shell .card thead th:first-child { border-radius: 8px 0 0 8px; }
-.owner-shell .o-card thead th:last-child,
-.owner-shell .card thead th:last-child { border-radius: 0 8px 8px 0; }
 .owner-shell .o-card tbody td,
 .owner-shell .card tbody td { padding: 10px 13px; font-size: 13px; border-bottom: 1px solid var(--bg-2); vertical-align: middle; }
 .owner-shell .o-card tbody tr:last-child td,
 .owner-shell .card tbody tr:last-child td { border-bottom: none; }
 .owner-shell .o-card tbody tr:hover,
-.owner-shell .card tbody tr:hover { background: rgba(37,99,235,.05); }
+.owner-shell .card tbody tr:hover { background: var(--bg); }
 
-/* Prototype-compatible class aliases — let us copy 47 prototype tools verbatim.
-   These selectors only apply inside .owner-shell, so live wareapp pages outside the shell stay unaffected. */
-.owner-shell .tile { background: var(--surface); border-radius: 14px; padding: 16px 18px; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.owner-shell .tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-.owner-shell .tile-label { font-size: 11px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
-.owner-shell .tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 800; line-height: 1.1; }
-.owner-shell .tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 600; }
-.owner-shell .tile-delta { font-size: 11px; font-weight: 800; margin-top: 4px; }
-.owner-shell .tile-delta.up { color: var(--green); }
-.owner-shell .tile-delta.down { color: var(--red); }
-
-.owner-shell .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 800; font-size: 14px; color: var(--text); }
-.owner-shell .card-header-icon { font-size: 17px; }
-.owner-shell .card-header-actions { margin-left: auto; display: flex; gap: 6px; }
-
-.owner-shell .sparkline { width: 100%; height: 36px; }
-.owner-shell .bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
-.owner-shell .bars .bar { flex: 1; background: linear-gradient(180deg, var(--primary), var(--primary-dark)); border-radius: 5px 5px 0 0; min-height: 4px; }
-
-.owner-shell .progress { height: 8px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
-.owner-shell .progress .progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--orange)); border-radius: 6px; }
-
-.owner-shell .pills { display: flex; gap: 4px; background: var(--bg-2); padding: 4px; border-radius: 10px; }
-.owner-shell .pills .pill { padding: 7px 14px; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; color: var(--text2); font-family: inherit; }
-.owner-shell .pills .pill.active { background: var(--primary); color: #FFFFFF; box-shadow: var(--shadow-sm); }
-
-.owner-shell .list { display: flex; flex-direction: column; }
-.owner-shell .list-item { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid rgba(226,232,240,.85); }
-.owner-shell .list-item:last-child { border-bottom: none; }
-.owner-shell .list-item-title { font-weight: 700; font-size: 13px; color: var(--text); }
-.owner-shell .list-item-sub { font-size: 12px; color: var(--text3); margin-top: 2px; }
-
-.owner-shell .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
-.owner-shell .page-title { font-size: 22px; font-weight: 900; color: var(--text); letter-spacing: -0.3px; }
-.owner-shell .page-sub { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 500; }
-
-.owner-shell .section-title { font-size: 14px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin: 22px 0 12px; }
-
-.owner-shell .coming-soon { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 50px 20px; text-align: center; color: var(--text3); }
-.owner-shell .coming-soon-icon { font-size: 44px; margin-bottom: 14px; }
-.owner-shell .coming-soon-title { font-size: 17px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+.owner-shell .section-title { font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin: 22px 0 12px; }
 
 .owner-shell .flow { display: flex; gap: 10px; overflow-x: auto; padding: 4px 0; }
-.owner-shell .flow-step { min-width: 160px; padding: 14px; border-radius: 12px; background: var(--surface); border: 1.5px solid var(--border); position: relative; }
-.owner-shell .flow-step::after { content: '→'; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 18px; font-weight: 700; }
+.owner-shell .flow-step { min-width: 160px; padding: 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); position: relative; }
+.owner-shell .flow-step::after { content: '→'; position: absolute; right: -16px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 16px; font-weight: 500; }
 .owner-shell .flow-step:last-child::after { content: ''; }
 
-/* Кастомный тултип для колонок чартов — вместо уродливого нативного title.
-   Использование: <div class="chart-col" data-tip="27.05 · 4 000 сум">…бар…</div>
-   Тёмный чип над колонкой + стрелка. Поддерживает многострочность (\n в data-tip). */
+/* Кнопки внутри шелла — плоские, без «подпрыгивания» и цветных теней */
+.owner-shell .btn { border-radius: 8px; box-shadow: none; font-weight: 600; }
+.owner-shell .btn:hover { transform: none; }
+.owner-shell .btn-primary { background: var(--primary); box-shadow: none; }
+.owner-shell .btn-primary:hover { background: var(--primary-dark); box-shadow: none; }
+.owner-shell .btn-ghost { background: var(--surface); border: 1px solid var(--border); color: var(--text2); }
+.owner-shell .btn-ghost:hover { background: var(--bg); border-color: var(--border-strong); color: var(--text); }
+.owner-shell .btn-danger, .owner-shell .btn-success, .owner-shell .btn-orange { box-shadow: none; }
+
+/* Кастомный тултип для колонок чартов — вместо нативного title.
+   Использование: <div class="chart-col" data-tip="27.05 · 4 000 сум">…бар…</div> */
 .owner-shell .chart-col { position: relative; cursor: default; }
-.owner-shell .chart-col:hover { background: rgba(127,127,127,.08); border-radius: 6px; }
+.owner-shell .chart-col:hover { background: rgba(127,127,127,.07); border-radius: 6px; }
 .owner-shell .chart-col::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%) translateY(4px);
-  background: #1E293B;
+  background: #1D2129;
   color: #fff;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
   line-height: 1.5;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 7px;
   white-space: pre;
-  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  box-shadow: 0 8px 24px rgba(0,0,0,.24);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -352,7 +338,7 @@
   left: 50%;
   transform: translateX(-50%);
   border: 5px solid transparent;
-  border-top-color: #1E293B;
+  border-top-color: #1D2129;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -361,36 +347,21 @@
 }
 .owner-shell .chart-col:hover::after { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
 .owner-shell .chart-col:hover::before { opacity: 1; visibility: visible; }
-/* Крайние колонки — прижимаем чип к краю, чтобы не обрезался картой */
 .owner-shell .chart-col:first-child::after { left: 0; transform: translateX(0) translateY(4px); }
 .owner-shell .chart-col:first-child:hover::after { transform: translateX(0) translateY(0); }
 .owner-shell .chart-col:last-child::after { left: auto; right: 0; transform: translateX(0) translateY(4px); }
 .owner-shell .chart-col:last-child:hover::after { transform: translateX(0) translateY(0); }
 
-/* Badge (новый компонент ui.jsx использует .badge + .badge-<tone>).
-   Базовый .badge + tone-варианты green/red/blue/yellow раньше отсутствовали —
-   бейджи этих цветов рендерились без оформления (без фона, без формы-пилюли). */
-.owner-shell .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 7px; font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; }
-.owner-shell .badge-green  { background: #DCFCE7; color: #16A34A; }
-.owner-shell .badge-red    { background: #FEE2E2; color: #DC2626; }
-.owner-shell .badge-yellow { background: #FEF9C3; color: #92400E; }
-.owner-shell .badge-blue   { background: #DBEAFE; color: #1D4ED8; }
-.owner-shell .badge-cyan   { background: #CFFAFE; color: #0E7490; }
-.owner-shell .badge-purple { background: #EDE9FE; color: #7C3AED; }
-.owner-shell .badge-orange { background: #FFEDD5; color: #C2410C; }
-.owner-shell .badge-gray   { background: #F3F4F6; color: #6B7280; }
-
-/* Collapsed sidebar — narrow rail with icons only.
-   Toggled via the button at the bottom; persisted to localStorage. */
-.owner-shell.collapsed { grid-template-columns: 64px 1fr; }
+/* Collapsed sidebar — narrow rail. */
+.owner-shell.collapsed { grid-template-columns: 60px 1fr; }
 
 /* AI-чат «Tezkor chat» как СПЛИТ — третья колонка справа (контент сжимается, без оверлея). */
 .owner-shell.ai-open { grid-template-columns: var(--sidebar-w) 1fr var(--ai-w); }
-.owner-shell.collapsed.ai-open { grid-template-columns: 64px 1fr var(--ai-w); }
+.owner-shell.collapsed.ai-open { grid-template-columns: 60px 1fr var(--ai-w); }
 @media (max-width: 1100px) { .owner-shell { --ai-w: 360px; } }
-.owner-shell.collapsed .o-link { justify-content: center; padding: 11px 6px; }
-.owner-shell.collapsed .o-brand { padding: 6px 4px 14px; justify-content: center; }
-.owner-shell.collapsed .o-brand-ico { width: 36px; height: 36px; }
+.owner-shell.collapsed .o-link { justify-content: center; padding: 10px 6px; }
+.owner-shell.collapsed .o-brand { padding: 4px 2px 12px; justify-content: center; }
+.owner-shell.collapsed .o-brand-ico { width: 32px; height: 32px; }
 
 /* Dashboard hero row — on narrow screens collapses to a single column */
 @media (max-width: 900px) {
@@ -398,18 +369,18 @@
 }
 
 @media (max-width: 1100px) {
-  .owner-shell { grid-template-columns: 70px 1fr; }
+  .owner-shell { grid-template-columns: 60px 1fr; }
   .owner-shell .o-topbar { padding: 8px 14px; gap: 8px; }
   .owner-shell .o-topbar-head { min-width: min(300px, 100%); flex-basis: 300px; }
-  .owner-shell .o-link span:not(.o-link-ico) { display: none; }
-  .owner-shell .o-link-badge { display: none; }
+  .owner-shell .o-link span:not(.o-link-mono) { display: none; }
   .owner-shell .o-brand-name, .owner-shell .o-brand-sub { display: none; }
-  .owner-shell .o-link { justify-content: center; padding: 12px; }
-  .owner-shell .o-grid-4 { grid-template-columns: repeat(2, 1fr); }
-  .owner-shell .o-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .owner-shell .o-link { justify-content: center; padding: 10px; }
+  .owner-shell .o-grid-4, .owner-shell .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .owner-shell .o-grid-3, .owner-shell .grid-3 { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 700px) {
-  .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4 { grid-template-columns: 1fr; }
+  .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4,
+  .owner-shell .grid-2, .owner-shell .grid-3, .owner-shell .grid-4 { grid-template-columns: 1fr; }
   .owner-shell .o-topbar-head { flex-basis: 100%; }
   .owner-shell .o-content { padding: 14px; }
 }
