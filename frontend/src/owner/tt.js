@@ -2581,6 +2581,13 @@ export const OWNER_UZ = {
   'Логотип сохранён': 'Logotip saqlandi',
   'Логотип удалён': "Logotip o'chirildi",
   'Файл больше 2 МБ — выберите меньший': 'Fayl 2 MB dan katta — kichikroq tanlang',
+  // Окно «Виджеты панели»
+  'Включено': 'Yoqilgan',
+  'сохраняется на этом устройстве': 'shu qurilmada saqlanadi',
+  'Включить все': 'Hammasini yoqish',
+  'Выключить все': "Hammasini o'chirish",
+  'Готово': 'Tayyor',
+  'Закрыть': 'Yopish',
   'Рейтинг': 'Reyting',
   'Расход': 'Chiqim',
   'История': 'Tarix',

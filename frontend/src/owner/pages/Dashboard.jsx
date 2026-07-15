@@ -4,6 +4,7 @@ import api from '../../api.js';
 import { AuthContext } from '../../App.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { DASH_WIDGETS, DASH_DEFAULT } from '../modules.js';
+import { Icon, WIDGET_ICON } from '../icons.jsx';
 import { Tile, Card, Badge, AreaChart, BarChart, Sparkline, Progress, PageHeader, Pills, Skeleton, EmptyState, fmtMoney, fmtNum, fmtMoneyFull, fmtSum, todayLabel, shade } from '../ui.jsx';
 import { RichText } from '../AiChartBlock.jsx';
 import { Modal, toast } from '../Modal.jsx';
@@ -844,7 +845,7 @@ export default function Dashboard() {
       <PageHeader
         title={tt('Главная панель')}
         sub={`${scopeLabel} · ${todayLabel(lang)}`}
-        actions={<button className="btn btn-ghost btn-sm" onClick={() => setShowWidgets(true)}>🎛️ {tt('Виджеты')}</button>}
+        actions={<button className="btn btn-ghost btn-sm" onClick={() => setShowWidgets(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><Icon name="layout" size={15} /> {tt('Виджеты')}</button>}
       />
 
       {error && (
@@ -1205,30 +1206,65 @@ export default function Dashboard() {
         </>
       )}
 
-      {showWidgets && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }} onClick={() => setShowWidgets(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', borderRadius: 16, padding: 24, maxWidth: 460, width: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <div style={{ fontWeight: 800, fontSize: 18 }}>🎛️ {tt('Виджеты панели')}</div>
-              <button onClick={() => setShowWidgets(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: 'var(--text3)' }}>×</button>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 14 }}>{tt('Выбери, что показывать на Главной. Сохраняется на этом устройстве.')}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {DASH_WIDGETS.filter(wg => !companyOffWidgets.has(wg.id)).map(wg => {
-                const on = widgets.has(wg.id);
-                return (
-                  <button key={wg.id} onClick={() => toggleWidget(wg.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, cursor: 'pointer', textAlign: 'left', border: '1.5px solid ' + (on ? 'var(--primary)' : 'var(--border)'), background: on ? 'var(--primary-50)' : 'var(--bg-2)' }}>
-                    <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: on ? 'var(--text)' : 'var(--text3)' }}>{tt(wg.label)}</span>
-                    <span style={{ width: 36, height: 20, borderRadius: 20, background: on ? 'var(--primary)' : '#CBD5E1', position: 'relative', flexShrink: 0 }}>
-                      <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: '50%', background: 'var(--surface)', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
-                    </span>
-                  </button>
-                );
-              })}
+      {showWidgets && (() => {
+        const visibleW = DASH_WIDGETS.filter(wg => !companyOffWidgets.has(wg.id));
+        const onCount = visibleW.filter(wg => widgets.has(wg.id)).length;
+        const setAll = (on) => {
+          const n = new Set(widgets);
+          for (const wg of visibleW) { on ? n.add(wg.id) : n.delete(wg.id); }
+          setWidgets(n);
+          try { localStorage.setItem('dash_widgets', JSON.stringify([...n])); } catch {}
+        };
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(23,51,97,.30)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }} onClick={() => setShowWidgets(false)}>
+            <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', borderRadius: 14, maxWidth: 480, width: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 70px rgba(20,40,75,.25)', border: '1px solid var(--border)' }}>
+              {/* Шапка */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+                <span className="o-section-ico" style={{ width: 36, height: 36 }}><Icon name="layout" size={18} /></span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15.5, color: 'var(--text)' }}>{tt('Виджеты панели')}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 1 }}>{tt('Включено')} {onCount} {tt('из')} {visibleW.length} · {tt('сохраняется на этом устройстве')}</div>
+                </div>
+                <button onClick={() => setShowWidgets(false)} aria-label={tt('Закрыть')}
+                  style={{ background: 'var(--bg-2)', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--text2)', width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+              </div>
+              {/* Список виджетов */}
+              <div style={{ padding: '14px 20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {visibleW.map(wg => {
+                  const on = widgets.has(wg.id);
+                  return (
+                    <button key={wg.id} onClick={() => toggleWidget(wg.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', borderRadius: 10,
+                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+                        border: '1px solid ' + (on ? '#B9D2F5' : 'var(--border)'),
+                        background: on ? 'var(--primary-50)' : 'var(--surface)',
+                        transition: 'background .12s ease, border-color .12s ease',
+                      }}>
+                      <span style={{
+                        width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: on ? '#DCEAFB' : 'var(--bg-2)',
+                        color: on ? '#1E5AE8' : 'var(--text3)',
+                      }}><Icon name={WIDGET_ICON[wg.id] || 'layout'} size={16} /></span>
+                      <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: on ? 'var(--text)' : 'var(--text2)' }}>{tt(wg.label)}</span>
+                      <span style={{ width: 38, height: 22, borderRadius: 22, background: on ? '#1E5AE8' : '#C6D2E2', position: 'relative', flexShrink: 0, transition: 'background .15s' }}>
+                        <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left .15s', boxShadow: '0 1px 3px rgba(20,40,75,.3)' }} />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Футер: быстрые действия */}
+              <div style={{ display: 'flex', gap: 8, padding: '12px 20px', borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAll(true)}>{tt('Включить все')}</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAll(false)}>{tt('Выключить все')}</button>
+                <button className="btn btn-primary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setShowWidgets(false)}>{tt('Готово')}</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </>
   );
 }
