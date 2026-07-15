@@ -144,7 +144,7 @@ export default function ProfitabilityTool() {
                         value={form[k]}
                         onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
                         placeholder="0"
-                        style={{ width: '100%', marginTop: 4, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, fontFamily: "'JetBrains Mono', monospace" }}
+                        style={{ width: '100%', marginTop: 4, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8 }}
                       />
                     </label>
                   ))}

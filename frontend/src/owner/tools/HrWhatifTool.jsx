@@ -19,7 +19,7 @@ function NumInput({ value, onChange, suffix }) {
           flex: 1, minWidth: 0, padding: '9px 12px', borderRadius: 10,
           border: '1.5px solid var(--border, #E3EAF3)', background: 'var(--bg, #fff)',
           color: 'var(--text)', fontSize: 14, fontWeight: 700,
-          fontFamily: "'JetBrains Mono', monospace",
+          fontVariantNumeric: 'tabular-nums',
         }}
       />
       {suffix && <span style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>{suffix}</span>}

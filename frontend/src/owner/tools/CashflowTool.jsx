@@ -62,7 +62,7 @@ export default function CashflowTool() {
                 </div>
               ))}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--text3)' }}>
               <span>{byDay.length ? fmtDay(byDay[0].day) : ''}</span>
               <span>{byDay.length ? fmtDay(byDay[byDay.length - 1].day) : ''}</span>
             </div>

@@ -136,7 +136,9 @@ export default function OwnerShell() {
       <div className={'owner-shell' + (collapsed ? ' collapsed' : '') + (aiOpen && isOwner ? ' ai-open' : '')}>
         <aside className="o-sidebar">
           <div className="o-brand" onClick={() => navigate('/owner')}>
-            <div className="o-brand-ico">{(user?.company_name || 'W').slice(0, 1).toUpperCase()}</div>
+            {user?.company_logo_url
+              ? <img className="o-brand-logo" src={user.company_logo_url} alt="" />
+              : <div className="o-brand-ico">{(user?.company_name || 'W').slice(0, 1).toUpperCase()}</div>}
             {!collapsed && (
               <div>
                 <div className="o-brand-name">{user?.company_name || 'WareApp'}</div>

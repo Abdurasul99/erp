@@ -7060,10 +7060,11 @@ app.post('/api/auth/login', async (req, res) => {
     loginClearFails(ip, username);
     if (rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' });
     // Fetch company/branch names for display
-    let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [];
+    let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [], companyLogo = null;
     if (rows[0].company_id) {
-      const c = await pool.query("SELECT name, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [rows[0].company_id]);
+      const c = await pool.query("SELECT name, logo_url, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [rows[0].company_id]);
       companyName = c.rows[0]?.name || null;
+      companyLogo = c.rows[0]?.logo_url || null;
       companyDisabled = c.rows[0]?.disabled_tools || [];
       companyDisabledWidgets = c.rows[0]?.disabled_widgets || [];
     }
@@ -7078,6 +7079,7 @@ app.post('/api/auth/login', async (req, res) => {
       first_name: rows[0].first_name || null,
       last_name: rows[0].last_name || null,
       company_name: companyName, branch_name: branchName,
+      company_logo_url: companyLogo,
       company_disabled_tools: companyDisabled,
       company_disabled_widgets: companyDisabledWidgets,
     };
@@ -7101,14 +7103,14 @@ app.get('/api/auth/me', auth(), async (req, res) => {
     if (req.user.act_as) {
       const a = await pool.query('SELECT id, username, first_name, last_name, is_blocked FROM users WHERE id = $1', [req.user.imp_by || req.user.id]);
       if (!a.rows[0] || a.rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован' });
-      let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [];
-      if (req.user.company_id) { const c = await pool.query("SELECT name, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]); companyName = c.rows[0]?.name || null; companyDisabled = c.rows[0]?.disabled_tools || []; companyDisabledWidgets = c.rows[0]?.disabled_widgets || []; }
+      let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [], companyLogo = null;
+      if (req.user.company_id) { const c = await pool.query("SELECT name, logo_url, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]); companyName = c.rows[0]?.name || null; companyLogo = c.rows[0]?.logo_url || null; companyDisabled = c.rows[0]?.disabled_tools || []; companyDisabledWidgets = c.rows[0]?.disabled_widgets || []; }
       if (req.user.branch_id)  { const b = await pool.query('SELECT name FROM branches  WHERE id=$1', [req.user.branch_id]);  branchName  = b.rows[0]?.name || null; }
       return res.json({ user: {
         id: req.user.id, username: req.user.username, role: req.user.role,
         company_id: req.user.company_id || null, branch_id: req.user.branch_id || null,
         first_name: a.rows[0].first_name, last_name: a.rows[0].last_name,
-        company_name: companyName, branch_name: branchName,
+        company_name: companyName, branch_name: branchName, company_logo_url: companyLogo,
         blocked_tools: [], ai_enabled: true, company_disabled_tools: companyDisabled,
         company_disabled_widgets: companyDisabledWidgets,
         act_as: true, impersonator_name: req.user.imp_name || a.rows[0].username,
@@ -7119,7 +7121,7 @@ app.get('/api/auth/me', auth(), async (req, res) => {
               COALESCE(u.blocked_tools, '{}') AS blocked_tools, COALESCE(u.ai_enabled, true) AS ai_enabled,
               COALESCE(c.disabled_tools, '{}') AS company_disabled_tools,
               COALESCE(c.disabled_widgets, '{}') AS company_disabled_widgets,
-              c.name AS company_name, b.name AS branch_name
+              c.name AS company_name, c.logo_url AS company_logo_url, b.name AS branch_name
        FROM users u
        LEFT JOIN companies c ON u.company_id = c.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -7129,6 +7131,28 @@ app.get('/api/auth/me', auth(), async (req, res) => {
     if (!rows[0]) return res.status(401).json({ error: 'Пользователь не найден' });
     if (rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован' });
     res.json({ user: rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// === ЛОГОТИП КОМПАНИИ (учредитель) — показывается в сайдбаре панели ===
+// Переиспользуем общий multer-upload (валидация расширения/MIME, статика /uploads).
+app.post('/api/company/logo', auth(['founder']), (req, res) => {
+  upload.single('logo')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Файл не принят' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не передан' });
+    if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
+    try {
+      const url = `/uploads/${req.file.filename}`;
+      await pool.query('UPDATE companies SET logo_url=$1 WHERE id=$2', [url, req.user.company_id]);
+      res.json({ ok: true, logo_url: url });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+});
+app.delete('/api/company/logo', auth(['founder']), async (req, res) => {
+  try {
+    if (!req.user.company_id) return res.status(400).json({ error: 'Нет компании' });
+    await pool.query('UPDATE companies SET logo_url=NULL WHERE id=$1', [req.user.company_id]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -12506,6 +12530,7 @@ async function ensureSchema() {
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS goal_bhi INT`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS disabled_tools text[] DEFAULT '{}'`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS disabled_widgets text[] DEFAULT '{}'`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_url TEXT`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS hr_criteria jsonb DEFAULT '{}'::jsonb`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bhi_daily (

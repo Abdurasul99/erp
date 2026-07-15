@@ -83,7 +83,7 @@ export default function DefectsTool() {
 
           <Card icon="🎯" title={tt('Контроль нормы')} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 900, fontSize: 22, color: shareOk ? '#16A34A' : '#DC2626' }}>
+              <div style={{ fontWeight: 900, fontSize: 22, color: shareOk ? '#16A34A' : '#DC2626' }}>
                 {sharePct.toFixed(2)}%
               </div>
               <Badge tone={shareOk ? 'green' : 'red'}>{shareOk ? tt('в норме') : tt('превышение')}</Badge>

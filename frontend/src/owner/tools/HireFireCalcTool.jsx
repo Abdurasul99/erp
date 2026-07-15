@@ -42,7 +42,7 @@ function NumField({ label, value, onChange, suffix, step = 1, min = 0, hint }) {
           onChange={e => onChange(e.target.value === '' ? 0 : parseFloat(e.target.value))}
           style={{
             width: '100%', padding: '8px 10px', borderRadius: 8,
-            border: '1px solid var(--border, #E3EAF3)', fontFamily: "'JetBrains Mono', monospace",
+            border: '1px solid var(--border, #E3EAF3)',
             fontWeight: 700, fontSize: 13.5, background: 'var(--card, #fff)', color: 'var(--text)',
           }} />
         {suffix && <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{suffix}</span>}

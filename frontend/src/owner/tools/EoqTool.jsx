@@ -129,21 +129,21 @@ export default function EoqTool() {
                   {tt('Годовой спрос (шт/год)')}
                 </label>
                 <input type="number" min="0" value={wD} onChange={e => setWD(e.target.value)}
-                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)', fontFamily: "'JetBrains Mono', monospace" }} />
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
                   {tt('Стоимость заказа (сум)')}
                 </label>
                 <input type="number" min="0" value={wS} onChange={e => setWS(e.target.value)}
-                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)', fontFamily: "'JetBrains Mono', monospace" }} />
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
                   {tt('Стоимость хранения единицы в год (сум)')}
                 </label>
                 <input type="number" min="0" value={wH} onChange={e => setWH(e.target.value)}
-                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)', fontFamily: "'JetBrains Mono', monospace" }} />
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
             </div>
             <div className="grid-4">

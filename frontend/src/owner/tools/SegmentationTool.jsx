@@ -11,7 +11,7 @@ function RfmChips({ r, f, m }) {
   const chip = (letter, v) => (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 2,
-      fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5, fontWeight: 800,
+      fontSize: 10.5, fontWeight: 800,
       color: '#fff', background: scoreColor(v), borderRadius: 5, padding: '1px 5px',
     }}>{letter}{v}</span>
   );
@@ -157,7 +157,7 @@ export default function SegmentationTool() {
                 ['M', tt('Monetary — сумма покупок / год'), scoring.m]].map(([letter, title, items]) => (
                 <div key={letter}>
                   <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
-                    <span style={{ color: '#fff', background: 'var(--primary)', borderRadius: 6, padding: '1px 7px', fontFamily: "'JetBrains Mono', monospace" }}>{letter}</span> {title}
+                    <span style={{ color: '#fff', background: 'var(--primary)', borderRadius: 6, padding: '1px 7px' }}>{letter}</span> {title}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
                     {(items || []).map((it, i) => <div key={i}>• {it}</div>)}

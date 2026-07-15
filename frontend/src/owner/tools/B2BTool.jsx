@@ -41,7 +41,7 @@ export default function B2BTool() {
                   background: '#fff', padding: 12, borderRadius: 10, cursor: 'pointer',
                   border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)',
                 }}>
-                  <div style={{ fontSize: 10, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>{d.id}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>{d.id}</div>
                   <div style={{ fontWeight: 800, fontSize: 13, margin: '4px 0' }}>{d.client}</div>
                   <div className="mono" style={{ fontSize: 13, fontWeight: 800, color: 'var(--primary)' }}>{fmtMoneyFull(d.value)} UZS</div>
                   <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>👤 {d.owner}</div>

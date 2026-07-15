@@ -173,7 +173,7 @@ export default function StorePoliceTool() {
                       {a.status === 'resolved' && <Badge tone="green">{tt('Проверен')}</Badge>}
                       {a.status === 'ignored' && <Badge tone="gray">{tt('Скрыт')}</Badge>}
                       {a.est_loss > 0 && (
-                        <span style={{ marginLeft: 'auto', fontWeight: 800, color: 'var(--red, #DC2626)', fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>
+                        <span style={{ marginLeft: 'auto', fontWeight: 800, color: 'var(--red, #DC2626)', fontSize: 13 }}>
                           ≈ {fmtSum(a.est_loss)}
                         </span>
                       )}

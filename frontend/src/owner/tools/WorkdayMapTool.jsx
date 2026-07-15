@@ -133,7 +133,7 @@ export default function WorkdayMapTool() {
                         left: `${((h - DAY_START) / SPAN) * 100}%`,
                         transform: 'translateX(-50%)',
                         fontSize: 10, color: 'var(--text3)', fontWeight: 700,
-                        fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap',
+                        whiteSpace: 'nowrap',
                       }}>{hLabel(h)}</span>
                     ))}
                   </div>

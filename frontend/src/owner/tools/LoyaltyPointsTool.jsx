@@ -79,7 +79,7 @@ export default function LoyaltyPointsTool() {
                       <span style={{ fontSize: 24 }}>{m.icon}</span>
                       <div style={{ fontWeight: 800, fontSize: 15, color: m.color }}>{tt(m.label)}</div>
                     </div>
-                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 26, fontWeight: 900 }}>{fmtNum(t.members || 0)}</div>
+                    <div style={{ fontSize: 26, fontWeight: 900 }}>{fmtNum(t.members || 0)}</div>
                     <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 8 }}>{tt('участников')}</div>
                     <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
                       <div>{t.rate} {tt('балл на 1 000 сум')}</div>

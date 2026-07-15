@@ -37,7 +37,7 @@ function NumField({ label, value, onChange, suffix, min = 0, step = 1, placehold
           value={value} placeholder={placeholder}
           onChange={e => onChange(e.target.value)}
           className="input"
-          style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}
+          style={{ width: '100%', fontWeight: 700 }}
         />
         {suffix && <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{suffix}</span>}
       </span>

@@ -24,7 +24,7 @@ function NumField({ label, value, onChange, suffix, min, max, step }) {
           style={{
             flex: 1, minWidth: 0, padding: '9px 12px', fontSize: 14, fontWeight: 600,
             border: '1.5px solid var(--border, #E3EAF3)', borderRadius: 10,
-            fontFamily: "'JetBrains Mono', monospace", color: 'var(--text)', background: 'var(--bg)',
+            color: 'var(--text)', background: 'var(--bg)',
           }}
         />
         {suffix && <span style={{ fontSize: 12.5, color: 'var(--text3)', fontWeight: 700, whiteSpace: 'nowrap' }}>{tt(suffix)}</span>}

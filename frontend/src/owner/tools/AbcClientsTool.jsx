@@ -124,7 +124,7 @@ export default function AbcClientsTool() {
                     width: `${s.pct}%`, background: GRADE_META[s.grade].color,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     color: '#fff', fontWeight: 800, fontSize: 13,
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontVariantNumeric: 'tabular-nums',
                   }}>
                   {s.pct >= 7 ? `${s.grade} ${s.pct.toFixed(0)}%` : ''}
                 </div>

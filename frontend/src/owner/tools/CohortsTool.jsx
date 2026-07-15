@@ -145,7 +145,7 @@ export default function CohortsTool() {
                         const v = c.retention[n] != null ? parseFloat(c.retention[n]) : null;
                         return (
                           <td key={n} style={{
-                            textAlign: 'center', fontFamily: "'JetBrains Mono', monospace",
+                            textAlign: 'center',
                             fontSize: 11.5, fontWeight: 700,
                             background: retColor(v), color: v == null ? 'var(--text3)' : retText(v),
                             borderRadius: 4,

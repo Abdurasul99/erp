@@ -51,7 +51,7 @@ function Gauge({ score, label }) {
           style={{ transition: 'stroke-dasharray .5s ease, stroke .3s ease' }} />
       </svg>
       <div style={{ marginTop: -118, textAlign: 'center', pointerEvents: 'none' }}>
-        <div style={{ fontSize: 44, fontWeight: 800, color: col, lineHeight: 1, fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(val)}</div>
+        <div style={{ fontSize: 44, fontWeight: 800, color: col, lineHeight: 1 }}>{Math.round(val)}</div>
         <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .5, marginTop: 2 }}>{tt('из 100')}</div>
       </div>
       {label && <div style={{ marginTop: 80, fontWeight: 700, fontSize: 14 }}>{label}</div>}

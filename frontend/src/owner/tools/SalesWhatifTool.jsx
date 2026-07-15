@@ -22,7 +22,7 @@ function NumField({ label, value, onChange, suffix, step = 1 }) {
           style={{
             width: '100%', padding: '8px 10px', borderRadius: 8,
             border: '1px solid var(--border, #E3EAF3)', fontSize: 14, fontWeight: 700,
-            fontFamily: "'JetBrains Mono', monospace", background: 'var(--bg, #fff)', color: 'var(--text)',
+            background: 'var(--bg, #fff)', color: 'var(--text)',
           }}
         />
         {suffix && <span style={{ fontSize: 13, color: 'var(--text3)', fontWeight: 700 }}>{suffix}</span>}

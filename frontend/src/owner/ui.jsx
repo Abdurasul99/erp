@@ -105,7 +105,7 @@ export function AreaChart({ data, prevData, color = '#2563EB', prevColor = '#94A
           // Reserve space for the x-labels row only when labels are actually rendered,
           // otherwise the Y-axis ticks would float above the chart bottom.
           paddingBottom: (labels && labels.length > 0) ? 22 : 2,
-          fontSize: 9, fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 9,
           color: 'var(--text3)', fontWeight: 700, minWidth: 66, textAlign: 'right',
           height, whiteSpace: 'nowrap',
         }}>
@@ -133,7 +133,7 @@ export function AreaChart({ data, prevData, color = '#2563EB', prevColor = '#94A
           <path d={polyPath(data, false)} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
         </svg>
         {labels && labels.length > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--text3)', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>
             {labels.map((l, i) => <span key={i}>{l}</span>)}
           </div>
         )}
@@ -210,7 +210,7 @@ export function BarChart({ data, prevData, labels, color = '#1D4ED8', prevColor 
             <div key={i} style={{
               flex: 1, minWidth: 0, textAlign: 'center',
               fontSize: 10, color: 'var(--text3)', fontWeight: 700,
-              fontFamily: "'JetBrains Mono', monospace",
+              fontVariantNumeric: 'tabular-nums',
               overflow: 'visible', whiteSpace: 'nowrap',
             }}>
               {labelIdx.has(i) ? labels[i] : ''}
@@ -376,7 +376,7 @@ export function FeatureGrid({ items }) {
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>{stripEmoji(f.title)}</div>
           <div style={{ fontSize: 12.5, color: 'var(--text2)', lineHeight: 1.5 }}>{stripEmoji(f.desc)}</div>
           {f.metric && (
-            <div style={{ marginTop: 10, fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 800, color: 'var(--primary)' }}>
+            <div style={{ marginTop: 10, fontSize: 18, fontWeight: 800, color: 'var(--primary)' }}>
               {f.metric}
             </div>
           )}

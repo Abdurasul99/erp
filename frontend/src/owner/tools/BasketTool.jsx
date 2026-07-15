@@ -128,8 +128,8 @@ export default function BasketTool() {
                       <td style={{ fontWeight: 600, maxWidth: 180 }}>{p.name_b}</td>
                       <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNum(p.together_count)}</td>
                       <td className="mono" style={{ textAlign: 'right' }}>{p.support}%</td>
-                      <td style={{ textAlign: 'center', background: confColor(p.confidence_a_b), color: p.confidence_a_b >= 45 ? '#fff' : 'var(--text)', fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 700, borderRadius: 4 }}>{p.confidence_a_b}%</td>
-                      <td style={{ textAlign: 'center', background: confColor(p.confidence_b_a), color: p.confidence_b_a >= 45 ? '#fff' : 'var(--text)', fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 700, borderRadius: 4 }}>{p.confidence_b_a}%</td>
+                      <td style={{ textAlign: 'center', background: confColor(p.confidence_a_b), color: p.confidence_a_b >= 45 ? '#fff' : 'var(--text)', fontSize: 11.5, fontWeight: 700, borderRadius: 4 }}>{p.confidence_a_b}%</td>
+                      <td style={{ textAlign: 'center', background: confColor(p.confidence_b_a), color: p.confidence_b_a >= 45 ? '#fff' : 'var(--text)', fontSize: 11.5, fontWeight: 700, borderRadius: 4 }}>{p.confidence_b_a}%</td>
                       <td style={{ textAlign: 'right' }}><Badge tone={liftTone(p.lift)}>×{p.lift}</Badge></td>
                       <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(p.avg_basket_uzs)}</td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -185,7 +185,7 @@ export default function BasketTool() {
                 <tr key={i}>
                   <td style={{ fontWeight: 600 }}>{r.name}</td>
                   <td className="mono" style={{ textAlign: 'right' }}>{fmtMoney(r.price_sell)}</td>
-                  <td style={{ textAlign: 'center', background: confColor(r.confidence), color: r.confidence >= 45 ? '#fff' : 'var(--text)', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, borderRadius: 4 }}>{r.confidence}%</td>
+                  <td style={{ textAlign: 'center', background: confColor(r.confidence), color: r.confidence >= 45 ? '#fff' : 'var(--text)', fontWeight: 700, borderRadius: 4 }}>{r.confidence}%</td>
                   <td style={{ textAlign: 'right' }}><Badge tone={liftTone(r.lift)}>×{r.lift}</Badge></td>
                   <td className="mono" style={{ textAlign: 'right' }}>{fmtNum(r.together_count)}</td>
                 </tr>

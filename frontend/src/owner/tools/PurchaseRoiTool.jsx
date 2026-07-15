@@ -60,7 +60,7 @@ export default function PurchaseRoiTool() {
   const inputStyle = {
     width: '100%', padding: '8px 10px', borderRadius: 8,
     border: '1px solid var(--border, #E3EAF3)', fontSize: 13,
-    fontFamily: "'JetBrains Mono', monospace",
+    fontVariantNumeric: 'tabular-nums',
   };
 
   return (

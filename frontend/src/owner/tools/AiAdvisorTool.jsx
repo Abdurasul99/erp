@@ -83,7 +83,7 @@ export default function AiAdvisorTool() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <button className="btn btn-primary btn-sm" onClick={() => toast(tt('Применено!'))}>{tt('Применить')}</button>
                     <button className="btn btn-ghost btn-sm" onClick={() => toast(tt('Отложено'), 'info')}>{tt('Позже')}</button>
-                    <span style={{ marginLeft: 'auto', fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800, color: c }}>{tt(x.impact)}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 800, color: c }}>{tt(x.impact)}</span>
                   </div>
                 </div>
               </div>

@@ -168,7 +168,7 @@ export default function TrainingCoursesTool() {
                                   <div style={{ padding: '8px 4px', color: 'var(--text3)', fontSize: 13 }}>{tt('Уроков пока нет — добавьте первый.')}</div>
                                 ) : detail.lessons.map((l, i) => (
                                   <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 4px', borderBottom: '1px solid var(--border, #E3EAF3)' }}>
-                                    <div style={{ width: 24, color: 'var(--text3)', fontSize: 12, fontFamily: "'JetBrains Mono', monospace", textAlign: 'right' }}>{i + 1}.</div>
+                                    <div style={{ width: 24, color: 'var(--text3)', fontSize: 12, textAlign: 'right' }}>{i + 1}.</div>
                                     <div style={{ flex: 1 }}>
                                       <div style={{ fontWeight: 600, fontSize: 13 }}>{l.title}</div>
                                       {l.video_url && <a href={l.video_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: 'var(--primary)' }}>{tt('Видео')}</a>}
@@ -245,7 +245,7 @@ export default function TrainingCoursesTool() {
                           <td style={{ color: 'var(--text2)' }}>{e.position || '—'}</td>
                           <td>
                             <Progress value={e.passed} max={e.total || 1} color={done ? '#16A34A' : 'var(--primary)'} />
-                            <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3, fontFamily: "'JetBrains Mono', monospace" }}>
+                            <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>
                               {e.total > 0 ? `${Math.round((e.passed / e.total) * 100)}% (${fmtNum(e.passed)} ${tt('из')} ${fmtNum(e.total)})` : '—'}
                             </div>
                           </td>

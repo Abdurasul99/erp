@@ -24,6 +24,7 @@ import GenDirUsers from '../components/GenDirUsers.jsx';
 
 // Инструменты (по одному экрану на карточку)
 import PanelManagerTool from './tools/PanelManagerTool.jsx';
+import CompanyProfileTool from './tools/CompanyProfileTool.jsx';
 import FounderBoardTool from './tools/FounderBoardTool.jsx';
 import UnitEconomicsTool from './tools/UnitEconomicsTool.jsx';
 import SspTool from './tools/SspTool.jsx';
@@ -193,6 +194,7 @@ const RESOLVE = {
     feedback:        { Comp: FeedbackHub },
   },
   settings: {
+    'company-profile': { Comp: CompanyProfileTool },
     'panel-manager': { Comp: PanelManagerTool },
     integrations:  { Comp: IntegrationsTool },
     security:      { Comp: SecurityTool },

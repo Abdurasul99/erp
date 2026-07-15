@@ -64,7 +64,7 @@ function MethodBreakdown({ data, lightOnDark = false, unit = 'money', usdOrig = 
         return (
           <div key={m.key} style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 10.5,
             opacity: v > 0 ? 1 : 0.55,
           }}>
             <span style={{ color: labelColor, fontWeight: 700 }}>{tt(m.label)}</span>
@@ -146,7 +146,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
       </div>
       <div style={{ position: 'relative', paddingLeft: isOwner ? 54 : 8, paddingRight: 4 }}>
         {isOwner && grid.map((v, k) => (
-          <div key={k} style={{ position: 'absolute', left: 0, width: 48, textAlign: 'right', top: `${(yAt(v) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9.5, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace", pointerEvents: 'none' }}>{fmtMoney(v)}</div>
+          <div key={k} style={{ position: 'absolute', left: 0, width: 48, textAlign: 'right', top: `${(yAt(v) / H) * 100}%`, transform: 'translateY(-50%)', fontSize: 9.5, color: 'var(--text3)', pointerEvents: 'none' }}>{fmtMoney(v)}</div>
         ))}
         <div style={{ position: 'relative', height: H, cursor: 'crosshair' }}
           onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))))); }}
@@ -164,7 +164,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
             {hover != null && <line x1={xAt(hover)} y1={TOP} x2={xAt(hover)} y2={BOT} stroke="rgba(0,0,0,.2)" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />}
           </svg>
           {hover != null && (
-            <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
+            <div style={{ position: 'absolute', left: `${left}%`, top: 0, transform: `translateX(${left > 70 ? '-100%' : left < 30 ? '0' : '-50%'})`, background: 'var(--text)', color: '#fff', borderRadius: 8, padding: '5px 10px', fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap', boxShadow: '0 4px 14px rgba(0,0,0,.25)', pointerEvents: 'none', zIndex: 2 }}>
               {isOwner ? (
                 <>
                   <div>{tt('Выручка')}: {fmtMoneyFull(rev[hover])}</div>
@@ -181,7 +181,7 @@ function BusinessStateChart({ data, lang, isOwner, gran }) {
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', marginTop: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--text3)', fontFamily: "'JetBrains Mono', monospace" }}>
+        <div style={{ display: 'flex', marginTop: 6, fontSize: 8.5, fontWeight: 700, color: 'var(--text3)' }}>
           {data.map((d, i) => (
             <div key={i} style={{ flex: 1, minWidth: 0, textAlign: 'center', overflow: 'hidden', whiteSpace: 'nowrap' }}>
               {i % labelStep === 0 ? bucketLabel(d.date) : ''}
@@ -263,10 +263,10 @@ function BizStateBar({ bs, isOwner, onEdit }) {
   return (
     <div style={{ marginBottom: 16 }}>
       {isOwner && (
-        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 10, alignItems: 'flex-end', fontFamily: "'JetBrains Mono', monospace" }}>
-          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего активов')}</div><div style={{ fontSize: 18, fontWeight: 900 }}>{fmtMoneyFull(bs.assets)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
-          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего обязательств')}</div><div style={{ fontSize: 18, fontWeight: 900, color: RED }}>{fmtMoneyFull(bs.liabilities)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
-          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Собственный капитал')}</div><div style={{ fontSize: 18, fontWeight: 900, color: negEquity ? RED : GREEN }}>{fmtMoneyFull(bs.equity)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 10, alignItems: 'flex-end' }}>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего активов')}</div><div style={{ fontSize: 18, fontWeight: 600 }}>{fmtMoneyFull(bs.assets)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Всего обязательств')}</div><div style={{ fontSize: 18, fontWeight: 600, color: RED }}>{fmtMoneyFull(bs.liabilities)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
+          <div><div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .4 }}>{tt('Собственный капитал')}</div><div style={{ fontSize: 18, fontWeight: 600, color: negEquity ? RED : GREEN }}>{fmtMoneyFull(bs.equity)} <span style={{ fontSize: 11, color: 'var(--text3)' }}>{tt('сум')}</span></div></div>
           {onEdit && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={onEdit}>✏️ {tt('Заполнить')}</button>}
         </div>
       )}
@@ -281,7 +281,7 @@ function BizStateBar({ bs, isOwner, onEdit }) {
         </div>
       )}
       {isOwner && bs.breakdown && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 16, flexWrap: 'wrap', fontFamily: "'JetBrains Mono', monospace" }}>
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           <span><b style={{ color: GREEN }}>{tt('Активы')}:</b> {fmtMoney(b.cash)} · {fmtMoney(b.inventory)} · {fmtMoney(b.receivables)} · {fmtMoney(b.fixed_assets)}</span>
           <span><b style={{ color: RED }}>{tt('Обязательства')}:</b> {fmtMoney(b.payables)} · {fmtMoney(b.loans)} · {fmtMoney(b.tax_payable)} · {fmtMoney(b.wages_payable)}</span>
         </div>
@@ -398,9 +398,9 @@ const CASHFLOW_TABS = [
 
 // BHI — подписи пилляров/блоков и цвета зон (для карточки на дашборде).
 const BHI_ZONE = {
-  normal:    { color: '#16a34a', tone: 'green',  label: 'Норма' },
-  attention: { color: '#D97706', tone: 'yellow', label: 'Внимание' },
-  critical:  { color: '#DC2626', tone: 'red',    label: 'Критично' },
+  normal:    { color: '#22A06B', tone: 'green',  label: 'Норма' },
+  attention: { color: '#B65C02', tone: 'yellow', label: 'Внимание' },
+  critical:  { color: '#C9372C', tone: 'red',    label: 'Критично' },
 };
 const BHI_PILLAR_LABEL = { fin: 'Финансы', ops: 'Операции', people: 'Персонал', market: 'Рынок' };
 const BHI_BLOCK_LABEL = {
@@ -409,8 +409,8 @@ const BHI_BLOCK_LABEL = {
   people_productivity: 'Выручка / чел', people_activity: 'Активность',
   market_growth: 'Новые клиенты', market_retention: 'Удержание',
 };
-const bhiScoreColor = (s) => (s == null ? '#cbd5e1' : s >= 75 ? '#16a34a' : s >= 50 ? '#D97706' : '#DC2626');
-const bhiZoneColor = (v) => (v >= 75 ? '#16a34a' : v >= 50 ? '#f59e0b' : '#ef4444');
+const bhiScoreColor = (s) => (s == null ? '#B3B9C4' : s >= 75 ? '#22A06B' : s >= 50 ? '#B65C02' : '#C9372C');
+const bhiZoneColor = (v) => (v >= 75 ? '#22A06B' : v >= 50 ? '#B65C02' : '#C9372C');
 const fmtBhiDay = (d, lang) => fmtDate(d, { day: 'numeric', month: 'short' }, lang);
 
 // График «Динамика BHI по дням» по макету sage-pony: градиентная шкала зон,
@@ -487,24 +487,27 @@ function BhiChart({ points, goal, tt, lang }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
           <div style={{ fontSize: narrow ? 12 : 13, fontWeight: 800, color: 'var(--text2)' }}>{tt('Динамика BHI по дням')}{single ? <span style={{ fontWeight: 700, color: 'var(--text3)' }}> · {tt('данные накапливаются')}</span> : null}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--text3)', fontWeight: 700 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: 'linear-gradient(90deg,#f59e0b,#16a34a)', display: 'inline-block' }} />BHI</span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, borderTop: '2px dashed #16a34a', display: 'inline-block' }} />{tt('Цель')}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, height: 3, borderRadius: 2, background: '#0C66E4', display: 'inline-block' }} />BHI</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 14, borderTop: '2px dashed #8590A2', display: 'inline-block' }} />{tt('Цель')}</span>
             {!narrow && <span style={{ fontWeight: 600 }}>· {tt('наведи на точку — детали дня')}</span>}
           </div>
         </div>
         {/* шкала зон: критично → опасно → норма */}
-        <div style={{ height: narrow ? 6 : 8, borderRadius: 5, background: 'linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #84cc16 75%, #16a34a 100%)' }} />
+        <div style={{ height: 4, borderRadius: 3, background: 'var(--bg-2)', position: 'relative' }}>
+          <div style={{ position: 'absolute', left: '50%', top: -2, width: 1, height: 8, background: 'var(--border-strong)' }} />
+          <div style={{ position: 'absolute', left: '75%', top: -2, width: 1, height: 8, background: 'var(--border-strong)' }} />
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: fLbl, color: 'var(--text3)', fontWeight: 700, margin: '4px 0 6px' }}>
           <span>0 · {tt('Критично')}</span><span>50 · {tt('Опасно')}</span><span>75 · {tt('Норма')}</span><span>100</span>
         </div>
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: H, display: 'block' }}>
           <defs>
             <linearGradient id="bhiLine" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset={tOff} stopColor="#16a34a" /><stop offset={tOff} stopColor="#f59e0b" />
+              <stop offset={tOff} stopColor={'#0C66E4'} /><stop offset={tOff} stopColor={'#B65C02'} />
             </linearGradient>
             <linearGradient id="bhiArea" gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={H - padB}>
-              <stop offset="0" stopColor="#16a34a" stopOpacity="0.18" />
-              <stop offset={tOff} stopColor="#16a34a" stopOpacity="0.04" />
+              <stop offset={'0'} stopColor={'#0C66E4'} stopOpacity={'0.14'} />
+              <stop offset={tOff} stopColor={'#0C66E4'} stopOpacity={'0.03'} />
               <stop offset={tOff} stopColor="#f59e0b" stopOpacity="0.04" />
               <stop offset="1" stopColor="#f59e0b" stopOpacity="0.16" />
             </linearGradient>
@@ -518,17 +521,17 @@ function BhiChart({ points, goal, tt, lang }) {
           {/* заливка под кривой */}
           {areaD && <path d={areaD} fill="url(#bhiArea)" stroke="none" />}
           {/* цель — пунктир на всю ширину */}
-          <line x1={padL} y1={Y(goal)} x2={W - padR} y2={Y(goal)} stroke="#16a34a" strokeWidth="1.6" strokeDasharray="7 5" />
+          <line x1={padL} y1={Y(goal)} x2={W - padR} y2={Y(goal)} stroke={'#8590A2'} strokeWidth={'1.4'} strokeDasharray={'7 5'} />
           {/* сглаженная линия BHI (зелёная выше цели, оранжевая ниже) */}
           {lineD && <path d={lineD} fill="none" stroke="url(#bhiLine)" strokeWidth={wLine} strokeLinecap="round" strokeLinejoin="round" />}
           {/* плашка «Цель 75» слева на пунктире */}
           <g>
-            <rect x={padL} y={Y(goal) - (fGoal * 0.5 + 4)} width={pillW} height={fGoal + 8} rx={5} fill="#dcfce7" stroke="#16a34a" strokeWidth="0.8" />
+            <rect x={padL} y={Y(goal) - (fGoal * 0.5 + 4)} width={pillW} height={fGoal + 8} rx={5} fill={'#F1F2F4'} stroke={'#B3B9C4'} strokeWidth={'0.8'} />
             <text x={padL + pillW / 2} y={Y(goal) + fGoal * 0.34} textAnchor="middle" fontSize={fGoal} fill="#15803d" fontWeight="800">{goalLabel}</text>
           </g>
           {/* точки */}
           {points.map((p, i) => (
-            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#16a34a' : '#f59e0b'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
+            <circle key={i} cx={X(i)} cy={Y(p.bhi)} r={rDot} fill={p.bhi >= goal ? '#0C66E4' : '#B65C02'} stroke="#fff" strokeWidth={narrow ? 1.8 : 2.4} style={{ cursor: 'pointer' }}>
               <title>{(p.date ? fmtBhiDay(p.date, lang) + ': ' : '')}BHI {p.bhi}</title>
             </circle>
           ))}
@@ -585,7 +588,7 @@ function BhiCard({ role }) {
   const StatCard = ({ label, value, sub, color }) => (
     <div style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 11, padding: '10px 13px' }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .4 }}>{label}</div>
-      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: color || 'var(--text)', lineHeight: 1.1, marginTop: 3 }}>{value}</div>
+      <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: color || 'var(--text)', lineHeight: 1.1, marginTop: 3 }}>{value}</div>
       {sub != null && <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text3)', marginTop: 1 }}>{sub}</div>}
     </div>
   );
@@ -595,7 +598,7 @@ function BhiCard({ role }) {
       actions={<Badge tone={z.tone}>{tt(z.label)}</Badge>} style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <div className="mono" style={{ fontSize: 46, fontWeight: 900, color: z.color, lineHeight: 1 }}>{data.current}</div>
+          <div className="mono" style={{ fontSize: 42, fontWeight: 600, color: z.color, lineHeight: 1 }}>{data.current}</div>
           <div style={{ fontSize: 14, color: 'var(--text3)', fontWeight: 700 }}>/ 100</div>
         </div>
         <div style={{ minWidth: 150 }}>
@@ -645,7 +648,7 @@ function BhiCard({ role }) {
             return (
               <div key={pk} style={{ background: 'var(--bg-2)', borderRadius: 10, padding: '10px 12px' }}>
                 <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .4 }}>{tt(BHI_PILLAR_LABEL[pk])} · {p.weight}%</div>
-                <div className="mono" style={{ fontSize: 20, fontWeight: 900, color: bhiScoreColor(s), marginTop: 2 }}>{s == null ? '—' : s}</div>
+                <div className="mono" style={{ fontSize: 20, fontWeight: 600, color: bhiScoreColor(s), marginTop: 2 }}>{s == null ? '—' : s}</div>
                 <div style={{ marginTop: 4 }}><Progress value={s || 0} max={100} color={bhiScoreColor(s)} /></div>
               </div>
             );
@@ -905,7 +908,7 @@ export default function Dashboard() {
               <div style={{ fontSize: 11, fontWeight: 700, opacity: .7, marginTop: 4 }}>
                 {tt('ВЫРУЧКА')} · {periodLabel}
               </div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 32, fontWeight: 900, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.5, color: '#16a34a' }}>
+              <div style={{ fontSize: 30, fontWeight: 600, lineHeight: 1.05, marginTop: 4, letterSpacing: -0.6, color: 'var(--text)' }}>
                 {fmtMoneyFull(t.sales_revenue)} <span style={{ fontSize: 14, color: 'var(--text3)' }}>{tt('сум')}</span>
               </div>
               {revDelta != null ? (
@@ -1043,7 +1046,7 @@ export default function Dashboard() {
                   <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
                     <ChartHead icon="📈" iconBg="rgba(37,99,235,.10)" iconColor="#1D4ED8"
                       label={tt('Продажи') + ' · ' + periodLabel}>
-                      <div className="mono" style={{ fontSize: 22, fontWeight: 900, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
+                      <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', marginTop: 2, lineHeight: 1.1 }}>
                         {fmtMoneyFull(salesTotal)} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt('сум')}</span>
                       </div>
                     </ChartHead>
@@ -1061,7 +1064,7 @@ export default function Dashboard() {
                     <ChartHead icon="📊" iconBg="rgba(34,197,94,.10)" iconColor="#16a34a"
                       label={tt('Сравнение') + ' · ' + periodLabel}>
                       <div className="mono" style={{
-                        fontSize: 22, fontWeight: 900, lineHeight: 1.1, marginTop: 2,
+                        fontSize: 22, fontWeight: 600, lineHeight: 1.1, marginTop: 2,
                         color: compareDelta == null ? 'var(--text3)' : compareDelta >= 0 ? 'var(--green, #16A34A)' : 'var(--red, #DC2626)',
                       }}>
                         {compareDelta != null

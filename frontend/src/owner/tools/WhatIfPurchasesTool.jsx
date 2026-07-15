@@ -23,7 +23,7 @@ function NumRow({ label, value, onChange, suffix }) {
           style={{
             width: 130, textAlign: 'right', padding: '6px 9px',
             border: '1.5px solid var(--border, #E3EAF3)', borderRadius: 8,
-            fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700,
+            fontSize: 13, fontWeight: 700,
             background: 'var(--bg, #fff)', color: 'var(--text)',
           }}
         />

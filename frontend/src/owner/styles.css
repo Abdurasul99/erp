@@ -9,36 +9,40 @@
   --ai-w: 420px;
   /* === Палитра: нейтральный светлый, один акцент. Перекрывает :root токены
      только внутри owner-shell. Все инструменты используют var(--bg)/--surface/--text… === */
-  --bg: #FAFBFC;
+  /* Atlassian Design System (Jira): навигационный синий B400, темно-синий текст N800 */
+  --bg: #F7F8F9;
   --bg-2: #F1F2F4;
   --surface: #FFFFFF;
-  --border: #E4E6EA;
-  --border-strong: #D5D8DE;
-  --text: #1D2129;
-  --text2: #57606B;
-  --text3: #8A93A0;
-  --primary: #2563EB;
-  --primary-dark: #1D4ED8;
-  --primary-50: #EFF4FF;
-  --orange: #2563EB;
-  --orange-light: #60A5FA;
-  --green: #16A34A;
-  --red: #DC2626;
-  --yellow: #B45309;
-  --info: #1D4ED8;
-  --shadow-sm: 0 1px 2px rgba(9, 30, 66, .05);
-  --shadow: 0 1px 2px rgba(9, 30, 66, .05);
-  --shadow-lg: 0 8px 24px rgba(9, 30, 66, .10);
-  --radius: 10px;
-  --radius-sm: 8px;
+  --border: #DCDFE4;
+  --border-strong: #B3B9C4;
+  --text: #172B4D;
+  --text2: #44546F;
+  --text3: #8590A2;
+  --primary: #0C66E4;
+  --primary-dark: #0055CC;
+  --primary-50: #E9F2FF;
+  --orange: #0C66E4;
+  --orange-light: #579DFF;
+  --green: #22A06B;
+  --red: #C9372C;
+  --yellow: #B65C02;
+  --info: #0C66E4;
+  --shadow-sm: 0 1px 1px rgba(9, 30, 66, .08);
+  --shadow: 0 1px 1px rgba(9, 30, 66, .08);
+  --shadow-lg: 0 8px 24px rgba(9, 30, 66, .12);
+  --radius: 8px;
+  --radius-sm: 6px;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-variant-numeric: tabular-nums;
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   height: 100vh;
   background: var(--bg);
   color: var(--text);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
 }
+/* Числа — тем же шрифтом, но с выравниванием разрядов (вместо бывшего JetBrains Mono) */
+.owner-shell .mono { font-family: inherit; font-variant-numeric: tabular-nums; }
 .owner-shell input, .owner-shell textarea, .owner-shell select, .owner-shell button {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -68,6 +72,10 @@
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; font-weight: 700;
   flex-shrink: 0;
+}
+.owner-shell .o-brand-logo {
+  width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+  object-fit: contain; background: #fff; border: 1px solid var(--border);
 }
 .owner-shell .o-brand-name { font-weight: 700; font-size: 14px; letter-spacing: -0.2px; color: var(--text); }
 .owner-shell .o-brand-sub  { font-size: 10px; color: var(--text3); font-weight: 600; letter-spacing: .5px; text-transform: uppercase; margin-top: 1px; }
@@ -250,7 +258,7 @@
 }
 .owner-shell .o-tile:hover, .owner-shell .tile:hover { border-color: var(--border-strong); transform: none; box-shadow: none; }
 .owner-shell .o-tile-label, .owner-shell .tile-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
-.owner-shell .o-tile-value, .owner-shell .tile-value { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 700; line-height: 1.1; }
+.owner-shell .o-tile-value, .owner-shell .tile-value { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; line-height: 1.1; letter-spacing: -0.3px; }
 .owner-shell .o-tile-sub, .owner-shell .tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 500; }
 .owner-shell .o-tile-delta, .owner-shell .tile-delta { font-size: 11px; font-weight: 700; margin-top: 4px; }
 .owner-shell .o-tile-delta.up, .owner-shell .tile-delta.up { color: var(--green); }
@@ -382,7 +390,7 @@
   color: #fff;
   font-size: 11px;
   font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   line-height: 1.5;
   padding: 6px 10px;
   border-radius: 7px;

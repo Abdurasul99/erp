@@ -216,6 +216,7 @@ export const SECTIONS = [
     metrics: [],
     roles: ['founder', 'director'],
     tools: [
+      { id: 'company-profile', title: 'Компания', desc: 'Название · логотип в панели', wired: true },
       { id: 'panel-manager', title: 'Управление панелью', desc: 'Включить/выключить любой инструмент для компании', wired: true },
       { id: 'integrations',  title: 'Интеграции',          desc: 'Реальный статус подключений', wired: true },
       { id: 'security',      title: 'Безопасность',        desc: 'Роли · права · доступы',  wired: true },
@@ -236,6 +237,7 @@ const HIDDEN_TOOLS = {
     'ab-point', 'pnl', 'cashflow', 'fin-model', 'break-even',
     'fin-health', 'cash-forecast', 'currency-ops', 'taxes',
     'panel-manager',  // управление панелью — только учредитель
+    'company-profile', // профиль компании (лого) — только учредитель
   ]),
   // Менеджер филиала — то же + чужие филиалы, цены, расходы.
   manager: new Set([

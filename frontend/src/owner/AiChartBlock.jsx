@@ -199,7 +199,7 @@ function renderInline(text, kp) {
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(text.slice(last, m.index));
     if (m[1] != null) out.push(<strong key={kp + 'b' + i++} style={{ fontWeight: 800, color: 'var(--text)' }}>{m[1]}</strong>);
-    else out.push(<code key={kp + 'c' + i++} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '.92em', background: 'rgba(127,127,127,.14)', padding: '1px 5px', borderRadius: 5 }}>{m[2]}</code>);
+    else out.push(<code key={kp + 'c' + i++} style={{ fontSize: '.92em', background: 'rgba(127,127,127,.14)', padding: '1px 5px', borderRadius: 5 }}>{m[2]}</code>);
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push(text.slice(last));

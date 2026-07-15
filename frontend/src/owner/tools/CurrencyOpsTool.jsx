@@ -62,7 +62,7 @@ export default function CurrencyOpsTool() {
 
           <div className="grid-2" style={{ marginBottom: 16 }}>
             <Card icon="⚠️" title={tt('Потери от изменения курса')}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--red)', fontFamily: "'JetBrains Mono', monospace" }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--red)' }}>
                 −{fmtMoneyFull(d.fx_loss)} <span style={{ fontSize: 13, fontWeight: 600 }}>{tt('сум')}</span>
               </div>
               <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
@@ -70,7 +70,7 @@ export default function CurrencyOpsTool() {
               </div>
             </Card>
             <Card icon="🏦" title={tt('Потери при конвертации')}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--red)', fontFamily: "'JetBrains Mono', monospace" }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--red)' }}>
                 −{fmtMoneyFull(d.fee_loss)} <span style={{ fontSize: 13, fontWeight: 600 }}>{tt('сум')}</span>
               </div>
               <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
@@ -114,9 +114,9 @@ export default function CurrencyOpsTool() {
                           {o.type === 'sale' ? tt('Продажа') : tt('Закупка')}
                         </Badge>
                       </td>
-                      <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(o.amount_usd)} $</td>
-                      <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{fmtMoneyFull(o.rate)}</td>
-                      <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>{fmtMoneyFull(o.total_uzs)}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right' }}>{fmtNum(o.amount_usd)} $</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right' }}>{fmtMoneyFull(o.rate)}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600 }}>{fmtMoneyFull(o.total_uzs)}</td>
                     </tr>
                   ))}
                 </tbody>
