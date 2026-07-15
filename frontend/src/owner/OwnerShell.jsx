@@ -5,6 +5,7 @@ import { getUserSections, NAV_GROUPS } from './modules.js';
 import { useTt } from './tt.js';
 import { PageHeaderContext } from './PageHeaderContext.js';
 import CommandPalette from './CommandPalette.jsx';
+import { Icon, SECTION_ICON } from './icons.jsx';
 import api from '../api.js';
 import './styles.css';
 
@@ -153,7 +154,8 @@ export default function OwnerShell() {
               <button key={s.id} onClick={() => navigate('/owner')}
                 className={'o-link' + (activeSection === 'dashboard' ? ' active' : '')}
                 title={collapsed ? tt(s.title) : undefined}>
-                {collapsed ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span> : <span>{tt(s.title)}</span>}
+                <Icon name={SECTION_ICON[s.id] || 'home'} />
+                {!collapsed && <span>{tt(s.title)}</span>}
               </button>
             ))}
 
@@ -172,9 +174,8 @@ export default function OwnerShell() {
                       className={'o-link' + (activeSection === s.id ? ' active' : '')}
                       title={collapsed ? tt(s.title) : undefined}
                     >
-                      {collapsed
-                        ? <span className="o-link-mono">{tt(s.title).slice(0, 2)}</span>
-                        : <span>{tt(s.title)}</span>}
+                      <Icon name={SECTION_ICON[s.id] || 'home'} />
+                      {!collapsed && <span>{tt(s.title)}</span>}
                     </button>
                   ))}
                 </div>
@@ -188,7 +189,8 @@ export default function OwnerShell() {
                 title={collapsed ? tt('AI-помощник') : undefined}
                 style={{ marginTop: 8 }}
               >
-                {collapsed ? <span className="o-link-mono">AI</span> : <span>{tt('AI-помощник')}</span>}
+                <Icon name='sparkles' />
+                {!collapsed && <span>{tt('AI-помощник')}</span>}
               </button>
             )}
           </div>
@@ -197,7 +199,8 @@ export default function OwnerShell() {
             {/* Quick AI popup — only for founder/director с включённым AI. Manager has no AI access. */}
             {isOwner && aiEnabled && (
               <button onClick={() => setAiOpen(true)} className="o-link" title={collapsed ? tt('Быстрый чат') : undefined}>
-                {collapsed ? <span className="o-link-mono">Ч</span> : <span>{tt('Быстрый чат')}</span>}
+                <Icon name='message' />
+                {!collapsed && <span>{tt('Быстрый чат')}</span>}
               </button>
             )}
 
@@ -233,6 +236,7 @@ export default function OwnerShell() {
 
             {/* Глобальный поиск — Ctrl+K или клик */}
             <button type="button" className="o-search-btn" onClick={() => setPaletteOpen(true)} title={tt('Найти инструмент…')}>
+              <Icon name='search' size={15} />
               <span>{tt('Поиск')}</span>
               <kbd>Ctrl K</kbd>
             </button>
@@ -298,12 +302,12 @@ export default function OwnerShell() {
                     {sections.some(s => s.id === 'settings') && (
                       <button onClick={() => { setUserMenuOpen(false); navigate('/owner/settings'); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 600, color: 'var(--text)', textAlign: 'left' }}
                         onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-                        {tt('Настройки')}
+                        <Icon name='settings' size={16} /> {tt('Настройки')}
                       </button>
                     )}
                     <button onClick={() => { setUserMenuOpen(false); logout(); }} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', border: 'none', borderTop: '1px solid var(--border)', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13.5, fontWeight: 600, color: '#dc2626', textAlign: 'left' }}
                       onMouseEnter={e => e.currentTarget.style.background = '#FFF1F1'} onMouseLeave={e => e.currentTarget.style.background = 'none'}>
-                      {tt('Выйти')}
+                      <Icon name='logout' size={16} /> {tt('Выйти')}
                     </button>
                   </div>
                 </>
@@ -351,7 +355,7 @@ function PeriodFilter({ period, setPeriod, customFrom, customTo, setCustomRange,
     <div ref={ref} style={{ position: 'relative' }}>
       <button type="button" onClick={() => setOpen(o => !o)} className="o-branch-pick"
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-        {periodLabel} <span style={{ opacity: .6 }}>▾</span>
+        <Icon name='calendar' size={15} style={{ marginRight: 2 }} /> {periodLabel} <span style={{ opacity: .6 }}>▾</span>
       </button>
       {open && (
         <div style={{

@@ -5,6 +5,7 @@ import { BranchScope } from './OwnerShell.jsx';
 import { Badge, Tooltip, Skeleton, fmtMoney, fmtNum } from './ui.jsx';
 import { getUserSections } from './modules.js';
 import { useTt } from './tt.js';
+import { Icon, SECTION_ICON } from './icons.jsx';
 import api from '../api.js';
 
 const METRIC_DEFS = {
@@ -80,7 +81,10 @@ export default function SectionHome() {
     <>
       {/* Плоский заголовок раздела — минимализм вместо градиентного hero */}
       <div className="o-section-head">
-        <div className="o-section-head-title">{tt(section.title)}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span className="o-section-ico"><Icon name={SECTION_ICON[section.id] || 'home'} size={20} /></span>
+          <div className="o-section-head-title">{tt(section.title)}</div>
+        </div>
         <div className="o-section-head-desc">{tt(section.desc)}</div>
         <div className="o-section-head-meta">
           <span><strong>{tools.length}</strong> {tt('инструментов')}</span>

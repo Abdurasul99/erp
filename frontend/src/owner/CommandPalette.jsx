@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTt } from './tt.js';
+import { Icon, SECTION_ICON } from './icons.jsx';
 
 // Глобальный поиск по инструментам (Ctrl+K / Cmd+K) — главный способ навигации
 // при минималистичной панели: набрал пару букв → Enter → нужный экран.
@@ -96,6 +97,7 @@ export default function CommandPalette({ open, onClose, sections }) {
               onMouseEnter={() => setIdx(i)}
               onMouseDown={(e) => { e.preventDefault(); go(r); }}
             >
+              <span style={{ color: 'var(--text3)', display: 'flex' }}><Icon name={SECTION_ICON[r.section.id] || 'home'} size={16} /></span>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div className="cmdk-item-title">
                   {r.title}
