@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
@@ -177,18 +178,57 @@ function validatePassword(pw) {
   return { ok: true };
 }
 
-const auth = (roles = []) => (req, res, next) => {
+// ═══ Одиночная сессия: один логин = одно устройство ═══════════════════════════
+// При каждом входе минтится новый session_id (sid) → пишется в users.session_id и
+// в JWT. Запрос со старым sid (вход выполнен на другом устройстве) получает 401
+// с кодом SESSION_REVOKED — фронт показывает понятное сообщение и уводит на /login.
+// Кэш sid с TTL — чтобы не ходить в БД на каждый запрос; в своём процессе логин
+// инвалидирует кэш мгновенно.
+const SID_CACHE_TTL = 45 * 1000;
+const sidCache = new Map(); // userId → { sid, at }
+function sidCacheSet(userId, sid) { sidCache.set(userId, { sid, at: Date.now() }); }
+async function currentSid(userId) {
+  const hit = sidCache.get(userId);
+  if (hit && Date.now() - hit.at < SID_CACHE_TTL) return hit.sid;
+  const { rows } = await pool.query('SELECT session_id FROM users WHERE id = $1', [userId]);
+  const sid = rows[0] ? (rows[0].session_id || null) : undefined; // undefined = юзер удалён
+  if (sid !== undefined) sidCacheSet(userId, sid);
+  return sid;
+}
+
+const auth = (roles = []) => async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
+  let decoded;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    decoded = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Неверный токен' });
+  }
+  try {
+    // Impersonation-токены (act_as, минтит админ) сессией не ограничиваем.
+    if (!decoded.act_as) {
+      if (!decoded.sid) {
+        // Токен старого формата (до одиночных сессий) — просим войти заново.
+        return res.status(401).json({ error: 'Сессия устарела — войдите заново', code: 'SESSION_STALE' });
+      }
+      const sid = await currentSid(decoded.id);
+      if (sid === undefined) return res.status(401).json({ error: 'Пользователь не найден', code: 'SESSION_STALE' });
+      if (sid !== decoded.sid) {
+        return res.status(401).json({ error: 'Вход выполнен на другом устройстве — эта сессия завершена', code: 'SESSION_REVOKED' });
+      }
+    }
     if (roles.length && !roles.includes(decoded.role)) {
       return res.status(403).json({ error: 'Нет доступа' });
     }
     req.user = decoded;
     next();
-  } catch {
-    res.status(401).json({ error: 'Неверный токен' });
+  } catch (e) {
+    console.error('auth sid check err', e.message);
+    // При сбое БД не роняем запрос в 401 (это выкинуло бы всех) — пропускаем по JWT.
+    if (roles.length && !roles.includes(decoded.role)) return res.status(403).json({ error: 'Нет доступа' });
+    req.user = decoded;
+    next();
   }
 };
 
@@ -5999,8 +6039,11 @@ app.post('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async 
 });
 
 // PATCH /api/tasks/:id/status — перевод статуса (todo→in_progress→done/cancelled)
-// проставляет started_at (при первом in_progress) и completed_at (при done)
-app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
+// проставляет started_at (при первом in_progress) и completed_at (при done).
+// Исполнитель (кассир/продавец/складовщик) может вести ТОЛЬКО назначенную ему задачу
+// и только по рабочим статусам (без cancelled) — так задача с доски руководителя
+// закрывается самим сотрудником из его окна «Задачи».
+app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const id = parseInt(req.params.id, 10);
@@ -6013,6 +6056,11 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manage
     // менеджер — только задачи своего филиала
     if (req.user.role === 'manager' && row.branch_id && row.branch_id !== req.user.branch_id) {
       return res.status(403).json({ error: 'Out of branch scope' });
+    }
+    // операционные роли — только свою задачу и без отмены
+    if (['cashier', 'seller', 'warehouse'].includes(req.user.role)) {
+      if (row.assignee_id !== req.user.id) return res.status(403).json({ error: 'Это не ваша задача' });
+      if (next === 'cancelled') return res.status(403).json({ error: 'Отменять задачи может только руководитель' });
     }
 
     const setStarted = (next === 'in_progress' && !row.started_at);
@@ -6031,6 +6079,36 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manage
     res.json({ ok: true, task: upd.rows[0] });
   } catch (e) {
     console.error('task status err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tasks/my — «Мои задачи» для ЛЮБОЙ роли: только назначенные текущему
+// пользователю. Питает окно задач кассира/продавца/складовщика (Desktop/SellerView).
+app.get('/api/tasks/my', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    if (!companyId) return res.json({ metrics: { active: 0, overdue: 0, done_today: 0 }, items: [] });
+    try { if (typeof generateTasksFromTemplates === 'function') await generateTasksFromTemplates(companyId); } catch {}
+    const q = await pool.query(`
+      ${TASK_SELECT}
+      WHERE t.company_id = $1 AND t.assignee_id = $2 AND t.status != 'cancelled'
+        AND (t.status IN ('todo','in_progress') OR t.completed_at >= NOW() - INTERVAL '14 days')
+      ORDER BY
+        CASE t.status WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
+        CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+        t.due_date ASC NULLS LAST, t.created_at DESC
+      LIMIT 200
+    `, [companyId, req.user.id]);
+    const items = q.rows;
+    const metrics = {
+      active: items.filter(t => t.status === 'todo' || t.status === 'in_progress').length,
+      overdue: items.filter(t => t.overdue).length,
+      done_today: items.filter(t => t.status === 'done' && t.completed_at && new Date(t.completed_at).toDateString() === new Date().toDateString()).length,
+    };
+    res.json({ metrics, items });
+  } catch (e) {
+    console.error('tasks my err', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -7084,11 +7162,16 @@ app.post('/api/auth/login', async (req, res) => {
       company_disabled_widgets: companyDisabledWidgets,
     };
     // По просьбе владельца: НЕТ таймаута сессии на логине — токен практически бессрочный.
+    // Одиночная сессия: новый sid при каждом входе → предыдущее устройство с этим
+    // логином получает SESSION_REVOKED (один логин = одно устройство).
+    const sid = crypto.randomBytes(16).toString('hex');
+    await pool.query('UPDATE users SET session_id = $1, last_login_at = NOW() WHERE id = $2', [sid, rows[0].id]);
+    sidCacheSet(rows[0].id, sid);
     const token = jwt.sign({
       id: payload.id, username: payload.username, role: payload.role,
       company_id: payload.company_id, branch_id: payload.branch_id,
+      sid,
     }, JWT_SECRET, { expiresIn: '3650d' });
-    pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [rows[0].id]).catch(() => {});
     res.json({ token, user: payload });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -7531,52 +7614,163 @@ app.get('/api/products/:id', auth(), async (req, res) => {
   res.json(rows[0]);
 });
 
-app.post('/api/products', auth(['admin', 'cashier', 'warehouse', 'manager']), async (req, res) => {
+// Текстовые колонки products и лимиты БД — ЕДИНЫЙ источник для POST и PUT, чтобы
+// пользователь везде видел понятное «слишком длинно», а не сырое постгресовое
+// «value too long for type character varying(20)».
+const PRODUCT_TEXT_COLS = {
+  name_ru:    { max: 200, label: 'Название' },
+  name_uz:    { max: 200, label: 'Название (узб.)' },
+  barcode:    { max: 50,  label: 'Штрих-код' },
+  photo_url:  { max: 500, label: 'Фото' },
+  unit:       { max: 32,  label: 'Единица измерения' },
+  color_size: { max: 255, label: 'Цвет / размер' },
+  brand:      { max: 150, label: 'Бренд' },
+};
+function validateProductText(b) {
+  for (const [col, meta] of Object.entries(PRODUCT_TEXT_COLS)) {
+    if (b[col] === undefined || b[col] === null) continue;
+    const raw = String(b[col]).trim();
+    if (raw.length > meta.max) return `«${meta.label}»: слишком длинно — ${raw.length} символов, максимум ${meta.max}`;
+  }
+  return null;
+}
+// Штрих-код UNIQUE ГЛОБАЛЬНО (включая мягко удалённые) — объясняем, с чем конфликт.
+async function barcodeConflictMessage(barcode, companyId) {
+  try {
+    const { rows: [dup] } = await pool.query(
+      'SELECT name_ru, company_id, deleted_at FROM products WHERE barcode = $1 LIMIT 1', [String(barcode)]);
+    if (dup?.deleted_at) return `Штрих-код занят удалённым товаром «${dup.name_ru}» — сгенерируйте новый`;
+    if (dup && dup.company_id !== companyId) return 'Этот штрих-код уже занят в системе — сгенерируйте новый';
+    if (dup) return `Этот штрих-код уже у товара «${dup.name_ru}»`;
+  } catch { /* fall through */ }
+  return 'Такой штрих-код уже используется';
+}
+function productPgError(e) {
+  if (e.code === '22001') return 'Одно из полей слишком длинное — сократите текст';
+  if (e.code === '23503') return 'Выбран несуществующий тип или категория';
+  if (e.code === '23502') return 'Заполните обязательные поля (название)';
+  if (e.code === '22003') return 'Слишком большое число в цене';
+  return null;
+}
+
+app.post('/api/products', auth(['admin', 'founder', 'director', 'manager', 'cashier', 'warehouse']), async (req, res) => {
   try {
     const { name_ru, name_uz, type_id, category_id, barcode, photo_url, unit, price_buy, price_sell, color_size, brand } = req.body;
+    if (!name_ru || !String(name_ru).trim()) return res.status(400).json({ error: 'Название обязательно' });
+    const bad = validateProductText(req.body);
+    if (bad) return res.status(400).json({ error: bad });
     // Catalog scope = company, not branch. branch_id retained for legacy queries (= user's branch).
     const companyId = req.user.company_id || null;
     const branchId = getBranchFilter(req.user, req.body);
     const { rows } = await pool.query(
       `INSERT INTO products (name_ru, name_uz, type_id, category_id, barcode, photo_url, unit, price_buy, price_sell, color_size, brand, branch_id, company_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [name_ru, name_uz || name_ru, type_id || null, category_id || null, barcode || null,
+      [String(name_ru).trim(), name_uz || name_ru, type_id || null, category_id || null, barcode || null,
        photo_url || null, unit || 'шт', price_buy || 0, price_sell || 0, color_size || null, brand || null, branchId, companyId]
     );
     // No pre-created product_stock row. Each branch gets one on first income/outcome.
     res.json(rows[0]);
   } catch (e) {
+    if (e.code === '23505' && /barcode/.test(e.detail || e.message || '')) {
+      return res.status(400).json({ error: await barcodeConflictMessage(req.body?.barcode, req.user.company_id) });
+    }
+    const friendly = productPgError(e);
+    if (friendly) return res.status(400).json({ error: friendly });
+    console.error('products POST err', e);
     res.status(400).json({ error: e.message });
   }
 });
 
-app.put('/api/products/:id', auth(['admin', 'cashier', 'warehouse', 'manager']), async (req, res) => {
+// Права выровнены (2026-07-27): исправлять и удалять товар могут ВСЕ рабочие роли
+// каталога — учредитель/директор тоже (раньше founder не мог редактировать),
+// кассир/склад тоже могут удалять (они и создают товары; кнопка в UI уже была,
+// а сервер отвечал 403). Удаление мягкое (deleted_at) + аудит — история цела.
+app.put('/api/products/:id', auth(['admin', 'founder', 'director', 'cashier', 'warehouse', 'manager']), async (req, res) => {
+  // b/cur объявлены ВНЕ try — они нужны в catch для разбора ошибки штрих-кода.
+  const b = req.body || {};
+  let cur = null;
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
-    const { rows: [cur] } = await pool.query(
-      'SELECT id, company_id FROM products WHERE id = $1 AND deleted_at IS NULL', [id]
+    const { rows: [found] } = await pool.query(
+      'SELECT * FROM products WHERE id = $1 AND deleted_at IS NULL', [id]
     );
+    cur = found;
     if (!cur) return res.status(404).json({ error: 'Not found' });
     if (req.user.role !== 'admin' && cur.company_id !== req.user.company_id) {
       return res.status(403).json({ error: 'Out of scope' });
     }
-    const { name_ru, name_uz, type_id, category_id, barcode, photo_url, unit, price_buy, price_sell, color_size, brand } = req.body;
+    // ЧАСТИЧНОЕ обновление: трогаем ТОЛЬКО те поля, что реально пришли в запросе.
+    // Раньше был полный UPDATE всех колонок — форма редактирования не присылает
+    // photo_url/category_id, и они затирались в NULL (жалоба «стираются фотографии»).
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k) && b[k] !== undefined;
+
+    // Лимиты длины — общий валидатор (тот же, что у создания товара).
+    const bad = validateProductText(b);
+    if (bad) return res.status(400).json({ error: bad });
+
+    const sets = [], vals = [];
+    const push = (col, val) => { vals.push(val); sets.push(`${col} = $${vals.length}`); };
+
+    for (const col of Object.keys(PRODUCT_TEXT_COLS)) {
+      if (!has(col)) continue;
+      const raw = b[col] === null ? '' : String(b[col]).trim();
+      if (col === 'name_ru' && !raw) return res.status(400).json({ error: 'Название обязательно' });
+      push(col, raw || (col === 'unit' ? 'шт' : null));
+    }
+    // name_uz по умолчанию = name_ru (как при создании), если его не прислали, но имя меняют.
+    if (has('name_ru') && !has('name_uz') && !cur.name_uz) push('name_uz', String(b.name_ru).trim());
+
+    // Числовые/справочные поля.
+    for (const col of ['type_id', 'category_id']) {
+      if (!has(col)) continue;
+      const n = parseInt(b[col], 10);
+      push(col, Number.isFinite(n) && n > 0 ? n : null);
+    }
+    for (const col of ['price_buy', 'price_sell', 'min_stock', 'lead_time_days']) {
+      if (!has(col)) continue;
+      const raw = b[col];
+      // Пустая строка = «не задано» → не обнуляем цену молча, оставляем как было.
+      if (raw === '' || raw === null) continue;
+      const n = parseFloat(raw);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ error: `Поле «${col}»: нужно неотрицательное число` });
+      }
+      push(col, col === 'lead_time_days' ? Math.round(n) : n);
+    }
+
+    if (sets.length === 0) return res.json(cur); // нечего менять
+
+    // Скоуп компании уже проверен выше по cur.company_id. В WHERE берём только id —
+    // раньше `AND company_id=$N` не матчил товары с company_id IS NULL: UPDATE
+    // затрагивал 0 строк, сервер отдавал пустое тело, а UI рапортовал «Успешно».
+    vals.push(id);
     const { rows } = await pool.query(
-      `UPDATE products SET name_ru=$1, name_uz=$2, type_id=$3, category_id=$4, barcode=$5,
-       photo_url=$6, unit=$7, price_buy=$8, price_sell=$9, color_size=$10, brand=$11
-       WHERE id=$12 AND company_id=$13 RETURNING *`,
-      [name_ru, name_uz || name_ru, type_id || null, category_id || null, barcode || null,
-       photo_url || null, unit || 'шт', price_buy || 0, price_sell || 0, color_size || null, brand || null,
-       id, cur.company_id]
+      `UPDATE products SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`,
+      vals
     );
+    if (!rows[0]) return res.status(409).json({ error: 'Товар не обновлён — обновите страницу и повторите' });
+    // В аудит пишем СТАРЫЕ значения — только так можно восстановить затёртое
+    // (фото/категорию/цены) postfactum из Журнала событий.
+    audit(req, 'update', 'product', id,
+      { photo_url: cur.photo_url, category_id: cur.category_id, type_id: cur.type_id,
+        color_size: cur.color_size, brand: cur.brand, unit: cur.unit,
+        price_buy: cur.price_buy, price_sell: cur.price_sell },
+      rows[0], { module: 'stock', description: 'Изменён товар' });
     res.json(rows[0]);
   } catch (e) {
+    // Понятные сообщения вместо сырых постгрес-ошибок.
+    if (e.code === '23505' && /barcode/.test(e.detail || e.message || '')) {
+      return res.status(400).json({ error: await barcodeConflictMessage(b.barcode, cur?.company_id ?? req.user.company_id) });
+    }
+    const friendly = productPgError(e);
+    if (friendly) return res.status(400).json({ error: friendly });
+    console.error('products PUT err', e);
     res.status(400).json({ error: e.message });
   }
 });
 
-app.delete('/api/products/:id', auth(['admin', 'manager', 'director', 'founder']), async (req, res) => {
+app.delete('/api/products/:id', auth(['admin', 'manager', 'director', 'founder', 'cashier', 'warehouse']), async (req, res) => {
   try {
     // Soft-delete — preserves history. Use a real DELETE later via cleanup task if truly needed.
     const { rows: [cur] } = await pool.query('SELECT id, name_ru, branch_id, company_id FROM products WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
@@ -8385,11 +8579,13 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
     }
 
     await client.query('BEGIN');
-    // Seller sales go to PENDING — warehouse/manager must verify before stock is decremented.
-    // Trusted roles (admin, founder, director, manager, warehouse) auto-approve.
-    // Cashier sales also go pending (no change).
-    const autoApprove = ['admin', 'founder', 'director', 'manager', 'warehouse'].includes(req.user.role);
-    const status = autoApprove ? 'approved' : 'pending';
+    // Продажа — свершившийся факт розницы: остаток списывается СРАЗУ для ВСЕХ ролей
+    // (2026-07-27, жалоба клиента: продажи кассира/продавца уходили в pending —
+    // склад не минусовался до ручного подтверждения, остатки на витринах врали).
+    // Контроль сохранён другими механизмами: аудит каждой продажи (Журнал событий),
+    // заявки на исправление (edit-requests), сдача кассы продавцом (is_settled=false).
+    const autoApprove = true;
+    const status = 'approved';
 
     const { rows } = await client.query(
       `INSERT INTO stock_outcome (product_id, quantity, price, note, created_by, approved_by, status, branch_id,
@@ -8875,6 +9071,10 @@ app.get('/api/stock/balance', auth(), async (req, res) => {
     let query = `
       SELECT p.id, p.name_ru, p.name_uz, p.barcode, p.photo_url, p.unit, p.price_buy, p.price_sell,
              p.created_at,
+             -- Характеристики ОБЯЗАТЕЛЬНЫ в ответе: форма редактирования наполняется
+             -- из этого списка. Без них поля цвет/размер/бренд/тип приходили пустыми
+             -- и затирались при каждом сохранении (жалоба «не сохраняются цвета и размеры»).
+             p.type_id, p.category_id, p.color_size, p.brand, p.min_stock, p.lead_time_days,
              pt.name_ru AS type_name, c.name_ru AS cat_name,
              COALESCE(ps.quantity, 0) AS stock,
              ls.id    AS last_supplier_id,
@@ -10479,14 +10679,25 @@ app.get('/api/customers', auth(), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Дата рождения клиента: питает инструмент «Дни рождения» (/crm/birthdays) —
+// раньше её негде было ввести и инструмент пустовал. Принимаем 'YYYY-MM-DD' | null.
+function parseBirthDate(v) {
+  if (v === undefined) return undefined;               // поле не трогаем (PUT)
+  if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return null;
+  const d = new Date(v + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d > new Date()) return null; // будущее — не ДР
+  return String(v);
+}
+
 app.post('/api/customers', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
-    const { name, phone, note, source } = req.body;
+    const { name, phone, note, source, birth_date } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
     const src = source && source.trim() ? source.trim().slice(0, 40) : null;
+    const bd = parseBirthDate(birth_date);
     const { rows } = await pool.query(
-      'INSERT INTO customers (company_id, name, phone, note, source, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-      [req.user.company_id, name.trim(), phone || null, note || null, src, req.user.id]
+      'INSERT INTO customers (company_id, name, phone, note, source, birth_date, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [req.user.company_id, name.trim(), phone || null, note || null, src, bd ?? null, req.user.id]
     );
     res.json(rows[0]);
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -10494,12 +10705,15 @@ app.post('/api/customers', auth(['admin', 'director', 'founder', 'manager', 'cas
 
 app.put('/api/customers/:id', auth(['admin', 'director', 'founder', 'manager', 'cashier']), async (req, res) => {
   try {
-    const { name, phone, note, source } = req.body;
+    const { name, phone, note, source, birth_date } = req.body;
     const src = source === undefined ? undefined : (source && source.trim() ? source.trim().slice(0, 40) : null);
+    const bd = parseBirthDate(birth_date); // undefined → не менять, null → очистить
     const { rows } = await pool.query(
-      `UPDATE customers SET name=$1, phone=$2, note=$3, source=COALESCE($6, source)
+      `UPDATE customers SET name=$1, phone=$2, note=$3, source=COALESCE($6, source),
+              birth_date = CASE WHEN $7::boolean THEN $8::date ELSE birth_date END
        WHERE id=$4 AND company_id=$5 AND deleted_at IS NULL RETURNING *`,
-      [name, phone || null, note || null, req.params.id, req.user.company_id, src === undefined ? null : src]
+      [name, phone || null, note || null, req.params.id, req.user.company_id,
+       src === undefined ? null : src, bd !== undefined, bd === undefined ? null : bd]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);
@@ -10514,6 +10728,94 @@ app.delete('/api/customers/:id', auth(['admin', 'director', 'founder', 'manager'
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══ ПУБЛИЧНЫЙ ИНТЕРНЕТ-МАГАЗИН (ART Store, /store) — БЕЗ auth ═══════════════
+// Витрина одной компании-клиента. Без эквайринга: заказ = заявка, падает ЛИДОМ
+// (source 'online') в Лид-трекер компании — менеджер перезванивает и подтверждает.
+// Наружу отдаём ТОЛЬКО каталожные поля (никаких закупочных цен/остатков чужих компаний).
+
+const STORE_COMPANY_NAME = process.env.STORE_COMPANY_NAME || 'ART store';
+let _storeCompanyCache = null; // { id, branch_id } — резолвим по имени один раз
+async function getStoreCompany() {
+  if (_storeCompanyCache) return _storeCompanyCache;
+  const c = await pool.query('SELECT id FROM companies WHERE name ILIKE $1 LIMIT 1', [STORE_COMPANY_NAME]);
+  if (!c.rows[0]) return null;
+  const b = await pool.query('SELECT id FROM branches WHERE company_id=$1 ORDER BY id LIMIT 1', [c.rows[0].id]);
+  _storeCompanyCache = { id: c.rows[0].id, branch_id: b.rows[0]?.id || null };
+  return _storeCompanyCache;
+}
+
+app.get('/api/store/catalog', async (req, res) => {
+  try {
+    const store = await getStoreCompany();
+    if (!store) return res.status(503).json({ error: 'store not configured' });
+    const { rows } = await pool.query(`
+      SELECT p.id, p.name_ru, p.name_uz, p.price_sell, p.photo_url, p.brand, p.unit, p.color_size,
+             c.name_ru AS cat_name_ru, pt.name_ru AS type_name_ru,
+             COALESCE(ps.quantity, 0) AS stock
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN product_types pt ON p.type_id = pt.id
+      LEFT JOIN (SELECT product_id, SUM(quantity) AS quantity FROM product_stock GROUP BY product_id) ps
+        ON ps.product_id = p.id
+      WHERE p.company_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0
+      ORDER BY (p.photo_url IS NULL), p.name_ru
+      LIMIT 300`, [store.id]);
+    res.json({ company: STORE_COMPANY_NAME, products: rows });
+  } catch (e) { console.error('store/catalog err', e); res.status(500).json({ error: 'catalog unavailable' }); }
+});
+
+// Наивный анти-спам: не больше 5 заказов с одного IP за 10 минут (в памяти).
+const _storeOrderHits = new Map();
+function storeOrderAllowed(ip) {
+  const now = Date.now(), windowMs = 10 * 60 * 1000;
+  const hits = (_storeOrderHits.get(ip) || []).filter(t => now - t < windowMs);
+  if (hits.length >= 5) return false;
+  hits.push(now); _storeOrderHits.set(ip, hits);
+  if (_storeOrderHits.size > 5000) _storeOrderHits.clear(); // страховка от роста
+  return true;
+}
+
+app.post('/api/store/order', async (req, res) => {
+  try {
+    const store = await getStoreCompany();
+    if (!store) return res.status(503).json({ error: 'store not configured' });
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '?';
+    if (!storeOrderAllowed(ip)) return res.status(429).json({ error: 'Слишком много заявок. Попробуйте позже.' });
+
+    const name = String(req.body?.name || '').trim().slice(0, 120);
+    const phone = String(req.body?.phone || '').trim().slice(0, 40);
+    const comment = String(req.body?.comment || '').trim().slice(0, 500);
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 30) : [];
+    if (!name || !phone) return res.status(400).json({ error: 'Имя и телефон обязательны' });
+    if (items.length === 0) return res.status(400).json({ error: 'Корзина пуста' });
+
+    // Цены НЕ доверяем клиенту — пересчитываем по базе по id товаров.
+    const ids = items.map(i => parseInt(i.id)).filter(Number.isFinite);
+    const priceQ = ids.length
+      ? await pool.query('SELECT id, name_ru, price_sell FROM products WHERE company_id=$1 AND id = ANY($2::int[]) AND deleted_at IS NULL', [store.id, ids])
+      : { rows: [] };
+    const byId = {}; priceQ.rows.forEach(r => { byId[r.id] = r; });
+    let total = 0;
+    const lines = [];
+    for (const it of items) {
+      const p = byId[parseInt(it.id)];
+      if (!p) continue; // чужой/несуществующий товар молча пропускаем
+      const qty = Math.min(99, Math.max(1, parseInt(it.qty) || 1));
+      total += qty * parseFloat(p.price_sell || 0);
+      lines.push(`${p.name_ru} × ${qty}`);
+    }
+    if (lines.length === 0) return res.status(400).json({ error: 'Товары не найдены' });
+
+    const interest = ('🛒 Заказ с сайта: ' + lines.join('; ') + (comment ? ` · Комментарий: ${comment}` : '')).slice(0, 1000);
+    const { rows } = await pool.query(
+      `INSERT INTO leads (company_id, branch_id, name, phone, source, interest, status, est_value, created_by)
+       VALUES ($1, $2, $3, $4, 'online', $5, 'new', $6, NULL) RETURNING id`,
+      [store.id, store.branch_id, name, phone, interest, total]
+    );
+    res.json({ ok: true, order_id: rows[0].id, total });
+  } catch (e) { console.error('store/order err', e); res.status(500).json({ error: 'Не удалось отправить заявку. Попробуйте позже.' }); }
 });
 
 // Customer history (all outcomes by this customer in scope)
@@ -10970,6 +11272,74 @@ function scoreHealth(lastLoginAt, dealsCount) {
   if (days >= 7 || dealsCount === 0) return { status: 'risk', label: 'В риске', tone: 'yellow', days_since: days };
   return { status: 'healthy', label: 'Активна', tone: 'green', days_since: days };
 }
+
+// === WoW — точка безубыточности САМОЙ платформы (только оператор admin) ===
+// Модель: платят за ФИЛИАЛ (price_per_branch, $), нужно отбить ИНВЕСТИЦИИ (investment, $).
+// Точка безубыточности = число филиалов, чьей месячной оплаты хватает покрыть инвестиции.
+// Финансы клиентов тут НЕ участвуют (граница данных сохранена).
+// Хранилище: sub_price = цена за филиал, fixed_costs = инвестиции (имена колонок исторические).
+function computeBep(inp, branches, companies) {
+  const price = parseFloat(inp.sub_price) || 0;                        // $ за филиал / мес
+  const investment = parseFloat(inp.fixed_costs) || 0;                 // $ инвестиций к возврату
+  const mrr = branches * price;                                        // доход в месяц
+  const breakEvenBranches = price > 0 ? Math.ceil(investment / price) : null; // филиалов, чтобы отбить инвестиции
+  const paybackMonths = mrr > 0 ? Math.round(investment / mrr * 10) / 10 : null; // срок окупаемости, мес
+  const above = breakEvenBranches != null && branches >= breakEvenBranches;
+  return {
+    price_per_branch: Math.round(price),
+    investment: Math.round(investment),
+    branches, companies,
+    mrr: Math.round(mrr),
+    break_even_branches: breakEvenBranches,
+    branches_to_break_even: (breakEvenBranches != null && !above) ? breakEvenBranches - branches : 0,
+    payback_months: paybackMonths,
+    above_break_even: above,
+    recovered: Math.round(Math.min(mrr, investment)),                  // «отбито» за месяц
+    remaining_to_recover: Math.max(0, Math.round(investment - mrr)),
+    progress_pct: breakEvenBranches ? Math.min(100, Math.round(branches / breakEvenBranches * 100)) : null,
+  };
+}
+
+// Реальные счётчики платящих (все компании/филиалы, кроме тестовых [SIM]/[SEED]).
+async function countPaying() {
+  const cq = await pool.query("SELECT COUNT(*)::int AS n FROM companies WHERE name NOT LIKE '[SIM]%' AND name NOT LIKE '[SEED]%'");
+  const bq = await pool.query(`
+    SELECT COUNT(*)::int AS n FROM branches b JOIN companies c ON c.id = b.company_id
+    WHERE c.name NOT LIKE '[SIM]%' AND c.name NOT LIKE '[SEED]%'`);
+  return { companies: cq.rows[0]?.n || 0, branches: bq.rows[0]?.n || 0 };
+}
+
+app.get('/api/admin/bep', auth(['admin']), async (req, res) => {
+  try {
+    const s = await pool.query('SELECT sub_price, fixed_costs, currency, updated_at FROM wow_bep WHERE id = 1');
+    const row = s.rows[0] || { sub_price: 0, fixed_costs: 0, currency: '$', updated_at: null };
+    const inputs = {
+      sub_price: parseFloat(row.sub_price) || 0,
+      fixed_costs: parseFloat(row.fixed_costs) || 0,
+      currency: row.currency || '$',
+      updated_at: row.updated_at || null,
+    };
+    const { companies, branches } = await countPaying();
+    res.json({ inputs, ...computeBep(inputs, branches, companies) });
+  } catch (e) { console.error('admin/bep GET', e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/bep', auth(['admin']), async (req, res) => {
+  try {
+    const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 ? n : 0; };
+    const price = num(req.body?.sub_price), invest = num(req.body?.fixed_costs);
+    const cur = (typeof req.body?.currency === 'string' && req.body.currency.trim()) ? req.body.currency.trim().slice(0, 10) : '$';
+    await pool.query(
+      `INSERT INTO wow_bep (id, sub_price, fixed_costs, currency, updated_at)
+       VALUES (1, $1, $2, $3, NOW())
+       ON CONFLICT (id) DO UPDATE SET sub_price = $1, fixed_costs = $2, currency = $3, updated_at = NOW()`,
+      [price, invest, cur]
+    );
+    const inputs = { sub_price: price, fixed_costs: invest, currency: cur, updated_at: new Date().toISOString() };
+    const { companies, branches } = await countPaying();
+    res.json({ inputs, ...computeBep(inputs, branches, companies) });
+  } catch (e) { console.error('admin/bep PUT', e); res.status(500).json({ error: e.message }); }
+});
 
 // === ADMIN — drill-down per company ===
 app.get('/api/admin/companies/:id', auth(['admin']), async (req, res) => {
@@ -12006,6 +12376,17 @@ app.post('/api/ai/chat', auth(AI_ROLES), aiGate, async (req, res) => {
 app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
   try {
     const type = (req.query.type || '').toString();
+    const uz = (req.query.lang || '').toString() === 'uz';
+    // Локализация подписей графика — канвас должен быть на языке интерфейса.
+    const CT = {
+      monthly_revenue: uz ? "24 oy uchun oylik tushum" : 'Помесячная выручка за 24 месяца',
+      top_products:    uz ? "Top-10 mahsulot (butun davr)" : 'Топ-10 товаров (за всё время)',
+      top_sellers:     uz ? "Top sotuvchilar (butun davr)" : 'Топ продавцов (за всё время)',
+      branches:        uz ? "Filiallar bo'yicha tushum (butun davr)" : 'Выручка по филиалам (за всё время)',
+      period_compare:  uz ? "Taqqoslash: oxirgi 30 kun va oldingi 30 kun" : 'Сравнение: текущие 30 дней vs предыдущие 30 дней',
+    };
+    const tDeals = uz ? 'bitim' : 'сделок';
+    const tPcs = uz ? 'dona' : 'шт';
     if (!req.user.company_id) return res.json({ type, data: null });
 
     const isManager = req.user.role === 'manager';
@@ -12035,8 +12416,8 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
         [branchIds, req.user.company_id, twoYearsAgo.toISOString()]
       );
       return res.json({
-        type, title: 'Помесячная выручка за 24 месяца', unit: 'UZS',
-        data: rows.map(r => ({ label: r.month, value: parseFloat(r.revenue), sub: r.deals + ' сделок' })),
+        type, title: CT.monthly_revenue, unit: 'UZS',
+        data: rows.map(r => ({ label: r.month, value: parseFloat(r.revenue), sub: r.deals + ' ' + tDeals })),
       });
     }
 
@@ -12052,8 +12433,8 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
         [branchIds, req.user.company_id]
       );
       return res.json({
-        type, title: 'Топ-10 товаров (за всё время)', unit: 'UZS',
-        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: parseFloat(r.qty) + ' ' + (r.unit || 'шт') })),
+        type, title: CT.top_products, unit: 'UZS',
+        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: parseFloat(r.qty) + ' ' + (r.unit || tPcs) })),
       });
     }
 
@@ -12072,8 +12453,8 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
         [branchIds, req.user.company_id]
       );
       return res.json({
-        type, title: 'Топ продавцов (за всё время)', unit: 'UZS',
-        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: r.deals + ' сделок · ' + r.role })),
+        type, title: CT.top_sellers, unit: 'UZS',
+        data: rows.map(r => ({ label: r.name, value: parseFloat(r.revenue), sub: r.deals + ' ' + tDeals + ' · ' + r.role })),
       });
     }
 
@@ -12090,8 +12471,8 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
         [branchIds, req.user.company_id]
       );
       return res.json({
-        type, title: 'Выручка по филиалам (за всё время)', unit: 'UZS',
-        data: rows.map(r => ({ label: r.branch_name, value: parseFloat(r.revenue), sub: r.deals + ' сделок' })),
+        type, title: CT.branches, unit: 'UZS',
+        data: rows.map(r => ({ label: r.branch_name, value: parseFloat(r.revenue), sub: r.deals + ' ' + tDeals })),
       });
     }
 
@@ -12118,7 +12499,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
       ]);
       const fmt = (rows) => rows.map(r => ({ label: new Date(r.d).toISOString().slice(5, 10), value: parseFloat(r.revenue) }));
       return res.json({
-        type, title: 'Сравнение: текущие 30 дней vs предыдущие 30 дней', unit: 'UZS',
+        type, title: CT.period_compare, unit: 'UZS',
         data: { current: fmt(curR.rows), prev: fmt(prevR.rows) },
       });
     }
@@ -12280,6 +12661,326 @@ app.post('/api/ai/explain-state', auth(['admin', 'founder', 'director', 'manager
   } catch (e) { console.error('explain-state err', e); res.status(500).json({ error: 'AI временно недоступен.' }); }
 });
 
+// ═══ AI-ДИАГНОСТ: «Где у меня проблемы?» по фиксированной логике ════════════════
+// Где → Кто → Что → Почему → Как решить.
+// Принцип: ФАКТЫ детерминированные (где/кто/что берём из реальных сигналов
+// alertCollect — галлюцинации по фактам невозможны), а РАССУЖДЕНИЕ (почему/как решить)
+// до-генерирует ИИ по каждой проблеме. Роль-скоуп: менеджер — только свой филиал.
+
+// Модуль сигнала → «где» (раздел) + вероятный ответственный «кто».
+const DIAG_MODULE = {
+  inventory: { gde: 'Склад', kto: 'Складовщик / закупщик', route: '/owner/warehouse/stock' },
+  finance:   { gde: 'Финансы · долги клиентов', kto: 'Продавец, оформивший продажу в долг', route: '/owner/support/debts-clients' },
+  purchase:  { gde: 'Закупки · долги поставщикам', kto: 'Закупщик', route: '/owner/procurement/debts-suppliers' },
+  crm:       { gde: 'Клиентский сервис · жалобы', kto: 'Менеджер по работе с клиентами', route: '/owner/support/complaints' },
+  sales:     { gde: 'Продажи', kto: 'Менеджер филиала', route: '/owner/operations/sales-history' },
+};
+
+app.post('/api/ai/diagnose', auth(['admin', 'founder', 'director', 'manager']), aiGate, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user.company_id) return res.json({ problems: [], summary: 'Компания не определена.' });
+    const lang = req.body?.lang;
+
+    // Скоуп: менеджер видит только свой филиал; владелец — всю компанию или выбранный филиал.
+    let branchId = null;
+    if (user.role === 'manager') branchId = user.branch_id || -1;
+    else if (req.body?.branch_id) branchId = parseInt(req.body.branch_id) || null;
+
+    // 1) РЕАЛЬНЫЕ проблемы из сенсорной системы (те же, что в Центре алертов).
+    const raw = await alertCollect(user.company_id, branchId);
+
+    // 1b) Сигнал: отстающий филиал (только владельцу, по всей компании).
+    if (user.role !== 'manager' && !branchId) {
+      try {
+        const br = await pool.query('SELECT id, name FROM branches WHERE company_id = $1', [user.company_id]);
+        const bids = br.rows.map(r => r.id);
+        if (bids.length > 1) {
+          const revQ = await pool.query(
+            `SELECT so.branch_id, COALESCE(SUM(so.quantity*so.price),0) AS rev
+             FROM stock_outcome so JOIN products p ON p.id = so.product_id
+             WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+               AND so.created_at >= NOW() - INTERVAL '30 days'
+             GROUP BY so.branch_id`, [bids, user.company_id]);
+          const revMap = {}; revQ.rows.forEach(r => { revMap[r.branch_id] = parseFloat(r.rev); });
+          const revs = bids.map(id => revMap[id] || 0);
+          const avg = revs.reduce((a, b) => a + b, 0) / revs.length;
+          for (const b of br.rows) {
+            const rev = revMap[b.id] || 0;
+            if (avg > 0 && rev < avg * 0.5) {
+              raw.push({
+                module: 'sales', severity: 'warning',
+                title: `Филиал «${b.name}» отстаёт по выручке`,
+                description: `${Math.round(rev).toLocaleString('ru-RU')} UZS за 30 дней vs средняя по сети ${Math.round(avg).toLocaleString('ru-RU')} UZS`,
+                action: '/owner/analytics/branch-compare',
+                branch_id: b.id,
+              });
+            }
+          }
+        }
+      } catch (e) { console.error('diag branch signal', e.message); }
+    }
+
+    if (raw.length === 0) {
+      return res.json({ problems: [], summary: 'Острых проблем не вижу — по текущим сигналам бизнес в норме. Продолжай следить за динамикой на Главной.' });
+    }
+
+    // 2) Топ проблем: critical → warning, до 8 штук.
+    const sorted = raw
+      .sort((a, b) => (a.severity === 'critical' ? -1 : 1) - (b.severity === 'critical' ? -1 : 1))
+      .slice(0, 8);
+
+    // 3) Детерминированные факты «где/кто/что» + ссылка.
+    const facts = sorted.map((a, i) => {
+      const m = DIAG_MODULE[a.module] || { gde: a.module, kto: 'Ответственный сотрудник', route: a.action };
+      return {
+        i,
+        gde: m.gde,
+        kto: m.kto,
+        chto: `${a.title}${a.description ? ' — ' + a.description : ''}`,
+        severity: a.severity,
+        action: a.action || m.route,
+      };
+    });
+
+    // 4) ИИ до-генерирует «почему» и «как решить» по каждой проблеме (одним JSON-вызовом).
+    let enrich = {};
+    if (AI_API_KEY) {
+      try {
+        const problemList = facts.map(f => `#${f.i} [${f.severity}] ГДЕ: ${f.gde}. КТО: ${f.kto}. ЧТО: ${f.chto}`).join('\n');
+        const sys = aiLangRule(lang) + ' ' + AI_DATA_BOUNDARY
+          + ' Ты — AI-диагност бизнеса в ERP WareApp (розница/опт, Узбекистан). Тебе дан список РЕАЛЬНЫХ проблем компании (факты «где/кто/что» уже установлены системой — НЕ переписывай их). Для КАЖДОЙ проблемы добавь ровно два поля: "pochemu" — вероятная корневая причина этой проблемы, выведенная ТОЛЬКО из сути проблемы и данных системы (1 короткое предложение, без общих фраз), и "kak_reshit" — одно конкретное действие, что сделать прямо сейчас (1 короткое предложение, повелительно). Пиши по-деловому, коротко, без воды и без markdown.'
+          + ' Верни СТРОГО JSON вида {"items":[{"i":0,"pochemu":"...","kak_reshit":"..."}, ...]} — по одному объекту на каждую проблему, поле i совпадает с номером проблемы.';
+        const r = await fetch(DEEPSEEK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_API_KEY },
+          body: JSON.stringify({
+            model: AI_MODEL, stream: false, temperature: 0.3, max_tokens: 900,
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'system', content: sys }, { role: 'user', content: 'Проблемы компании:\n' + problemList }],
+          }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          const parsed = JSON.parse(j?.choices?.[0]?.message?.content || '{}');
+          (parsed.items || []).forEach(it => { if (typeof it.i === 'number') enrich[it.i] = it; });
+          const usage = j?.usage || {};
+          pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
+            [user.id, user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, AI_MODEL, null]).catch(() => {});
+        }
+      } catch (e) { console.error('diagnose AI enrich', e.message); }
+    }
+
+    const problems = facts.map(f => ({
+      gde: f.gde,
+      kto: f.kto,
+      chto: f.chto,
+      pochemu: enrich[f.i]?.pochemu || null,
+      kak_reshit: enrich[f.i]?.kak_reshit || null,
+      severity: f.severity,
+      action: f.action,
+    }));
+
+    const crit = problems.filter(p => p.severity === 'critical').length;
+    const summary = crit > 0
+      ? `Нашёл ${problems.length} ${plural2(problems.length, 'проблему', 'проблемы', 'проблем')}, из них ${crit} критичн${crit === 1 ? 'ая' : 'ых'}. Начни сверху — там самое срочное.`
+      : `Нашёл ${problems.length} ${plural2(problems.length, 'проблему', 'проблемы', 'проблем')} на внимание. Критичных нет, но лучше разобрать.`;
+
+    res.json({ problems, summary });
+  } catch (e) {
+    console.error('ai/diagnose err', e);
+    res.status(500).json({ error: 'Диагностика временно недоступна. Попробуйте позже.' });
+  }
+});
+function plural2(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+// ═══ AI-КАНВАС: ответ ИИ справа — не случайный чарт, а собранный под вопрос
+// «бизнес-экран»: инсайт + плитки-KPI (из РЕАЛЬНЫХ цифр) + чарт (только если к месту)
+// + конкретные действия со ссылками на реальные инструменты. ══════════════════
+
+// Разрешённые графики (те же, что умеет /api/ai/chart-data).
+const CANVAS_CHARTS = ['monthly_revenue', 'top_products', 'top_sellers', 'branches', 'period_compare'];
+
+// Каталог реальных инструментов, из которого ИИ выбирает действия (route строго из allowlist).
+const CANVAS_ROUTES = {
+  '/owner/finance/pricing':            'Ценообразование и маржа',
+  '/owner/finance/pnl':                'P&L — выручка, себестоимость, прибыль',
+  '/owner/finance/cashflow':           'Денежный поток',
+  '/owner/finance/cash-forecast':      'Прогноз кассы · кассовый разрыв',
+  '/owner/finance/expenses-report':    'Отчёт по расходам',
+  '/owner/finance/break-even':         'Точка безубыточности',
+  '/owner/analytics/branch-compare':   'Сравнение филиалов',
+  '/owner/analytics/reports':          'Отчёты и аналитика',
+  '/owner/analytics/unit-economics':   'Юнит-экономика',
+  '/owner/warehouse/stock':            'Товары и остатки',
+  '/owner/warehouse/turnover-deadstock':'Оборачиваемость и неликвиды',
+  '/owner/operations/sales-history':   'История продаж',
+  '/owner/operations/sales-forecast':  'Прогноз продаж',
+  '/owner/operations/scripts':         'Скрипты продаж',
+  '/owner/procurement/purchase-forecast':'Прогноз закупок',
+  '/owner/procurement/procurement-orders':'Заказы поставщикам',
+  '/owner/procurement/debts-suppliers':'Долги поставщикам',
+  '/owner/support/crm':                'Клиентская база',
+  '/owner/support/debts-clients':      'Долги клиентов',
+  '/owner/support/feedback':           'Отзывы и NPS',
+  '/owner/marketing/loyalty':          'Лояльность и промокоды',
+  '/owner/marketing/funnel':           'Воронка продаж и лиды',
+  '/owner/marketing/ltv':              'LTV клиентов',
+  '/owner/hr/team':                    'Команда и KPI',
+  '/owner/hr/hr-productivity':         'Продуктивность персонала',
+};
+
+// Собирает компактный набор РЕАЛЬНЫХ фактов компании (скоуп по роли/филиалу).
+async function collectCanvasFacts(user, bodyBranchId) {
+  const companyId = user.company_id;
+  const isManager = user.role === 'manager';
+  let branchIds;
+  if (isManager) branchIds = user.branch_id ? [user.branch_id] : [];
+  else if (bodyBranchId) branchIds = [parseInt(bodyBranchId)].filter(Boolean);
+  else {
+    const br = await pool.query('SELECT id FROM branches WHERE company_id=$1', [companyId]);
+    branchIds = br.rows.map(r => r.id);
+  }
+  const facts = { nBranches: branchIds.length };
+  if (branchIds.length === 0) return facts;
+
+  const now = new Date();
+  const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+  const d60 = new Date(d30); d60.setDate(d60.getDate() - 30);
+
+  const [rev, top, brRows] = await Promise.all([
+    pool.query(
+      `SELECT
+         COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.created_at>=$3),0) AS cur,
+         COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.created_at>=$4 AND so.created_at<$3),0) AS prev,
+         COUNT(*) FILTER (WHERE so.created_at>=$3) AS deals
+       FROM stock_outcome so JOIN products p ON p.id=so.product_id
+       WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2`,
+      [branchIds, companyId, d30.toISOString(), d60.toISOString()]),
+    pool.query(
+      `SELECT p.name_ru AS name, COALESCE(SUM(so.quantity*so.price),0) AS rev
+       FROM stock_outcome so JOIN products p ON p.id=so.product_id
+       WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2 AND so.created_at>=$3
+       GROUP BY p.id,p.name_ru ORDER BY rev DESC LIMIT 1`,
+      [branchIds, companyId, d30.toISOString()]),
+    (!isManager)
+      ? pool.query(
+          `SELECT b.name, COALESCE(SUM(so.quantity*so.price),0) AS rev
+           FROM branches b
+           LEFT JOIN stock_outcome so ON so.branch_id=b.id AND so.status='approved' AND so.created_at>=$3
+           LEFT JOIN products p ON p.id=so.product_id AND p.company_id=$2
+           WHERE b.id=ANY($1::int[]) GROUP BY b.id,b.name ORDER BY rev DESC`,
+          [branchIds, companyId, d30.toISOString()])
+      : Promise.resolve({ rows: [] }),
+  ]);
+
+  const cur = parseFloat(rev.rows[0]?.cur || 0), prev = parseFloat(rev.rows[0]?.prev || 0);
+  facts.rev30 = cur; facts.revPrev30 = prev;
+  facts.deltaPct = prev > 0 ? Math.round((cur - prev) / prev * 100) : null;
+  facts.deals30 = parseInt(rev.rows[0]?.deals || 0);
+  if (top.rows[0]?.name) facts.topProduct = { name: top.rows[0].name, revenue: parseFloat(top.rows[0].rev) };
+  if (brRows.rows.length > 1) facts.branches = brRows.rows.map(r => ({ name: r.name, revenue: parseFloat(r.rev) }));
+
+  try {
+    const sig = await alertCollect(companyId, isManager ? (user.branch_id || -1) : (bodyBranchId ? parseInt(bodyBranchId) : null));
+    facts.signals = (sig || []).slice(0, 6).map(s => ({ title: s.title, description: s.description, severity: s.severity }));
+  } catch (e) { console.error('canvas facts signals', e.message); }
+  return facts;
+}
+
+app.post('/api/ai/canvas', auth(AI_ROLES), aiGate, async (req, res) => {
+  try {
+    if (!AI_API_KEY) return res.json({ canvas: null });
+    const { question, reply, branch_id, lang } = req.body || {};
+    const q = (question || '').toString().trim().slice(0, 500);
+    if (!q) return res.json({ canvas: null });
+
+    const isManager = req.user.role === 'manager';
+    const facts = await collectCanvasFacts(req.user, branch_id);
+    const fmtN = (x) => Math.round(parseFloat(x) || 0).toLocaleString('ru-RU');
+
+    // Факт-лист для модели (менеджеру — без денежных сумм).
+    const fs = [];
+    if (!isManager && facts.rev30 != null) {
+      fs.push(`Выручка за 30 дней: ${fmtN(facts.rev30)} UZS (предыдущие 30 дней: ${fmtN(facts.revPrev30)} UZS, изменение ${facts.deltaPct == null ? '—' : facts.deltaPct + '%'}).`);
+      fs.push(`Сделок за 30 дней: ${facts.deals30}.`);
+      if (facts.topProduct) fs.push(`Топ-товар за 30 дней: ${facts.topProduct.name} (${fmtN(facts.topProduct.revenue)} UZS).`);
+      if (facts.branches) fs.push(`Выручка по филиалам за 30 дней: ${facts.branches.map(b => `${b.name} — ${fmtN(b.revenue)} UZS`).join('; ')}.`);
+    } else if (isManager) {
+      fs.push('Денежные суммы для менеджера СКРЫТЫ — используй только качественные формулировки (вырос/упал, лидер/отстающий), без конкретных сумм.');
+    }
+    if (facts.signals?.length) {
+      fs.push('Активные сигналы системы:\n' + facts.signals.map(s => `- [${s.severity}] ${s.title}${s.description ? ' — ' + s.description : ''}`).join('\n'));
+    }
+    const factSheet = fs.length ? fs.join('\n') : 'Числовых данных по компании пока мало.';
+    const routeList = Object.entries(CANVAS_ROUTES).map(([r, n]) => `${r} — ${n}`).join('\n');
+
+    const sys = aiLangRule(lang) + ' ' + AI_DATA_BOUNDARY
+      + ' Ты — Wave Intelligence, бизнес-аналитик в ERP (розница/опт, Узбекистан). Тебе дают вопрос владельца, твой текстовый ответ и РЕАЛЬНЫЕ факты компании. '
+      + 'Собери «бизнес-экран» — панель, отвечающую ИМЕННО на этот вопрос (а не случайный график). Панель должна быть практичной и вести к действию. '
+      + 'ЖЁСТКИЕ ПРАВИЛА: '
+      + '1) metrics — 2..4 плитки-KPI ТОЛЬКО из предоставленных чисел (value — строка, можно с UZS/%/шт; НЕ выдумывай цифры, которых нет в фактах; если чисел нет — верни []). '
+      + '2) chart — выбери ОДИН из ' + JSON.stringify(CANVAS_CHARTS) + ' ТОЛЬКО если график реально помогает ответить на вопрос; иначе null. '
+      + '3) actions — 2..3 конкретных шага; поле route — СТРОГО одно из значений каталога ниже (дословно), label — короткое действие, why — зачем (1 фраза). НЕ придумывай маршруты вне каталога. '
+      + '4) headline — 1 предложение с главным выводом по вопросу; title — короткий заголовок панели. '
+      + 'Каталог инструментов (route — назначение):\n' + routeList + '\n'
+      + 'Верни СТРОГО JSON: {"title":"...","headline":"...","metrics":[{"label":"...","value":"...","hint":"...","tone":"good|bad|neutral"}],"chart":"...|null","actions":[{"label":"...","route":"...","why":"..."}]}';
+
+    const userMsg = `Вопрос владельца: ${q}\n\nТвой текстовый ответ (слева): ${(reply || '').toString().slice(0, 1500)}\n\nРЕАЛЬНЫЕ факты компании:\n${factSheet}`;
+
+    const r = await fetch(DEEPSEEK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_API_KEY },
+      body: JSON.stringify({
+        model: AI_MODEL, stream: false, temperature: 0.35, max_tokens: 700,
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'system', content: sys }, { role: 'user', content: userMsg }],
+      }),
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); console.error('ai/canvas non-ok', r.status, t.slice(0, 200)); return res.json({ canvas: null }); }
+    const j = await r.json();
+    let parsed = {};
+    try { parsed = JSON.parse(j?.choices?.[0]?.message?.content || '{}'); } catch { return res.json({ canvas: null }); }
+
+    // Валидация/санитайзинг — не доверяем модели вслепую.
+    const metrics = Array.isArray(parsed.metrics) ? parsed.metrics.slice(0, 4).map(m => ({
+      label: String(m?.label || '').slice(0, 40),
+      value: String(m?.value ?? '').slice(0, 40),
+      hint: m?.hint ? String(m.hint).slice(0, 60) : null,
+      tone: ['good', 'bad', 'neutral'].includes(m?.tone) ? m.tone : 'neutral',
+    })).filter(m => m.label && m.value) : [];
+    const chart = CANVAS_CHARTS.includes(parsed.chart) ? parsed.chart : null;
+    const actions = Array.isArray(parsed.actions) ? parsed.actions
+      .filter(a => a && CANVAS_ROUTES[a.route])
+      .slice(0, 3)
+      .map(a => ({ label: String(a.label || CANVAS_ROUTES[a.route]).slice(0, 40), route: a.route, why: a.why ? String(a.why).slice(0, 80) : null }))
+      : [];
+
+    const usage = j?.usage || {};
+    pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.user.id, req.user.company_id, usage.prompt_tokens || null, usage.completion_tokens || null, AI_MODEL, null]).catch(() => {});
+
+    // Панель бессмысленна без содержания.
+    if (!metrics.length && !chart && !actions.length) return res.json({ canvas: null });
+
+    res.json({
+      canvas: {
+        title: String(parsed.title || 'Бизнес-разбор').slice(0, 60),
+        headline: String(parsed.headline || '').slice(0, 240),
+        metrics, chart, actions,
+      },
+    });
+  } catch (e) {
+    console.error('ai/canvas err', e);
+    res.json({ canvas: null });
+  }
+});
+
 // === Ручной ввод активов/обязательств для «Состояния бизнеса» — только владелец ===
 const FIN_OWNER_ROLES = ['admin', 'founder', 'director'];
 const MANUAL_FIN = {
@@ -12332,6 +13033,16 @@ async function ensureSchema() {
     // Профиль сотрудника (заполняют учредитель/менеджер): фото, ДР, образование, опыт и т.д.
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo text`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date date`);
+    // Одиночная сессия (один логин = одно устройство): текущий sid активной сессии.
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_id TEXT`);
+    // Расширяем тесные текстовые колонки товара — «цвет/размер» это перечисление
+    // (Чёрный, Белый; 42-44, 46-48…), 100 символов мало; «комплект из 3 предметов»
+    // не влезал в unit(20). Только УВЕЛИЧЕНИЕ длины — данные не теряются.
+    try {
+      await pool.query(`ALTER TABLE products ALTER COLUMN color_size TYPE varchar(255)`);
+      await pool.query(`ALTER TABLE products ALTER COLUMN unit       TYPE varchar(32)`);
+      await pool.query(`ALTER TABLE products ALTER COLUMN brand      TYPE varchar(150)`);
+    } catch (pw) { console.error('products widen err', pw.message); }
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS education text`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS experience text`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS prev_jobs text`);
@@ -13496,6 +14207,29 @@ CREATE INDEX IF NOT EXISTS idx_course_progress_lesson ON course_progress(lesson_
 `);
       console.log('wave5 (hr) schema OK');
     } catch (w5) { console.error('wave5 schema err', w5.message); }
+
+    // WoW-оператор: точка безубыточности САМОЙ платформы (не клиента). Единая строка
+    // ручных вводных (абонплата/постоянные/переменные). Изолированный try — не должен
+    // ронять остальные миграции.
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS wow_bep (
+          id INTEGER PRIMARY KEY DEFAULT 1,
+          sub_price   NUMERIC NOT NULL DEFAULT 0,
+          fixed_costs NUMERIC NOT NULL DEFAULT 0,
+          var_cost    NUMERIC NOT NULL DEFAULT 0,
+          currency    TEXT    NOT NULL DEFAULT '$',
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CONSTRAINT wow_bep_singleton CHECK (id = 1)
+        );
+        INSERT INTO wow_bep (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+        -- Модель WoW: sub_price = цена за ФИЛИАЛ ($1000), fixed_costs = ИНВЕСТИЦИИ к возврату ($20300).
+        -- Сидим реальные вводные только если строку ещё не трогали (0/0).
+        UPDATE wow_bep SET sub_price = 1000, fixed_costs = 20300, currency = '$'
+          WHERE id = 1 AND sub_price = 0 AND fixed_costs = 0;
+      `);
+      console.log('wow_bep schema OK');
+    } catch (wb) { console.error('wow_bep schema err', wb.message); }
 
     console.log('schema OK');
   } catch (e) {
@@ -17660,13 +18394,17 @@ app.post('/api/sales/scripts/:id/usage', auth(['admin', 'director', 'founder', '
 // ===== leadgen =====
 // ===== Лид-трекер (leadgen) — воронка лидов =====
 // GET список + метрики (всего / в работе / конверсия / ср.время) + помесячный график.
-app.get('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
+// Кассир/продавец допущены ТОЛЬКО к онлайн-заказам своего филиала (обрабатывают
+// заявки с витрины на месте); полный лид-трекер — менеджер и выше.
+app.get('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'seller']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
+    const isCounter = ['cashier', 'seller'].includes(req.user.role); // персонал за прилавком
     const params = [companyId];
     let where = 'l.company_id = $1';
     if (branchId) { params.push(branchId); where += ` AND l.branch_id = $${params.length}`; }
+    if (isCounter) where += ` AND l.source = 'online'`;
 
     // Список лидов (+ дни в воронке, + ответственный)
     const listSql = `
@@ -17687,7 +18425,7 @@ app.get('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager']
         COUNT(*) AS total,
         COUNT(*) FILTER (WHERE l.status IN ('in_progress','negotiation')) AS in_progress,
         COUNT(*) FILTER (WHERE l.status = 'won') AS won,
-        COUNT(*) FILTER (WHERE l.status IN ('won','lost')) AS closed,
+        COUNT(*) FILTER (WHERE l.status IN ('won','lost','returned')) AS closed,
         AVG(EXTRACT(EPOCH FROM (l.closed_at - l.created_at)) / 86400)
           FILTER (WHERE l.status = 'won' AND l.closed_at IS NOT NULL) AS avg_days
       FROM leads l
@@ -17742,18 +18480,30 @@ app.post('/api/marketing/leads', auth(['admin', 'director', 'founder', 'manager'
 });
 
 // PATCH статус лида (won/lost проставляет closed_at)
-app.patch('/api/marketing/leads/:id/status', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
+app.patch('/api/marketing/leads/:id/status', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'seller']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { status } = req.body || {};
-    const allowed = ['new', 'in_progress', 'negotiation', 'won', 'lost'];
+    // 'returned' — продано, но покупатель вернул: закрытый статус, НЕ считается
+    // конверсией (см. метрики). Статусы можно менять и после закрытия (won→returned,
+    // возврат в работу и т.д.) — жизнь заказа не заканчивается на «Продано».
+    const allowed = ['new', 'in_progress', 'negotiation', 'won', 'lost', 'returned'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    const closed = (status === 'won' || status === 'lost');
+    const closed = (status === 'won' || status === 'lost' || status === 'returned');
+    // Кассир/продавец: только онлайн-заказы СВОЕГО филиала (менеджерские лиды не трогают).
+    const isCounter = ['cashier', 'seller'].includes(req.user.role);
+    const params = [status, closed, parseInt(req.params.id, 10), companyId];
+    let extra = '';
+    if (isCounter) {
+      const myBranch = getBranchFilter(req.user, req.query) || req.user.branch_id || -1;
+      params.push(myBranch);
+      extra = ` AND source = 'online' AND branch_id = $${params.length}`;
+    }
     const { rows } = await pool.query(
       `UPDATE leads SET status = $1,
               closed_at = CASE WHEN $2 THEN NOW() ELSE NULL END
-       WHERE id = $3 AND company_id = $4 RETURNING *`,
-      [status, closed, parseInt(req.params.id, 10), companyId]
+       WHERE id = $3 AND company_id = $4${extra} RETURNING *`,
+      params
     );
     if (!rows.length) return res.status(404).json({ error: 'Lead not found' });
     res.json({ lead: rows[0] });

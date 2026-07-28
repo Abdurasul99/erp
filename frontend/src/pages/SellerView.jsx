@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useContext, useCallback } from 'react';
+﻿import React, { useState, useEffect, useRef, useContext, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, LangContext } from '../App.jsx';
+import MyTasks from '../components/MyTasks.jsx';
 import { t } from '../i18n.js';
 import api from '../api.js';
 import JsBarcode from 'jsbarcode';
@@ -88,6 +89,11 @@ function SuccessScreen({ product, qty, price, discount, onNext, uz }) {
 
 export default function SellerView() {
   const { user, logout } = useContext(AuthContext);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const [taskCount, setTaskCount] = useState(0);
+  useEffect(() => {
+    api.get('/tasks/my').then(r => setTaskCount(r.data?.metrics?.active ?? 0)).catch(() => {});
+  }, []);
   const { lang, changeLang } = useContext(LangContext);
   const navigate = useNavigate();
   const uz = lang === 'uz';
@@ -99,7 +105,11 @@ export default function SellerView() {
   const [suggestions, setSuggestions] = useState([]);
   const [showSugg, setShowSugg] = useState(false);
   const [product, setProduct] = useState(null);
-  const [qty, setQty] = useState(1);
+  // Количество хранится СТРОКОЙ (поле можно очистить и ввести заново — числовой
+  // стейт с «|| 1» не давал стереть единицу). Для расчётов — qty (число ниже).
+  const [qtyInput, setQtyInput] = useState('1');
+  const qty = parseFloat(qtyInput) || 0;
+  const setQty = (v) => setQtyInput(typeof v === 'function' ? String(v(parseFloat(qtyInput) || 0)) : String(v));
   const [discount, setDiscount] = useState(0); // UZS, applied to total
   const [paymentMethod, setPaymentMethod] = useState('cash'); // cash / card / transfer / wire
   // Multi-currency sale: customer pays in non-UZS. Empty saleCurrency means UZS-priced (legacy).
@@ -399,6 +409,14 @@ export default function SellerView() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <button onClick={() => setTasksOpen(true)}
+            title={uz ? 'Vazifalarim' : 'Мои задачи'}
+            style={{ position: 'relative', background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', padding: '5px 11px', borderRadius: '12px', cursor: 'pointer', fontWeight: 800, fontSize: '11px', fontFamily: "'Nunito', sans-serif" }}>
+            {uz ? 'Vazifa' : 'Задачи'}
+            {taskCount > 0 && (
+              <span style={{ position: 'absolute', top: -6, right: -6, background: '#DC2626', color: '#fff', borderRadius: 10, minWidth: 17, height: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, padding: '0 4px', boxShadow: '0 1px 4px rgba(0,0,0,.25)' }}>{taskCount}</span>
+            )}
+          </button>
           {['uz','ru'].map(l => (
             <button key={l} onClick={() => changeLang(l)} style={{ padding: '4px 9px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: '11px', background: lang === l ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.2)', color: lang === l ? '#FF6B2B' : '#fff' }}>{l.toUpperCase()}</button>
           ))}
@@ -415,13 +433,25 @@ export default function SellerView() {
         </div>
       </div>
 
+      {tasksOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 500, background: '#F7F8FA', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ color: '#fff', fontWeight: 900, fontSize: 15 }}>{uz ? 'Mening vazifalarim' : 'Мои задачи'}</div>
+            <button onClick={() => setTasksOpen(false)} style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 13 }}>✕</button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
+            <MyTasks onCount={setTaskCount} />
+          </div>
+        </div>
+      )}
+
       {/* Success */}
       {success && <SuccessScreen product={success.product} qty={success.qty} price={success.price} discount={success.discount} onNext={reset} uz={uz} />}
 
       {!success && (
         <div style={{ padding: '12px 16px' }}>
           {/* KPI card — own monthly performance + cash owed */}
-          <div style={{ background: 'linear-gradient(135deg, #1e1b4b, #4338ca)', borderRadius: '14px', padding: '14px 16px', marginBottom: '12px', color: '#fff', boxShadow: '0 6px 20px rgba(67,56,202,.2)' }}>
+          <div style={{ background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)', borderRadius: '14px', padding: '14px 16px', marginBottom: '12px', color: '#fff', boxShadow: '0 6px 20px rgba(10,132,255,.2)' }}>
             <div style={{ fontSize: '11px', fontWeight: 800, opacity: .7, textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '8px' }}>
               📊 {uz ? 'Mening KPI' : 'Мой KPI'}
             </div>
@@ -628,7 +658,7 @@ export default function SellerView() {
           {product && (
             <div style={{ background: '#fff', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,0,0,.08)' }}>
               {/* Product header */}
-              <div style={{ background: 'linear-gradient(135deg, #1e1b4b, #3730a3)', padding: '16px', display: 'flex', gap: '12px', alignItems: 'center', borderRadius: '16px 16px 0 0' }}>
+              <div style={{ background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)', padding: '16px', display: 'flex', gap: '12px', alignItems: 'center', borderRadius: '16px 16px 0 0' }}>
                 {product.photo_url
                   ? <img src={product.photo_url} alt="" style={{ width: '56px', height: '56px', borderRadius: '10px', objectFit: 'cover', border: '2px solid rgba(255,255,255,.3)', flexShrink: 0 }} />
                   : <div style={{ width: '56px', height: '56px', borderRadius: '10px', background: 'rgba(255,255,255,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '24px' }}>📦</div>
@@ -667,8 +697,8 @@ export default function SellerView() {
                     <BarcodeImg value={product.barcode} />
                   </div>
                   <button onClick={() => openPrint([product])} title={uz ? 'Shtrix-kod chop etish' : 'Печать штрих-кода'}
-                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px', cursor: 'pointer', color: '#4338ca', flexShrink: 0 }}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 20, height: 20 }}>
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px', cursor: 'pointer', color: '#0A84FF', flexShrink: 0 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#0A84FF" strokeWidth="2" style={{ width: 20, height: 20 }}>
                       <polyline points="6 9 6 2 18 2 18 9"/>
                       <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
                       <rect x="6" y="14" width="12" height="8"/>
@@ -687,8 +717,8 @@ export default function SellerView() {
                   <button onClick={() => setQty(q => Math.max(1, q - 1))}
                     style={{ height: '52px', borderRadius: '12px', border: '2px solid #E2E4F0', background: '#F4F5FA', fontSize: '26px', fontWeight: 700, cursor: 'pointer', color: '#FF6B2B', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
                   <input
-                    type="number" min="1" step="any" value={qty}
-                    onChange={e => setQty(parseFloat(e.target.value) || 1)}
+                    type="number" min="1" step="any" value={qtyInput}
+                    onChange={e => setQtyInput(e.target.value)}
                     style={{ height: '52px', textAlign: 'center', padding: '0 12px', border: '2px solid #E2E4F0', borderRadius: '12px', fontSize: '24px', fontWeight: 900, fontFamily: "'JetBrains Mono', monospace", outline: 'none', width: '100%', boxSizing: 'border-box' }}
                   />
                   <button onClick={() => setQty(q => q + 1)}
@@ -725,7 +755,7 @@ export default function SellerView() {
 
                 {/* Foreign-currency price + rate (only when non-UZS) */}
                 {saleCurrency !== 'UZS' && (
-                  <div style={{ marginBottom: '12px', background: 'rgba(67,56,202,.05)', border: '1px solid rgba(67,56,202,.12)', borderRadius: '12px', padding: '12px' }}>
+                  <div style={{ marginBottom: '12px', background: 'rgba(10,132,255,.05)', border: '1px solid rgba(10,132,255,.12)', borderRadius: '12px', padding: '12px' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                       <div>
                         <label style={{ fontSize: '10px', fontWeight: 800, color: '#6B6F8A', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: '4px' }}>
@@ -747,7 +777,7 @@ export default function SellerView() {
                     {parseFloat(origUnitPrice) > 0 && parseFloat(saleRate) > 0 && (
                       <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
                         <span style={{ color: '#6B6F8A', fontWeight: 700 }}>{uz ? '1 dona UZSda:' : '1 шт в UZS:'}</span>
-                        <span className="mono" style={{ fontWeight: 800, color: '#4338ca' }}>{fmtMoney(parseFloat(origUnitPrice) * parseFloat(saleRate))}</span>
+                        <span className="mono" style={{ fontWeight: 800, color: '#0A84FF' }}>{fmtMoney(parseFloat(origUnitPrice) * parseFloat(saleRate))}</span>
                       </div>
                     )}
                   </div>
@@ -797,10 +827,10 @@ export default function SellerView() {
                   </div>
                   {saleCurrency !== 'UZS' && parseFloat(saleRate) > 0 && (
                     <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px dashed #E2E4F0', paddingTop: '6px' }}>
-                      <span style={{ fontSize: '11px', color: '#4338ca', fontWeight: 700 }}>
+                      <span style={{ fontSize: '11px', color: '#0A84FF', fontWeight: 700 }}>
                         💱 {uz ? `${saleCurrency}da:` : `Принять в ${saleCurrency}:`}
                       </span>
-                      <span className="mono" style={{ fontSize: '16px', fontWeight: 900, color: '#4338ca' }}>
+                      <span className="mono" style={{ fontSize: '16px', fontWeight: 900, color: '#0A84FF' }}>
                         {curSymbol[saleCurrency] || ''}{parseFloat((total / parseFloat(saleRate)).toFixed(2)).toLocaleString('ru-RU')}
                       </span>
                     </div>
@@ -927,7 +957,7 @@ export default function SellerView() {
                             </span>
                           </div>
                           {sale.currency && sale.currency !== 'UZS' && parseFloat(sale.original_price) > 0 && (
-                            <div className="mono" style={{ fontSize: '11px', color: '#4338ca', marginTop: '3px', background: 'rgba(67,56,202,.06)', display: 'inline-block', padding: '1px 8px', borderRadius: '8px' }}>
+                            <div className="mono" style={{ fontSize: '11px', color: '#0A84FF', marginTop: '3px', background: 'rgba(10,132,255,.06)', display: 'inline-block', padding: '1px 8px', borderRadius: '8px' }}>
                               💱 {curSymbol[sale.currency] || ''}{parseFloat((parseFloat(sale.original_price) * parseFloat(sale.quantity)).toFixed(2)).toLocaleString('ru-RU')} {sale.currency}
                               {' @ '}{fmtNum(sale.exchange_rate)}
                             </div>
@@ -952,8 +982,8 @@ export default function SellerView() {
                           {sale.status === 'approved' && cashSettled && (
                             <button onClick={() => setEditReq({ sale, qty: parseFloat(sale.quantity), price: parseFloat(sale.price), note: sale.note || '', reason: '' })}
                               style={{
-                                background: 'rgba(67,56,202,.08)', border: '1px solid rgba(67,56,202,.2)',
-                                color: '#4338ca', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer',
+                                background: 'rgba(10,132,255,.08)', border: '1px solid rgba(10,132,255,.2)',
+                                color: '#0A84FF', borderRadius: '8px', padding: '4px 10px', cursor: 'pointer',
                                 fontWeight: 700, fontSize: '11px', fontFamily: "'Nunito', sans-serif",
                               }}>
                               ✏️ {uz ? 'Tahrirlash' : 'Изменить'}

@@ -91,6 +91,14 @@ const PATHS = {
     <rect width="7" height="9" x="14" y="12" rx="1" />
     <rect width="7" height="5" x="3" y="16" rx="1" />
   </>,
+  clipboard: <>
+    <rect width="8" height="4" x="8" y="2" rx="1" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <path d="M12 11h4" />
+    <path d="M12 16h4" />
+    <path d="M8 11h.01" />
+    <path d="M8 16h.01" />
+  </>,
   trophy: <>
     <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
     <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
@@ -99,6 +107,19 @@ const PATHS = {
     <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
     <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
   </>,
+  // Одинарная искра (AI-воркспейс: аватар, статус-пилюля генерации) — отличается
+  // от `sparkles` (главная навигация) более острым силуэтом под askew-анимацию.
+  sparkle: <>
+    <path d="m12 3.5 1.7 4.8 4.8 1.7-4.8 1.7L12 16.5l-1.7-4.8-4.8-1.7 4.8-1.7L12 3.5Z" />
+    <path d="m18.5 15.5.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+  </>,
+  plus: <path d="M12 5.5v13M5.5 12h13" />,
+  x: <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />,
+  arrowup: <>
+    <path d="M12 19V5.5" />
+    <path d="m6.5 11 5.5-5.5L17.5 11" />
+  </>,
+  chevron: <path d="m9.5 5.5 6.5 6.5-6.5 6.5" />,
 };
 
 // Иконки виджетов Главной (окно «Виджеты» + возможные будущие места)
@@ -139,3 +160,47 @@ export const SECTION_ICON = {
   support: 'client',
   settings: 'settings',
 };
+
+// Duotone-градиенты отделов (Apple-палитра) — док, баннеры, чипы инструментов.
+export const SECTION_GRAD = {
+  dashboard: ['#0A84FF', '#5E5CE6'],
+  analytics: ['#0A84FF', '#5E5CE6'],
+  finance: ['#30D158', '#00A88E'],
+  marketing: ['#FF2D55', '#BF5AF2'],
+  procurement: ['#FF9F0A', '#FF6B22'],
+  warehouse: ['#32ADE6', '#0A84FF'],
+  operations: ['#FF6B22', '#FFB340'],
+  hr: ['#BF5AF2', '#5E5CE6'],
+  support: ['#5E5CE6', '#32ADE6'],
+  settings: ['#8E8E93', '#636366'],
+  ai: ['#0A84FF', '#C05CFF'],
+};
+
+export const gradCss = (id, deg = 135) => {
+  const [a, b] = SECTION_GRAD[id] || SECTION_GRAD.dashboard;
+  return `linear-gradient(${deg}deg, ${a}, ${b})`;
+};
+
+// Сплошной акцентный цвет отдела (первый стоп градиента) — для текста/чипов,
+// где градиент неуместен (AI-воркспейс: заголовок нарисованного экрана и т.п.)
+export const sectionColor = (id) => (SECTION_GRAD[id] || SECTION_GRAD.dashboard)[0];
+
+// Смысловой глиф инструмента по его id/названию (рус.) — используется там, где
+// нужна иконка конкретного инструмента, а не просто иконка его отдела
+// (AI-воркспейс, Launchpad, поиск).
+export function toolGlyph(title = '', sectionId) {
+  const s = title.toLowerCase();
+  if (/что.если|whatif|симулятор/.test(s)) return 'sparkles';
+  if (/прогноз|тренд|forecast/.test(s)) return 'trending';
+  if (/алерт|риск|аномал|police|полиция|контрол/.test(s)) return 'bell';
+  if (/отчёт|история|журнал|табель/.test(s)) return 'chart';
+  if (/расписан|смен|явка|день рожд|календар/.test(s)) return 'calendar';
+  if (/сотруд|команд|kpi|найм|увольн|мотивац|картотек/.test(s)) return 'users';
+  if (/деньг|касс|валют|зарплат|цен|налог|долг|pnl|p&l|cash|фин/.test(s)) return 'wallet';
+  if (/склад|остат|товар|запас|приход|приём|перемещ|инвентар|брак|штрих/.test(s)) return 'package';
+  if (/закуп|поставщ|заказ/.test(s)) return 'cart';
+  if (/клиент|crm|nps|отзыв|лояльн|сегмент|отток|рефер/.test(s)) return 'client';
+  if (/маркет|рассылк|контент|канал|воронк|лид|кампан/.test(s)) return 'megaphone';
+  if (/настро|интеграц|безопас|масштаб|панел/.test(s)) return 'settings';
+  return SECTION_ICON[sectionId] || 'home';
+}
