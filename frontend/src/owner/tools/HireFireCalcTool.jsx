@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Калькулятор найма/увольнения. ВСЯ математика — на фронте (без сохранения).
 // Бэк опционален: GET /api/hr/calc-defaults вернёт средний оклад/маржу компании,
@@ -32,14 +33,41 @@ const VERDICT = {
   maybe: { icon: '⚠️', label: 'Спорно — на ваш риск', color: '#D97706', tone: 'amber'  },
 };
 
-// Поле ввода числа с подписью и суффиксом
-function NumField({ label, value, onChange, suffix, step = 1, min = 0, hint }) {
+// Значения полей хранятся СЫРЫМИ СТРОКАМИ. В onChange — только чистка символов,
+// кламп — на onBlur: коэрсия в onChange не давала очистить поле (стираешь всё →
+// приходит 0 → в поле «0»), съедала точку в «1.5» и обрезала «85 000» до 85.
+// toNum — единственное место превращения строки в число (в расчётах).
+const toNum = (v, def = 0) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : def;
+  const s = normalizeDecimal(v);
+  if (s === '') return def;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : def;
+};
+// Приведение к допустимому диапазону при уходе из поля. Пустое остаётся пустым
+// (в расчётах это 0), мусор — тоже пустым.
+const normNum = (v, min, max) => {
+  const s = normalizeDecimal(v);
+  if (s === '') return '';
+  let n = parseFloat(s);
+  if (!Number.isFinite(n)) return '';
+  if (min != null) n = Math.max(min, n);
+  if (max != null) n = Math.min(max, n);
+  return String(n);
+};
+
+// Поле ввода числа с подписью и суффиксом.
+// type="text" + inputMode, а не type="number": при промежуточно-невалидном вводе
+// («1500,», «24.») Chrome отдаёт пустую строку и контролируемое поле само себя чистит.
+// step у текстового поля стрелок нет — величина шага остаётся только в вызовах.
+function NumField({ label, value, onChange, suffix, min = 0, max, hint }) {
   return (
     <label style={{ display: 'block' }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 4 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <input type="number" value={value} min={min} step={step}
-          onChange={e => onChange(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+        <input type="text" inputMode="decimal" value={value}
+          onChange={e => onChange(e.target.value.replace(/[^\d.,\s]/g, ''))}
+          onBlur={() => onChange(normNum(value, min, max))}
           style={{
             width: '100%', padding: '8px 10px', borderRadius: 8,
             border: '1px solid var(--border, #E3EAF3)',
@@ -58,25 +86,25 @@ export default function HireFireCalcTool() {
 
   const [mode, setMode] = useState('hire'); // 'hire' | 'fire'
 
-  // ===== Найм =====
-  const [salary, setSalary] = useState(6000000);       // оклад / мес
-  const [taxPct, setTaxPct] = useState(12);            // налог / отчисления %
-  const [recruitCost, setRecruitCost] = useState(2000000); // стоимость рекрутинга (разово)
-  const [trainDays, setTrainDays] = useState(14);      // дни обучения
-  const [setupCost, setSetupCost] = useState(1500000); // обустройство рабочего места (разово)
-  const [trainProd, setTrainProd] = useState(30);      // продуктивность во время обучения %
-  const [expRevenue, setExpRevenue] = useState(30000000); // ожид. выручка от сотрудника / мес
-  const [marginPct, setMarginPct] = useState(35);      // маржа %
-  const [rampMonths, setRampMonths] = useState(3);     // рамп-ап (мес до полной отдачи)
-  const [horizon, setHorizon] = useState(12);          // горизонт расчёта (мес)
-  const [retentionPct, setRetentionPct] = useState(80); // вероятность удержания %
+  // ===== Найм ===== (значения полей — строки, см. NumField)
+  const [salary, setSalary] = useState('6000000');       // оклад / мес
+  const [taxPct, setTaxPct] = useState('12');            // налог / отчисления %
+  const [recruitCost, setRecruitCost] = useState('2000000'); // стоимость рекрутинга (разово)
+  const [trainDays, setTrainDays] = useState('14');      // дни обучения
+  const [setupCost, setSetupCost] = useState('1500000'); // обустройство рабочего места (разово)
+  const [trainProd, setTrainProd] = useState('30');      // продуктивность во время обучения %
+  const [expRevenue, setExpRevenue] = useState('30000000'); // ожид. выручка от сотрудника / мес
+  const [marginPct, setMarginPct] = useState('35');      // маржа %
+  const [rampMonths, setRampMonths] = useState('3');     // рамп-ап (мес до полной отдачи)
+  const [horizon, setHorizon] = useState('12');          // горизонт расчёта (мес)
+  const [retentionPct, setRetentionPct] = useState('80'); // вероятность удержания %
 
   // ===== Увольнение =====
-  const [severanceMonths, setSeveranceMonths] = useState(2); // месяцы выходного пособия
+  const [severanceMonths, setSeveranceMonths] = useState('2'); // месяцы выходного пособия
   const [replace, setReplace] = useState(true);              // нужна ли замена
-  const [gapMonths, setGapMonths] = useState(2);             // gap-месяцы без замены
-  const [gapLoss, setGapLoss] = useState(15000000);          // потери за каждый gap-месяц
-  const [currentLoss, setCurrentLoss] = useState(8000000);   // текущий убыток/мес от сотрудника
+  const [gapMonths, setGapMonths] = useState('2');           // gap-месяцы без замены
+  const [gapLoss, setGapLoss] = useState('15000000');        // потери за каждый gap-месяц
+  const [currentLoss, setCurrentLoss] = useState('8000000'); // текущий убыток/мес от сотрудника
 
   const [defaultsLoaded, setDefaultsLoaded] = useState(false);
 
@@ -89,11 +117,11 @@ export default function HireFireCalcTool() {
       .then(r => {
         if (ignore || !r.data) return;
         const d = r.data;
-        if (d.avg_salary > 0) setSalary(Math.round(d.avg_salary));
-        if (d.margin_pct > 0) setMarginPct(Math.round(d.margin_pct));
+        if (d.avg_salary > 0) setSalary(String(Math.round(d.avg_salary)));
+        if (d.margin_pct > 0) setMarginPct(String(Math.round(d.margin_pct)));
         if (d.avg_revenue_per_emp > 0) {
-          setExpRevenue(Math.round(d.avg_revenue_per_emp));
-          setGapLoss(Math.round(d.avg_revenue_per_emp * (d.margin_pct > 0 ? d.margin_pct / 100 : 0.35)));
+          setExpRevenue(String(Math.round(d.avg_revenue_per_emp)));
+          setGapLoss(String(Math.round(d.avg_revenue_per_emp * (d.margin_pct > 0 ? d.margin_pct / 100 : 0.35))));
         }
         setDefaultsLoaded(true);
       })
@@ -103,11 +131,22 @@ export default function HireFireCalcTool() {
 
   // ===== Расчёт НАЙМА помесячно =====
   const hireCalc = useMemo(() => {
-    const H = Math.max(1, Math.min(36, Math.round(horizon)));
-    const monthlyPayroll = salary * (1 + taxPct / 100);
-    const fullOutput = expRevenue * (marginPct / 100); // полная отдача (валовая прибыль)/мес
-    const trainMonths = trainDays / 30;
-    const ramp = Math.max(0, rampMonths);
+    // Строки полей → числа один раз здесь: пустое поле даёт 0, а не NaN.
+    const salaryV = Math.max(0, toNum(salary));
+    const taxV = Math.max(0, toNum(taxPct));
+    const recruitV = Math.max(0, toNum(recruitCost));
+    const setupV = Math.max(0, toNum(setupCost));
+    const trainDaysV = Math.max(0, toNum(trainDays));
+    const trainProdV = Math.max(0, toNum(trainProd));
+    const expRevV = Math.max(0, toNum(expRevenue));
+    const marginV = toNum(marginPct);
+    const retentionV = Math.max(0, toNum(retentionPct));
+
+    const H = Math.max(1, Math.min(36, Math.round(toNum(horizon, 12))));
+    const monthlyPayroll = salaryV * (1 + taxV / 100);
+    const fullOutput = expRevV * (marginV / 100); // полная отдача (валовая прибыль)/мес
+    const trainMonths = trainDaysV / 30;
+    const ramp = Math.max(0, toNum(rampMonths));
 
     const rows = [];
     let cumulative = 0;
@@ -115,18 +154,18 @@ export default function HireFireCalcTool() {
     for (let m = 1; m <= H; m++) {
       // Затраты
       let cost = monthlyPayroll;
-      if (m === 1) cost += recruitCost + setupCost;
+      if (m === 1) cost += recruitV + setupV;
       // Производительность месяца
       let prodFactor;
       const monthEnd = m;          // считаем продуктивность к концу месяца (консервативно — к середине)
       const t = m - 0.5;           // середина месяца по оси времени
       if (t <= trainMonths) {
-        prodFactor = trainProd / 100;
+        prodFactor = trainProdV / 100;
       } else {
         const afterTrain = t - trainMonths;
         prodFactor = ramp > 0 ? Math.min(1, afterTrain / ramp) : 1;
         // во время рамп-апа отдача не ниже, чем была в обучении
-        prodFactor = Math.max(prodFactor, trainProd / 100);
+        prodFactor = Math.max(prodFactor, trainProdV / 100);
       }
       const output = fullOutput * prodFactor;
       const net = output - cost;
@@ -138,7 +177,7 @@ export default function HireFireCalcTool() {
     // Эффект за 12 мес (или за горизонт, если он меньше)
     const cap12 = Math.min(12, H);
     const net12 = rows.slice(0, cap12).reduce((a, r) => a + r.net, 0);
-    const adjusted = net12 * (retentionPct / 100);
+    const adjusted = net12 * (retentionV / 100);
 
     let verdict;
     if (adjusted > 0 && payback !== null && payback <= 6) verdict = 'yes';
@@ -150,11 +189,21 @@ export default function HireFireCalcTool() {
 
   // ===== Расчёт УВОЛЬНЕНИЯ помесячно =====
   const fireCalc = useMemo(() => {
-    const H = Math.max(1, Math.min(36, Math.round(horizon)));
-    const monthlyPayroll = salary * (1 + taxPct / 100);
-    const severance = severanceMonths * salary;        // выходное пособие (разово)
-    const replaceCost = replace ? (recruitCost + setupCost) : 0; // найм замены (разово)
-    const totalGapLoss = replace ? gapLoss * gapMonths : 0;      // потери пока нет замены
+    // Строки полей → числа один раз здесь: пустое поле даёт 0, а не NaN.
+    const salaryV = Math.max(0, toNum(salary));
+    const taxV = Math.max(0, toNum(taxPct));
+    const recruitV = Math.max(0, toNum(recruitCost));
+    const setupV = Math.max(0, toNum(setupCost));
+    const severanceV = Math.max(0, toNum(severanceMonths));
+    const gapMonthsV = Math.max(0, Math.round(toNum(gapMonths)));
+    const gapLossV = Math.max(0, toNum(gapLoss));
+    const currentLossV = toNum(currentLoss);
+
+    const H = Math.max(1, Math.min(36, Math.round(toNum(horizon, 12))));
+    const monthlyPayroll = salaryV * (1 + taxV / 100);
+    const severance = severanceV * salaryV;                  // выходное пособие (разово)
+    const replaceCost = replace ? (recruitV + setupV) : 0;    // найм замены (разово)
+    const totalGapLoss = replace ? gapLossV * gapMonthsV : 0; // потери пока нет замены
 
     const rows = [];
     let cumulative = 0;
@@ -163,9 +212,9 @@ export default function HireFireCalcTool() {
       // Затраты месяца: разово в м.1 — выходное + найм замены; gap-потери в первые gapMonths
       let cost = 0;
       if (m === 1) cost += severance + replaceCost;
-      if (replace && m <= gapMonths) cost += gapLoss;
+      if (replace && m <= gapMonthsV) cost += gapLossV;
       // Отдача месяца: устранённый текущий убыток + сэкономленный ФОТ (если без замены)
-      let benefit = currentLoss;
+      let benefit = currentLossV;
       if (!replace) benefit += monthlyPayroll; // экономим ФОТ, если не нанимаем замену
       const net = benefit - cost;
       cumulative += net;
@@ -313,13 +362,13 @@ export default function HireFireCalcTool() {
                 ? <>{tt('Найм окупается за')} <strong>{calc.payback} {tt('мес')}</strong> {tt('и даёт')} <strong style={{ color: 'var(--green)' }}>+{fmtMoneyFull(calc.adjusted)} {tt('сум')}</strong> {tt('за год с учётом удержания. Можно нанимать.')}</>
                 : calc.verdict === 'maybe'
                   ? <>{tt('Найм в плюсе, но окупается медленно')}{calc.payback !== null ? <> ({calc.payback} {tt('мес')})</> : ''}. {tt('Решение спорное — взвесьте риск ухода сотрудника.')}</>
-                  : <>{tt('Найм не окупается на горизонте')} {Math.min(12, Math.round(horizon))} {tt('мес — отдача меньше затрат. Не рекомендуется без пересмотра параметров.')}</>
+                  : <>{tt('Найм не окупается на горизонте')} {calc.cap12} {tt('мес — отдача меньше затрат. Не рекомендуется без пересмотра параметров.')}</>
             ) : (
               calc.verdict === 'yes'
                 ? <>{tt('Увольнение окупается за')} <strong>{calc.payback} {tt('мес')}</strong> {tt('и экономит')} <strong style={{ color: 'var(--green)' }}>+{fmtMoneyFull(calc.net12)} {tt('сум')}</strong> {tt('за год. Решение оправдано.')}</>
                 : calc.verdict === 'maybe'
                   ? <>{tt('Увольнение в плюсе, но эффект небольшой. Разовые затраты')} <strong className="mono">{fmtMoneyFull(calc.oneOff)} {tt('сум')}</strong>. {tt('Взвесьте необходимость.')}</>
-                  : <>{tt('Увольнение невыгодно: разовые затраты')} <strong className="mono">{fmtMoneyFull(calc.oneOff)} {tt('сум')}</strong> {tt('не окупаются за')} {Math.min(12, Math.round(horizon))} {tt('мес. Лучше сохранить сотрудника или снизить его убыточность.')}</>
+                  : <>{tt('Увольнение невыгодно: разовые затраты')} <strong className="mono">{fmtMoneyFull(calc.oneOff)} {tt('сум')}</strong> {tt('не окупаются за')} {calc.cap12} {tt('мес. Лучше сохранить сотрудника или снизить его убыточность.')}</>
             )}
           </div>
 

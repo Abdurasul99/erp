@@ -3,18 +3,47 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Персонал»: считаем последствия HR-решений ДО их принятия.
 // Бэкенд даёт baseline (ФОТ, выручка, маржа, средняя ЗП продавца, рабочих дней),
 // три сценария считаются на фронте от этих базовых чисел.
 
-function NumInput({ value, onChange, suffix }) {
+// ── Числовые поля ──
+// Стейт поля — СТРОКА: в onChange только чистка символов (Number('1.') = 1 и
+// Number('85 000') = NaN не дают вводить дроби и роняют весь расчёт в NaN).
+// type="text" + inputMode, т.к. type="number" на промежуточно невалидном вводе
+// («1500,», «1.») возвращает e.target.value = '' — поле само себя очищает.
+const cleanDec = (raw) => {
+  let s = normalizeDecimal(raw).replace(/[^\d.-]/g, '');
+  const neg = s.startsWith('-');            // минус допустим только первым символом
+  s = s.replace(/-/g, '');
+  const dot = s.indexOf('.');               // и только одна точка
+  if (dot !== -1) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+  return (neg ? '-' : '') + s;
+};
+const cleanInt = (raw) => String(raw ?? '').replace(/[^\d]/g, '');
+// Аккуратный вид — на onBlur, не в onChange: «1.» → «1», «-» → пусто, «007» → «7».
+const tidy = (raw, int) => {
+  const s = int ? cleanInt(raw) : cleanDec(raw);
+  const n = int ? parseInt(s, 10) : parseFloat(s);
+  return Number.isFinite(n) ? String(n) : '';
+};
+// Значение для математики: пустое/недописанное поле = 0, никогда не NaN.
+const num = (raw, def = 0) => {
+  const n = parseFloat(normalizeDecimal(raw));
+  return Number.isFinite(n) ? n : def;
+};
+
+function NumInput({ value, onChange, suffix, int = false }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <input
-        type="number"
+        type="text"
+        inputMode={int ? 'numeric' : 'decimal'}
         value={value}
-        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+        onChange={(e) => onChange(int ? cleanInt(e.target.value) : cleanDec(e.target.value))}
+        onBlur={(e) => onChange(tidy(e.target.value, int))}
         style={{
           flex: 1, minWidth: 0, padding: '9px 12px', borderRadius: 10,
           border: '1.5px solid var(--border, #E3EAF3)', background: 'var(--bg, #fff)',
@@ -58,22 +87,23 @@ export default function HrWhatifTool() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Все инпуты сценариев хранятся СТРОКАМИ (см. cleanDec/num), число берём в расчёте.
   // Сценарий 1 — повышение ЗП
-  const [raisePct, setRaisePct] = useState(10);
-  const [salesGrowth, setSalesGrowth] = useState(8);
+  const [raisePct, setRaisePct] = useState('10');
+  const [salesGrowth, setSalesGrowth] = useState('8');
 
   // Сценарий 2 — найм нового продавца
-  const [hireSalary, setHireSalary] = useState(0);
-  const [hireCommission, setHireCommission] = useState(5);
-  const [hireDailyRev, setHireDailyRev] = useState(0);
-  const [hireDays, setHireDays] = useState(0);
+  const [hireSalary, setHireSalary] = useState('0');
+  const [hireCommission, setHireCommission] = useState('5');
+  const [hireDailyRev, setHireDailyRev] = useState('0');
+  const [hireDays, setHireDays] = useState('0');
 
   // Сценарий 3 — пересборка мотивации
-  const [oldBase, setOldBase] = useState(0);
-  const [oldCommission, setOldCommission] = useState(5);
-  const [newBase, setNewBase] = useState(0);
-  const [newCommission, setNewCommission] = useState(10);
-  const [sellerRevenue, setSellerRevenue] = useState(0);
+  const [oldBase, setOldBase] = useState('0');
+  const [oldCommission, setOldCommission] = useState('5');
+  const [newBase, setNewBase] = useState('0');
+  const [newCommission, setNewCommission] = useState('10');
+  const [sellerRevenue, setSellerRevenue] = useState('0');
 
   useEffect(() => {
     let ignore = false;
@@ -85,28 +115,34 @@ export default function HrWhatifTool() {
         if (ignore) return;
         const d = r.data || {};
         setBase(d);
-        // Префилл инпутов разумными значениями из baseline
-        setHireSalary(Math.round(d.avg_seller_salary || 0));
-        setHireDailyRev(Math.round((d.revenue_month || 0) / Math.max(d.work_days || 22, 1) / Math.max(d.sellers_count || 1, 1)));
-        setHireDays(d.work_days || 22);
-        setOldBase(Math.round(d.avg_seller_salary || 0));
-        setNewBase(Math.round((d.avg_seller_salary || 0) * 0.6));
-        setSellerRevenue(Math.round((d.revenue_month || 0) / Math.max(d.sellers_count || 1, 1)));
+        // Префилл инпутов разумными значениями из baseline (строками — стейт полей строковый;
+        // через num(), чтобы строка/NULL из БД не превратились в «NaN» прямо в поле)
+        const salary = num(d.avg_seller_salary);
+        const revMonth = num(d.revenue_month);
+        const workDays = Math.round(num(d.work_days)) || 22;
+        const sellers = num(d.sellers_count) || 1;
+        setHireSalary(String(Math.round(salary)));
+        setHireDailyRev(String(Math.round(revMonth / Math.max(workDays, 1) / Math.max(sellers, 1))));
+        setHireDays(String(workDays));
+        setOldBase(String(Math.round(salary)));
+        setNewBase(String(Math.round(salary * 0.6)));
+        setSellerRevenue(String(Math.round(revMonth / Math.max(sellers, 1))));
       })
       .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
   }, [branchId]);
 
-  const margin = base ? (base.gross_margin_pct || 0) / 100 : 0;
-  const payroll = base?.payroll_month || 0;
-  const revenue = base?.revenue_month || 0;
+  // База из API: numeric из БД приходит строкой — через num(), иначе NaN протечёт в итоги.
+  const margin = num(base?.gross_margin_pct) / 100;
+  const payroll = num(base?.payroll_month);
+  const revenue = num(base?.revenue_month);
 
   // ── Сценарий 1: повышение ЗП ──
   const s1 = useMemo(() => {
-    const newPayroll = payroll * (1 + (raisePct || 0) / 100);
+    const newPayroll = payroll * (1 + num(raisePct) / 100);
     const extraCost = newPayroll - payroll;
-    const extraRevenue = revenue * ((salesGrowth || 0) / 100);
+    const extraRevenue = revenue * (num(salesGrowth) / 100);
     const extraProfit = extraRevenue * margin;
     const net = extraProfit - extraCost;
     return { newPayroll, extraCost, extraRevenue, extraProfit, net };
@@ -114,18 +150,18 @@ export default function HrWhatifTool() {
 
   // ── Сценарий 2: найм нового продавца ──
   const s2 = useMemo(() => {
-    const monthRevenue = (hireDailyRev || 0) * (hireDays || 0);
+    const monthRevenue = num(hireDailyRev) * num(hireDays);
     const grossProfit = monthRevenue * margin;
-    const commissionCost = monthRevenue * ((hireCommission || 0) / 100);
-    const totalCost = (hireSalary || 0) + commissionCost;
+    const commissionCost = monthRevenue * (num(hireCommission) / 100);
+    const totalCost = num(hireSalary) + commissionCost;
     const net = grossProfit - totalCost;
     return { monthRevenue, grossProfit, commissionCost, totalCost, net };
   }, [hireDailyRev, hireDays, margin, hireCommission, hireSalary]);
 
   // ── Сценарий 3: пересборка мотивации ──
   const s3 = useMemo(() => {
-    const oldPay = (oldBase || 0) + (sellerRevenue || 0) * ((oldCommission || 0) / 100);
-    const newPay = (newBase || 0) + (sellerRevenue || 0) * ((newCommission || 0) / 100);
+    const oldPay = num(oldBase) + num(sellerRevenue) * (num(oldCommission) / 100);
+    const newPay = num(newBase) + num(sellerRevenue) * (num(newCommission) / 100);
     const diff = newPay - oldPay;
     return { oldPay, newPay, diff };
   }, [oldBase, oldCommission, newBase, newCommission, sellerRevenue]);
@@ -152,7 +188,7 @@ export default function HrWhatifTool() {
           <div className="grid-4" style={{ marginBottom: 18 }}>
             <Tile icon="💰" label={tt('ФОТ (оценка)')} value={fmtMoneyFull(payroll)} sub={tt('сум/мес')} color="#9333EA" />
             <Tile icon="📈" label={tt('Выручка')} value={fmtMoneyFull(revenue)} sub={tt('сум/мес')} color="#16A34A" />
-            <Tile icon="🧮" label={tt('Валовая маржа')} value={`${(base.gross_margin_pct || 0).toFixed(0)}%`} sub={tt('средняя')} color="#0EA5E9" />
+            <Tile icon="🧮" label={tt('Валовая маржа')} value={`${num(base.gross_margin_pct).toFixed(0)}%`} sub={tt('средняя')} color="#0EA5E9" />
             <Tile icon="🧑‍💼" label={tt('Ср. ЗП продавца')} value={fmtMoneyFull(base.avg_seller_salary || 0)} sub={`${base.work_days || 22} ${tt('раб. дней')}`} color="#D97706" />
           </div>
 
@@ -196,7 +232,7 @@ export default function HrWhatifTool() {
                   <NumInput value={hireDailyRev} onChange={setHireDailyRev} suffix={tt('сум')} />
                 </Field>
                 <Field label={tt('Рабочих дней в месяц')}>
-                  <NumInput value={hireDays} onChange={setHireDays} suffix={tt('дн')} />
+                  <NumInput value={hireDays} onChange={setHireDays} suffix={tt('дн')} int />
                 </Field>
               </div>
               <div>

@@ -5,6 +5,30 @@ import { useTranslation } from '../useTranslation.js';
 import CategoryCombobox from './CategoryCombobox.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
 import CurrencyAmountInput from './CurrencyAmountInput.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// ── Сумма «Принято» вводится ТЕКСТОМ ─────────────────────────────────────────
+// У <input type="number"> Chrome отдаёт e.target.value === '' на промежуточно
+// невалидном вводе («2 500 000», «12,5»): поле само себя очищало, а расчёт
+// уходил «пустым» — с подстановкой ожидаемой суммы из placeholder, поэтому
+// кассир был уверен, что ввёл свою. type="text" + inputMode="decimal".
+// В onChange — только чистка символов, нормализация — в onBlur.
+const cleanMoney = (s) => String(s ?? '')
+  .replace(/[^\d.,\s\u00A0]/g, '')
+  .replace(/[\s\u00A0]+/g, ' ');
+const toNum = (s) => {
+  // \u0420\u0430\u0437\u0431\u043E\u0440 \u0447\u0435\u0440\u0435\u0437 \u043E\u0431\u0449\u0438\u0439 normalizeDecimal: \u00AB1.500.000\u00BB \u0438 \u00AB1,500,000\u00BB \u2014 \u044D\u0442\u043E \u0440\u0430\u0437\u0440\u044F\u0434\u044B
+  // \u0442\u044B\u0441\u044F\u0447, \u0430 \u043D\u0435 \u0434\u0440\u043E\u0431\u044C. \u0417\u0430\u043C\u0435\u043D\u0430 \u043E\u0434\u043D\u043E\u0439 \u0437\u0430\u043F\u044F\u0442\u043E\u0439 \u043D\u0430 \u0442\u043E\u0447\u043A\u0443 \u0434\u0430\u0432\u0430\u043B\u0430
+  // parseFloat('1.500.000') = 1.5 \u2014 \u043F\u043E\u043B\u0442\u043E\u0440\u0430 \u043C\u0438\u043B\u043B\u0438\u043E\u043D\u0430 \u0441\u0442\u0430\u043D\u043E\u0432\u0438\u043B\u0438\u0441\u044C \u043F\u043E\u043B\u0443\u0442\u043E\u0440\u0430 \u0441\u0443\u043C\u0430\u043C\u0438.
+  const raw = normalizeDecimal(s);
+  if (!raw || raw === '.') return NaN;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : NaN;
+};
+const normMoney = (s) => {
+  const n = toNum(s);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '';
+};
 
 // Inline helpers for the detail modal
 function Row({ label, value, valueColor }) {
@@ -81,13 +105,32 @@ export default function CashIncome() {
     } catch (e) { setSettlementMsg({ type: 'error', text: e.response?.data?.error || t('error') }); }
   };
 
+  // Что реально уйдёт на сервер как received_amount. Пустое поле — это по-прежнему
+  // «принял ровно ожидаемую сумму» (она в placeholder), но НИКОГДА не строка и не
+  // NaN: сервер делает parseFloat, и «2 500 000» превратилось бы в 2 — с фиктивной
+  // недостачей в кассе. Мусор в поле → NaN → кнопка подтверждения заблокирована.
+  const settleReceived = () => {
+    if (!activeSettlement) return NaN;
+    const expected = parseFloat(activeSettlement.singleSale
+      ? activeSettlement.singleSale.amount
+      : activeSettlement.seller?.total_amount);
+    const txt = String(activeSettlement.received ?? '');
+    if (!txt.trim()) return Number.isFinite(expected) ? expected : NaN;
+    const n = toNum(txt);
+    return Number.isFinite(n) && n > 0 ? n : NaN;
+  };
+  const setReceived = (raw) => setActiveSettlement(a => (a ? { ...a, received: cleanMoney(raw) } : a));
+  const blurReceived = () => setActiveSettlement(a => (a ? { ...a, received: normMoney(a.received) } : a));
+
   const acceptSettlement = async () => {
     if (!activeSettlement) return;
+    const received = settleReceived();
+    if (!Number.isFinite(received) || received <= 0) return;
     setSettlementMsg(null);
     try {
       const r = await api.post('/cash/settlement/accept', {
         seller_id: activeSettlement.seller.seller_id,
-        received_amount: activeSettlement.received || activeSettlement.seller.total_amount,
+        received_amount: received,
       });
       const d = r.data;
       let txt = `✓ Принято ${d.count} продаж · ${fmtMoney(d.expected)}`;
@@ -326,15 +369,18 @@ export default function CashIncome() {
                 </div>
                 <div style={{ marginBottom: '16px' }}>
                   <label className="label">{t('receivedAmount') || 'Получено'}</label>
-                  <input className="input mono" type="number" min="0" step="any"
-                    value={activeSettlement.received}
-                    onChange={e => setActiveSettlement({ ...activeSettlement, received: e.target.value })}
+                  <input className="input mono" type="text" inputMode="decimal"
+                    value={activeSettlement.received ?? ''}
+                    onChange={e => setReceived(e.target.value)}
+                    onBlur={blurReceived}
                     placeholder={String(Math.round(parseFloat(activeSettlement.singleSale.amount)))} />
                 </div>
                 <div style={{ display: 'flex', gap: '10px' }}>
-                  <button onClick={async () => {
+                  <button disabled={!Number.isFinite(settleReceived())} onClick={async () => {
+                      const received = settleReceived();
+                      if (!Number.isFinite(received) || received <= 0) return;
                       try {
-                        await api.post('/cash/settlement/accept-one', { cash_id: activeSettlement.singleSale.cash_id, received_amount: parseFloat(activeSettlement.received) || activeSettlement.singleSale.amount });
+                        await api.post('/cash/settlement/accept-one', { cash_id: activeSettlement.singleSale.cash_id, received_amount: received });
                         setActiveSettlement(null); load();
                       } catch (e) { setSettlementMsg({ type: 'error', text: e.response?.data?.error || 'Ошибка' }); }
                     }} className="btn btn-success" style={{ flex: 2, justifyContent: 'center' }}>{t('confirmSettlement') || 'Подтвердить'}</button>
@@ -357,14 +403,15 @@ export default function CashIncome() {
                 </div>
                 <div style={{ marginBottom: '16px' }}>
                   <label className="label">{t('receivedAmount')}</label>
-                  <input className="input mono" type="number" min="0" step="any"
-                    value={activeSettlement.received}
-                    onChange={e => setActiveSettlement({ ...activeSettlement, received: e.target.value })}
+                  <input className="input mono" type="text" inputMode="decimal"
+                    value={activeSettlement.received ?? ''}
+                    onChange={e => setReceived(e.target.value)}
+                    onBlur={blurReceived}
                     placeholder={String(Math.round(parseFloat(activeSettlement.seller.total_amount)))} />
                   <div style={{ fontSize: '11px', color: '#9EA3BF', marginTop: '4px' }}>{t('settleHint')}</div>
                 </div>
                 <div style={{ display: 'flex', gap: '10px' }}>
-                  <button onClick={acceptSettlement} className="btn btn-success" style={{ flex: 2, justifyContent: 'center' }}>{t('confirmSettlement')}</button>
+                  <button disabled={!Number.isFinite(settleReceived())} onClick={acceptSettlement} className="btn btn-success" style={{ flex: 2, justifyContent: 'center' }}>{t('confirmSettlement')}</button>
                   <button onClick={() => setActiveSettlement(null)} className="btn btn-ghost" style={{ flex: 1, justifyContent: 'center' }}>{t('cancel')}</button>
                 </div>
               </div>

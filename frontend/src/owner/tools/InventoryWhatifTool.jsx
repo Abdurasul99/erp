@@ -3,21 +3,32 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Склад»: read-only baseline c сервера, вся математика сценариев на фронте.
 // 4 сценария: объём закупки · цена поставщика · распродажа неликвида · сравнение поставщиков.
 
-const num = (v, d = 0) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+const num = (v, d = 0) => { const n = parseFloat(normalizeDecimal(v)); return Number.isFinite(n) ? n : d; };
 const pct = (v) => `${(num(v)).toFixed(1)}%`;
 
+// type="text": у type="number" Chrome отдаёт пустую строку, пока введённое не
+// стало корректным числом, — набор цены с запятой стирал поле сам. Диапазон
+// применяем на blur, а не в onChange, иначе первую цифру не удалить.
 function NumField({ label, value, onChange, suffix, min = 0, step = 1 }) {
+  const onBlur = () => {
+    const s = String(value ?? '').trim();
+    if (s === '') return;
+    const n = num(s, null);
+    onChange(n == null ? '' : String(min != null && n < min ? min : n));
+  };
   return (
     <label style={{ display: 'block' }}>
       <div style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700, marginBottom: 4 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <input
-          type="number" value={value} min={min} step={step}
-          onChange={(e) => onChange(e.target.value)}
+          type="text" inputMode="decimal" value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.,\s]/g, ''))}
+          onBlur={onBlur}
           style={{
             width: '100%', padding: '8px 10px', borderRadius: 8,
             border: '1px solid var(--border, #E3EAF3)', fontWeight: 700,

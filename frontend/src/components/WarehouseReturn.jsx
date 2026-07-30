@@ -5,6 +5,29 @@ import { formatDate, formatTime, useMsg, fmtMoney, fmtNum } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import SupplierCombobox from './SupplierCombobox.jsx';
 import ProductCombobox from './ProductCombobox.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// Числовые поля (количество, деньги) держим СТРОКОЙ и type="text":
+// у type="number" Chrome отдаёт e.target.value === '' на промежуточно-невалидном
+// вводе («1,5», «250 000»), и контролируемое поле само себя очищает — человек
+// «не может ввести число». В onChange только чистка символов, нормализация и
+// округление — на onBlur.
+const cleanDec = (s) => String(s).replace(/[^\d.,\s]/g, '');
+// Строка поля → число. Пустое/мусор → NaN, чтобы вызывающий сам решил, что делать
+// (в расчёты и на сервер NaN уходить не должен).
+const toNum = (s) => {
+  const v = normalizeDecimal(s);
+  if (v === '' || v === '.') return NaN;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : NaN;
+};
+// Приведение к аккуратному виду на уходе фокуса: пустое остаётся пустым,
+// иначе убираем пробелы, запятую меняем на точку, режем лишние знаки.
+const normDec = (s, decimals) => {
+  const n = toNum(s);
+  if (!Number.isFinite(n)) return '';
+  return String(parseFloat(Math.max(0, n).toFixed(decimals)));
+};
 
 // Return goods TO the supplier (товар уходит обратно поставщику — обычно брак).
 // Decrements stock; optionally records cash inflow if supplier refunded the money.
@@ -34,9 +57,16 @@ export default function WarehouseReturn() {
   const selectedProduct = products.find(p => p.id === parseInt(form.product_id));
   const fmtQty = (v) => parseFloat(parseFloat(v).toFixed(3)).toString();
 
+  // Считаем один раз: и для проверки, и для показа блока способа оплаты.
+  const qtyNum = toNum(form.quantity);
+  const refundNum = toNum(form.refund_amount);
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.product_id || !form.quantity || parseFloat(form.quantity) <= 0) {
+    // Своя проверка вместо required: у type="text" нативного пузыря нет, а с
+    // required на type="number" браузер ругался «Введите число» на заполненном
+    // с виду поле и вообще не давал отправить форму.
+    if (!form.product_id || !Number.isFinite(qtyNum) || qtyNum <= 0) {
       setMsg('error', uz ? 'Tovar va miqdor majburiy' : 'Товар и количество обязательны');
       return;
     }
@@ -48,9 +78,9 @@ export default function WarehouseReturn() {
     try {
       await api.post('/stock/return-to-supplier', {
         product_id: parseInt(form.product_id),
-        quantity: parseFloat(form.quantity),
+        quantity: qtyNum,
         supplier_id: form.supplier_id,
-        refund_amount: parseFloat(form.refund_amount) || 0,
+        refund_amount: Number.isFinite(refundNum) && refundNum > 0 ? refundNum : 0,
         payment_method: form.payment_method,
         note: form.note,
       });
@@ -95,13 +125,17 @@ export default function WarehouseReturn() {
           <div className="form-grid" style={{ marginBottom: '12px' }}>
             <div>
               <label className="label">{uz ? 'Miqdor' : 'Количество'} *</label>
-              <input className="input mono" type="number" min="0.001" step="any" value={form.quantity}
-                onChange={e => setForm({ ...form, quantity: e.target.value })} required placeholder="0" />
+              <input className="input mono" type="text" inputMode="decimal" value={form.quantity}
+                onChange={e => setForm(f => ({ ...f, quantity: cleanDec(e.target.value) }))}
+                onBlur={() => setForm(f => ({ ...f, quantity: normDec(f.quantity, 3) }))}
+                placeholder="0" />
             </div>
             <div>
               <label className="label">{uz ? 'Qaytarilgan summa (UZS)' : 'Возвращено денег (UZS)'}</label>
-              <input className="input mono" type="number" min="0" step="any" value={form.refund_amount}
-                onChange={e => setForm({ ...form, refund_amount: e.target.value })} placeholder="0" />
+              <input className="input mono" type="text" inputMode="decimal" value={form.refund_amount}
+                onChange={e => setForm(f => ({ ...f, refund_amount: cleanDec(e.target.value) }))}
+                onBlur={() => setForm(f => ({ ...f, refund_amount: normDec(f.refund_amount, 2) }))}
+                placeholder="0" />
             </div>
           </div>
 
@@ -110,7 +144,7 @@ export default function WarehouseReturn() {
             <SupplierCombobox value={form.supplier_id} onChange={v => setForm({ ...form, supplier_id: v })} />
           </div>
 
-          {parseFloat(form.refund_amount) > 0 && (
+          {Number.isFinite(refundNum) && refundNum > 0 && (
             <div style={{ marginBottom: '12px' }}>
               <label className="label">{uz ? 'Toʻlov usuli' : 'Способ оплаты'}</label>
               <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>

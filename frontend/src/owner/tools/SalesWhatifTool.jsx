@@ -3,22 +3,49 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Продажи»: 5 сценариев. Бэкенд отдаёт baseline,
 // вся математика сценариев — на фронте (без новых таблиц).
 
 const PRIMARY = 'var(--primary)';
 
-function NumField({ label, value, onChange, suffix, step = 1 }) {
+// ── Числовые поля ──
+// Стейт поля — СТРОКА: в onChange только чистка символов, число получаем в расчётах.
+// type="text" + inputMode="decimal", потому что type="number" на промежуточно
+// невалидном вводе («1500,», «1.») отдаёт e.target.value = '' и поле само себя чистит.
+const cleanDec = (raw) => {
+  let s = normalizeDecimal(raw).replace(/[^\d.-]/g, '');
+  const neg = s.startsWith('-');            // минус допустим только первым символом
+  s = s.replace(/-/g, '');
+  const dot = s.indexOf('.');               // и только одна точка
+  if (dot !== -1) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+  return (neg ? '-' : '') + s;
+};
+// Приведение к аккуратному виду — на onBlur (не в onChange!): «1.» → «1», «-» → пусто.
+const tidyDec = (raw) => {
+  const s = cleanDec(raw);
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? String(n) : '';
+};
+// Значение для математики: пустое/недописанное поле = 0 (никогда не NaN).
+const num = (raw, def = 0) => {
+  const n = parseFloat(normalizeDecimal(raw));
+  return Number.isFinite(n) ? n : def;
+};
+
+function NumField({ label, value, onChange, suffix, readOnly = false }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 130 }}>
       <span style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700 }}>{label}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <input
-          type="number"
+          type="text"
+          inputMode="decimal"
           value={value}
-          step={step}
-          onChange={(e) => onChange(e.target.value === '' ? '' : parseFloat(e.target.value))}
+          readOnly={readOnly}
+          onChange={(e) => onChange(cleanDec(e.target.value))}
+          onBlur={(e) => onChange(tidyDec(e.target.value))}
           style={{
             width: '100%', padding: '8px 10px', borderRadius: 8,
             border: '1px solid var(--border, #E3EAF3)', fontSize: 14, fontWeight: 700,
@@ -79,19 +106,19 @@ export default function SalesWhatifTool() {
       .finally(() => setLoading(false));
   }, [branchId]);
 
-  // ----- scenario inputs -----
-  const [priceDelta, setPriceDelta] = useState(-10);   // %
-  const [demandDelta, setDemandDelta] = useState(15);  // %
-  const [discount, setDiscount] = useState(15);        // %
-  const [salesGrowth, setSalesGrowth] = useState(30);  // %
-  const [newClientsGrowth, setNewClientsGrowth] = useState(20); // %
-  const [conversion, setConversion] = useState(15);    // %
-  const [recoveryRate, setRecoveryRate] = useState(20);// %
-  const [recoveredCheck, setRecoveredCheck] = useState(45000);
+  // ----- scenario inputs (строки, см. cleanDec/num) -----
+  const [priceDelta, setPriceDelta] = useState('-10');   // %
+  const [demandDelta, setDemandDelta] = useState('15');  // %
+  const [discount, setDiscount] = useState('15');        // %
+  const [salesGrowth, setSalesGrowth] = useState('30');  // %
+  const [newClientsGrowth, setNewClientsGrowth] = useState('20'); // %
+  const [conversion, setConversion] = useState('15');    // %
+  const [recoveryRate, setRecoveryRate] = useState('20');// %
+  const [recoveredCheck, setRecoveredCheck] = useState('45000');
 
   // sync defaults from baseline once loaded
   useEffect(() => {
-    if (base?.best_seller_avg_check) setRecoveredCheck(Math.round(base.avg_check || 45000));
+    if (base?.best_seller_avg_check) setRecoveredCheck(String(Math.round(base.avg_check || 45000)));
   }, [base]);
 
   const b = base || {};
@@ -103,8 +130,8 @@ export default function SalesWhatifTool() {
   const s2 = useMemo(() => {
     const revNo = monthlyRevenue;
     const profitNo = revNo * marginRatio;
-    const newQtyFactor = 1 + (salesGrowth || 0) / 100;
-    const priceFactor = 1 - (discount || 0) / 100;
+    const newQtyFactor = 1 + num(salesGrowth) / 100;
+    const priceFactor = 1 - num(discount) / 100;
     const revWith = revNo * newQtyFactor * priceFactor;
     // себестоимость растёт с количеством, цена-скидка её не меняет
     const costWith = revNo * costRatio * newQtyFactor;
@@ -116,8 +143,8 @@ export default function SalesWhatifTool() {
   const s1 = useMemo(() => {
     const revNo = monthlyRevenue;
     const profitNo = revNo * marginRatio;
-    const priceFactor = 1 + (priceDelta || 0) / 100;
-    const qtyFactor = 1 + (demandDelta || 0) / 100;
+    const priceFactor = 1 + num(priceDelta) / 100;
+    const qtyFactor = 1 + num(demandDelta) / 100;
     const revWith = revNo * priceFactor * qtyFactor;
     const costWith = revNo * costRatio * qtyFactor;
     const profitWith = revWith - costWith;
@@ -141,8 +168,8 @@ export default function SalesWhatifTool() {
   // --- Scenario 4: new customer acquisition ---
   const s4 = useMemo(() => {
     const cur = b.new_clients_per_month || 0;
-    const projected = cur * (1 + (newClientsGrowth || 0) / 100);
-    const newRegulars = projected * (conversion || 0) / 100;
+    const projected = cur * (1 + num(newClientsGrowth) / 100);
+    const newRegulars = projected * num(conversion) / 100;
     const ltv = b.avg_ltv || 0;
     const ltvBaseGrowth = newRegulars * ltv;
     // доп. месячная выручка от новых клиентов: новые клиенты × средний чек
@@ -153,8 +180,8 @@ export default function SalesWhatifTool() {
   // --- Scenario 5: reactivate sleeping ---
   const s5 = useMemo(() => {
     const sleeping = b.sleeping_clients || 0;
-    const recovered = sleeping * (recoveryRate || 0) / 100;
-    const revenue = recovered * (recoveredCheck || 0);
+    const recovered = sleeping * num(recoveryRate) / 100;
+    const revenue = recovered * num(recoveredCheck);
     const ltv = b.avg_ltv || 0;
     const restoredLtv = recovered * ltv;
     return { sleeping, recovered, revenue, restoredLtv };
@@ -257,9 +284,11 @@ export default function SalesWhatifTool() {
           {/* Scenario 5 */}
           <Card icon="😴" title={tt('Сценарий 5 · Реактивация спящих клиентов')} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
-              <NumField label={tt('Спящих клиентов')} value={s5.sleeping} onChange={() => {}} />
+              {/* Показатель из базы, не вводится руками — помечен readOnly, чтобы поле
+                  не выглядело сломанным (ввод в него и раньше игнорировался). */}
+              <NumField label={tt('Спящих клиентов')} value={s5.sleeping} onChange={() => {}} readOnly />
               <NumField label={tt('Доля возврата')} value={recoveryRate} onChange={setRecoveryRate} suffix="%" />
-              <NumField label={tt('Чек возвращённого')} value={recoveredCheck} onChange={setRecoveredCheck} step={1000} suffix="UZS" />
+              <NumField label={tt('Чек возвращённого')} value={recoveredCheck} onChange={setRecoveredCheck} suffix="UZS" />
             </div>
             <Row label={tt('Спящих клиентов в базе')} value={fmtNum(Math.round(s5.sleeping))} />
             <Row label={tt('Вернётся клиентов')} value={fmtNum(Math.round(s5.recovered))} strong color={PRIMARY} />

@@ -4,23 +4,50 @@ import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull } fro
 import { BranchScope } from '../OwnerShell.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Финансы»: 3 сценария-калькулятора (открытие филиала / кредит / повышение цен).
 // Baseline-цифры приходят с GET /api/finance/whatif-base, ВСЯ математика — на фронте.
 // Деньги — UZS полным числом (fmtMoneyFull). Доступ — только учредитель/гендиректор.
 
-// Поле ввода с подписью (число)
-function NumField({ label, value, onChange, suffix, min, max, step }) {
+// Значения полей хранятся СЫРЫМИ СТРОКАМИ. В onChange — только чистка символов,
+// кламп диапазона — на onBlur: коэрсия в onChange не давала ввести «24.5» (на шаге
+// «24.» parseFloat давал 24 и React стирал точку) и обрезала «50 000 000» до 50.
+// toNum — единственное место превращения строки в число (в расчётах сценариев).
+const toNum = (v, def = 0) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : def;
+  const s = normalizeDecimal(v);
+  if (s === '') return def;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : def;
+};
+// Приведение к диапазону при уходе из поля. Пустое остаётся пустым (в расчёте это 0).
+const normNum = (v, min, max) => {
+  const s = normalizeDecimal(v);
+  if (s === '') return '';
+  let n = parseFloat(s);
+  if (!Number.isFinite(n)) return '';
+  if (min != null) n = Math.max(min, n);
+  if (max != null) n = Math.min(max, n);
+  return String(n);
+};
+
+// Поле ввода с подписью (число).
+// type="text" + inputMode="decimal", а не type="number": на промежуточно-невалидном
+// вводе («50 000 000», «24,») Chrome отдаёт пустую строку и поле само себя очищает.
+// step у текстового поля стрелок нет — величина шага остаётся только в вызовах.
+function NumField({ label, value, onChange, suffix, min, max }) {
   const { tt } = useTt();
   return (
     <label style={{ display: 'block', marginBottom: 12 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text2)', marginBottom: 5 }}>{tt(label)}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input
-          type="number"
+          type="text"
+          inputMode="decimal"
           value={value}
-          min={min} max={max} step={step}
-          onChange={(e) => onChange(e.target.value === '' ? '' : parseFloat(e.target.value))}
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.,\s]/g, ''))}
+          onBlur={() => onChange(normNum(value, min, max))}
           style={{
             flex: 1, minWidth: 0, padding: '9px 12px', fontSize: 14, fontWeight: 600,
             border: '1.5px solid var(--border, #E3EAF3)', borderRadius: 10,
@@ -51,17 +78,18 @@ export default function FinWhatifTool() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Значения полей — строки (см. NumField), в числа переводит toNum в расчётах.
   // Сценарий 1 — филиал
-  const [invest, setInvest] = useState(50000000);
-  const [revShare, setRevShare] = useState(60);
-  const [branchFixed, setBranchFixed] = useState(8000000);
+  const [invest, setInvest] = useState('50000000');
+  const [revShare, setRevShare] = useState('60');
+  const [branchFixed, setBranchFixed] = useState('8000000');
   // Сценарий 2 — кредит
-  const [loanAmount, setLoanAmount] = useState(50000000);
-  const [loanRate, setLoanRate] = useState(24);
-  const [loanTerm, setLoanTerm] = useState(24);
+  const [loanAmount, setLoanAmount] = useState('50000000');
+  const [loanRate, setLoanRate] = useState('24');
+  const [loanTerm, setLoanTerm] = useState('24');
   // Сценарий 3 — цены
-  const [priceUp, setPriceUp] = useState(10);
-  const [demandDrop, setDemandDrop] = useState(8);
+  const [priceUp, setPriceUp] = useState('10');
+  const [demandDrop, setDemandDrop] = useState('8');
 
   useEffect(() => {
     let ignore = false;
@@ -87,19 +115,19 @@ export default function FinWhatifTool() {
 
   // === Сценарий 1: открытие филиала ===
   const s1 = useMemo(() => {
-    const addRevenue = curRevenue * ((parseFloat(revShare) || 0) / 100);
+    const addRevenue = curRevenue * (Math.max(0, toNum(revShare)) / 100);
     const grossMargin = 1 - cogsRatio - otherVarRatio;       // валовая маржа (доля)
-    const addProfit = addRevenue * grossMargin - (parseFloat(branchFixed) || 0);
+    const addProfit = addRevenue * grossMargin - Math.max(0, toNum(branchFixed));
     const totalProfit = curProfit + addProfit;
-    const payback = addProfit > 0 ? (parseFloat(invest) || 0) / addProfit : null;  // месяцев
+    const payback = addProfit > 0 ? Math.max(0, toNum(invest)) / addProfit : null;  // месяцев
     return { addRevenue, addProfit, totalProfit, payback };
   }, [curRevenue, revShare, cogsRatio, otherVarRatio, branchFixed, curProfit, invest]);
 
   // === Сценарий 2: кредит (аннуитет) ===
   const s2 = useMemo(() => {
-    const P = parseFloat(loanAmount) || 0;
-    const n = parseFloat(loanTerm) || 0;
-    const r = ((parseFloat(loanRate) || 0) / 100) / 12;    // месячная ставка
+    const P = Math.max(0, toNum(loanAmount));
+    const n = Math.max(0, toNum(loanTerm));
+    const r = (Math.max(0, toNum(loanRate)) / 100) / 12;    // месячная ставка
     let payment;
     if (n <= 0) payment = 0;
     else if (r === 0) payment = P / n;
@@ -114,8 +142,8 @@ export default function FinWhatifTool() {
 
   // === Сценарий 3: повышение цен ===
   const s3 = useMemo(() => {
-    const up = (parseFloat(priceUp) || 0) / 100;
-    const drop = (parseFloat(demandDrop) || 0) / 100;
+    const up = Math.max(0, toNum(priceUp)) / 100;
+    const drop = Math.max(0, toNum(demandDrop)) / 100;
     const qFactor = 1 - drop;                              // объём падает на drop
     const newRevenue = curRevenue * (1 + up) * qFactor;   // цена растёт на up
     // Себестоимость и прочие переменные масштабируются с объёмом, постоянные — без изменений
@@ -173,7 +201,9 @@ export default function FinWhatifTool() {
             <div className="grid-2" style={{ gap: 24 }}>
               <div>
                 <NumField label="Сумма кредита" value={loanAmount} onChange={setLoanAmount} suffix="сум" min={0} step={1000000} />
-                <NumField label="Ставка (% годовых)" value={loanRate} onChange={setLoanRate} suffix="%" min={0} max={24} step={1} />
+                {/* Верхняя граница ставки — 100% годовых: раньше здесь стояло max=24
+                    (совпадало со значением по умолчанию) и ставку 24.5% ввести было нельзя. */}
+                <NumField label="Ставка (% годовых)" value={loanRate} onChange={setLoanRate} suffix="%" min={0} max={100} step={1} />
                 <NumField label="Срок (месяцев)" value={loanTerm} onChange={setLoanTerm} suffix="мес" min={1} max={120} step={1} />
               </div>
               <div>

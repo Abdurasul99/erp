@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, PageHeader, Skeleton, EmptyState, fmtMoneyFull } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Глобальный «Что если» — единый бизнес-симулятор поверх РЕАЛЬНОГО baseline компании.
 // Никакого нового бэка: baseline тянем из GET /api/company/dashboard (totals),
@@ -26,7 +27,7 @@ import { useTt } from '../tt.js';
 //   чистая      = валовая − опер.расход
 //   точка безуб = опер.расход / margin   (margin = валовая / выручка)
 
-const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+const num = (v) => { const n = parseFloat(normalizeDecimal(v)); return isNaN(n) ? 0 : n; };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 // Пресеты — каждый просто выставляет набор рычагов

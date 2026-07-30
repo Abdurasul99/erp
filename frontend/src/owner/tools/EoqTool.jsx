@@ -3,11 +3,29 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // EOQ — оптимальный размер заказа (модель Уилсона).
 // D — годовой спрос (шт), S — стоимость размещения заказа, H — стоимость хранения единицы в год.
 // EOQ = sqrt(2 * D * S / H); заказов в год = D / EOQ; интервал = 365 / (D/EOQ);
 // годовые затраты = (D/EOQ)*S + (EOQ/2)*H.
+// Числовые поля калькулятора — строковый стейт. В onChange только чистим символы:
+// запятая → точка (ru-клавиатура), один разделитель, без минусов. Диапазон и
+// нормализация — на onBlur. У type="number" при промежуточном вводе («1500,»)
+// браузер отдаёт e.target.value === '' и поле само себя очищает, поэтому здесь
+// type="text" + inputMode="decimal".
+const cleanDec = (s) => {
+  const t = normalizeDecimal(s).replace(/[^\d.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '');
+};
+// Пусто оставляем пустым (eoqCalc трактует как 0), мусор вида «3.» приводим к «3».
+const normDec = (s) => {
+  if (s === '') return '';
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n >= 0 ? String(n) : '';
+};
+
 function eoqCalc(D, S, H) {
   D = Math.max(0, parseFloat(D) || 0);
   S = Math.max(0, parseFloat(S) || 0);
@@ -28,9 +46,9 @@ export default function EoqTool() {
   const [error, setError] = useState(null);
 
   // What-if — локальный калькулятор на клиенте.
-  const [wD, setWD] = useState(1000);
-  const [wS, setWS] = useState(50000);
-  const [wH, setWH] = useState(2000);
+  const [wD, setWD] = useState('1000');
+  const [wS, setWS] = useState('50000');
+  const [wH, setWH] = useState('2000');
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -128,21 +146,27 @@ export default function EoqTool() {
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
                   {tt('Годовой спрос (шт/год)')}
                 </label>
-                <input type="number" min="0" value={wD} onChange={e => setWD(e.target.value)}
+                <input type="text" inputMode="decimal" value={wD}
+                  onChange={e => setWD(cleanDec(e.target.value))}
+                  onBlur={() => setWD(v => normDec(v))}
                   style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
                   {tt('Стоимость заказа (сум)')}
                 </label>
-                <input type="number" min="0" value={wS} onChange={e => setWS(e.target.value)}
+                <input type="text" inputMode="decimal" value={wS}
+                  onChange={e => setWS(cleanDec(e.target.value))}
+                  onBlur={() => setWS(v => normDec(v))}
                   style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
                   {tt('Стоимость хранения единицы в год (сум)')}
                 </label>
-                <input type="number" min="0" value={wH} onChange={e => setWH(e.target.value)}
+                <input type="text" inputMode="decimal" value={wH}
+                  onChange={e => setWH(cleanDec(e.target.value))}
+                  onBlur={() => setWH(v => normDec(v))}
                   style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #E3EAF3)' }} />
               </div>
             </div>

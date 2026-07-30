@@ -2,6 +2,28 @@ import React, { useState, useEffect } from 'react';
 import api from '../api.js';
 import { useTranslation } from '../useTranslation.js';
 import { formatDate, fmtMoney, fmtNum, useMsg } from '../utils.js';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// ── Сумма долга вводится ТЕКСТОМ ─────────────────────────────────────────────
+// У <input type="number"> Chrome отдаёт e.target.value === '' на промежуточно
+// невалидном вводе, а долги набирают крупными числами с пробелами («2 500 000»)
+// и запятой: поле обнулялось само, и платёж уходил пустым. type="text" +
+// inputMode="decimal" — цифровая клавиатура и полный контроль над строкой.
+// В onChange — только чистка символов, нормализация — в onBlur.
+const cleanMoney = (s) => String(s ?? '')
+  .replace(/[^\d.,\s\u00A0]/g, '')
+  .replace(/[\s\u00A0]+/g, ' ');
+const toNum = (s) => {
+  const raw = normalizeDecimal(s);
+  if (!raw || raw === '.') return NaN;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : NaN;
+};
+// На blur: то же число без пробелов/хвостовых разделителей, деньги — до копеек.
+const normMoney = (s) => {
+  const n = toNum(s);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '';
+};
 
 const PMETHODS = [
   { key: 'cash',     label: '💵 Наличные' },
@@ -16,7 +38,7 @@ const PMETHODS = [
 //   id    — customer or supplier id; if null → list across all (only customer mode)
 //   inline — render inline (no card wrapper) vs full page
 export default function DebtsPanel({ mode = 'customer', id = null, inline = false }) {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   const [debts, setDebts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [payTarget, setPayTarget] = useState(null);
@@ -54,13 +76,25 @@ export default function DebtsPanel({ mode = 'customer', id = null, inline = fals
 
   const openPay = (d) => {
     setPayTarget(d);
-    setPayAmount(String(parseFloat(d.remaining || 0)));
+    // Подставляем остаток строкой; если остатка нет — пустое поле, а не «NaN».
+    const rest = parseFloat(d.remaining || 0);
+    setPayAmount(Number.isFinite(rest) && rest > 0 ? String(Math.round(rest * 100) / 100) : '');
     setPayMethod('cash'); setPayNote(''); setPayErr('');
   };
 
   const submitPay = async () => {
-    const amt = parseFloat(payAmount);
+    // Строка → число один раз, перед отправкой: на сервер не должны уйти ни
+    // NaN, ни «2 500 000» строкой (там parseFloat дал бы 2).
+    const amt = toNum(payAmount);
     if (!Number.isFinite(amt) || amt <= 0) { setPayErr(t('enterAmount')); return; }
+    const rest = Math.round(parseFloat(payTarget?.remaining || 0) * 100) / 100;
+    // Больше остатка сервер всё равно не примет — говорим об этом сразу и понятно.
+    if (rest > 0 && amt > rest + 0.01) {
+      setPayErr(lang === 'uz'
+        ? `Summa qoldiqdan katta: ${fmtNum(rest)}`
+        : `Сумма больше остатка: ${fmtNum(rest)}`);
+      return;
+    }
     try {
       const endpoint = mode === 'customer'
         ? `/stock/outcome/${payTarget.id}/pay`
@@ -164,7 +198,10 @@ export default function DebtsPanel({ mode = 'customer', id = null, inline = fals
             </div>
             <div style={{ marginBottom: '12px' }}>
               <label className="label">{t('amount') || 'Сумма'} (UZS)</label>
-              <input autoFocus className="input" type="number" min="0" step="any" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+              <input autoFocus className="input" type="text" inputMode="decimal"
+                value={payAmount}
+                onChange={e => { setPayAmount(cleanMoney(e.target.value)); if (payErr) setPayErr(''); }}
+                onBlur={() => setPayAmount(normMoney(payAmount))} />
             </div>
             <div style={{ marginBottom: '12px' }}>
               <label className="label">{t('paymentMethod') || 'Способ оплаты'}</label>

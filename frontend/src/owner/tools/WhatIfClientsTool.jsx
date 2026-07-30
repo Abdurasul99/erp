@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Pills, PageHeader, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Клиенты» — ЧИСТО КЛИЕНТСКИЙ ROI-калькулятор CRM-кампаний.
 // Никакого бэкенда/БД: вся математика в useMemo на введённых полях.
@@ -24,18 +25,28 @@ const WIF_SEG_DEFAULTS = {
   at_risk:     { size: 54,  check: 150000, label: 'В зоне риска' },
 };
 
-const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+const num = (v) => { const n = parseFloat(normalizeDecimal(v)); return isNaN(n) ? 0 : n; };
 
-// Поле числового ввода в едином стиле
+// Поле числового ввода в едином стиле.
+// type="text", а не "number": правильная клавиатура от inputMode здесь и так
+// была, но при вводе «1,5» браузер отдаёт пустую строку — поле самоочищалось.
+// Диапазон применяем на blur, иначе первую цифру не стереть.
 function NumField({ label, value, onChange, suffix, min = 0, step = 1, placeholder }) {
+  const onBlur = () => {
+    const s = String(value ?? '').trim();
+    if (s === '') return;
+    const n = num(s);
+    onChange(String(min != null && n < min ? min : n));
+  };
   return (
     <label style={{ display: 'block', marginBottom: 12 }}>
       <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: 'var(--text2)', marginBottom: 5 }}>{label}</span>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input
-          type="number" inputMode="decimal" min={min} step={step}
+          type="text" inputMode="decimal"
           value={value} placeholder={placeholder}
-          onChange={e => onChange(e.target.value)}
+          onChange={e => onChange(e.target.value.replace(/[^\d.,\s]/g, ''))}
+          onBlur={onBlur}
           className="input"
           style={{ width: '100%', fontWeight: 700 }}
         />

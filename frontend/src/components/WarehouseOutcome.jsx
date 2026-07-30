@@ -7,12 +7,42 @@ import { Icon } from '../icons.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
 import CustomerCombobox from './CustomerCombobox.jsx';
 import ProductCombobox from './ProductCombobox.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
 
 const sellerName = (item) => {
   const fn = [item.created_by_first_name, item.created_by_last_name].filter(Boolean).join(' ');
   return fn || item.created_by_name || '—';
 };
 const roleColor = { admin: '#6B6F8A', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
+
+// ── Числовые поля (деньги и количество) ──────────────────────────────────────
+// Стейт таких полей — СТРОКА, а сам input — type="text" inputMode="decimal".
+// У type="number" браузер при промежуточно-невалидном вводе («12 500» с пробелом,
+// «1500,» с запятой) отдаёт e.target.value = '' — контролируемое поле само себя
+// очищало, итого и заканчивалось нулём, и продажа уходила с ценой 0. Поэтому: в
+// onChange только чистка символов, диапазон и округление — в onBlur.
+const cleanDec = (v) => String(v ?? '').replace(/[^\d.,]/g, '');
+const isBlank  = (v) => String(v ?? '').trim() === '';
+// Строка поля → число. Запятая = десятичный разделитель (RU/UZ раскладка).
+const toNum = (v) => {
+  const n = parseFloat(normalizeDecimal(v));
+  return Number.isFinite(n) ? n : NaN;
+};
+// Нормализация на blur: пустое остаётся пустым (поле можно полностью очистить),
+// число зажимаем в диапазон и округляем. Нечисловой остаток НЕ превращаем в 0 —
+// его поймает проверка при отправке и покажет ошибку.
+const normDec = (v, dp = 3, min = 0, max = Infinity) => {
+  if (isBlank(v)) return '';
+  const n = toNum(v);
+  if (!Number.isFinite(n)) return cleanDec(v);
+  return String(Number(Math.min(max, Math.max(min, n)).toFixed(dp)));
+};
+// onBlur-нормализатор поля формы: значение читаем сразу, а стейт обновляем
+// функционально — чтобы не перетереть остальные поля формы.
+const blurNorm = (setState, key, dp) => (e) => {
+  const v = e.target.value;
+  setState(f => ({ ...f, [key]: normDec(v, dp) }));
+};
 
 export default function WarehouseOutcome() {
   const { t, lang } = useTranslation();
@@ -90,11 +120,15 @@ export default function WarehouseOutcome() {
     return acc;
   }, { count: 0, qty: 0, sum: 0 });
 
+  // Числа из строковых полей формы — считаем один раз: и для итога, и для отправки.
+  const qtyNum   = toNum(form.quantity);
+  const priceNum = toNum(form.price);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const qty = parseFloat(form.quantity);
+    const qty = qtyNum;
     if (!form.product_id) { setMsg('error', uz ? 'Tovarni tanlang' : 'Выберите товар'); return; }
-    if (!qty || qty <= 0) { setMsg('error', uz ? 'Miqdor majburiy' : 'Введите количество'); return; }
+    if (!Number.isFinite(qty) || qty <= 0) { setMsg('error', uz ? 'Miqdor majburiy' : 'Введите количество'); return; }
     if (selectedProduct && qty > parseFloat(selectedProduct.stock)) {
       setMsg('error', `${t('stock')}: ${fmtQty(selectedProduct.stock)} ${selectedProduct.unit}`);
       return;
@@ -104,19 +138,31 @@ export default function WarehouseOutcome() {
       setMsg('error', uz ? 'B2B sotuv uchun mijoz majburiy' : 'Для B2B продажи нужно выбрать клиента');
       return;
     }
-    const priceNum = parseFloat(form.price);
     if (!Number.isFinite(priceNum) || priceNum < 0) {
       setMsg('error', uz ? 'Narxni kiriting' : 'Введите цену'); return;
     }
+    const total = qty * priceNum;
+    // «Внесено сейчас»: пусто = ничего не внесли (0), но нечитаемую строку молча
+    // нулём не подменяем — иначе долг клиента посчитается неверно.
+    let paidAmt = total;
+    if (form.payment_status === 'debt') paidAmt = 0;
+    else if (form.payment_status === 'partial') {
+      if (isBlank(form.paid_amount)) paidAmt = 0;
+      else {
+        const p = toNum(form.paid_amount);
+        if (!Number.isFinite(p) || p < 0) {
+          setMsg('error', uz ? 'Kiritilgan summani tekshiring — raqam kiriting'
+                             : 'Проверьте сумму «Внесено сейчас» — введите число');
+          return;
+        }
+        paidAmt = p;
+      }
+    }
     setLoading(true);
     try {
-      const total = qty * (parseFloat(form.price) || 0);
-      const paidAmt = form.payment_status === 'paid' ? total
-                    : form.payment_status === 'debt' ? 0
-                    : (parseFloat(form.paid_amount) || 0);
       const res = await api.post('/stock/outcome', {
         product_id: parseInt(form.product_id), quantity: qty,
-        price: parseFloat(form.price) || 0, note: form.note,
+        price: priceNum, note: form.note,
         customer_id: form.customer_id || null,
         payment_method: form.payment_status === 'debt' ? 'debt' : form.payment_method,
         payment_status: form.payment_status,
@@ -142,14 +188,30 @@ export default function WarehouseOutcome() {
 
   const openEdit = (item) => {
     setEditItem(item);
-    setEditForm({ quantity: item.quantity, price: item.price || 0, note: item.note || '' });
+    clearMsg();
+    // Поля модалки тоже строковые — приводим значения из БД («5.000») к виду,
+    // который человек может дописать и стереть.
+    setEditForm({
+      quantity: normDec(item.quantity, 3),
+      price: item.price == null ? '' : normDec(item.price, 2),
+      note: item.note || '',
+    });
   };
 
   const handleEditSave = async () => {
+    const qty = toNum(editForm.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setMsg('error', uz ? 'Miqdor majburiy' : 'Введите количество'); return;
+    }
+    // Пусто = цена 0 (как и раньше), мусор — ошибка, а не молчаливый 0.
+    const price = isBlank(editForm.price) ? 0 : toNum(editForm.price);
+    if (!Number.isFinite(price) || price < 0) {
+      setMsg('error', uz ? 'Narxni tekshiring — raqam kiriting' : 'Проверьте цену — введите число'); return;
+    }
     try {
       await api.put(`/stock/outcome/${editItem.id}`, {
-        quantity: parseFloat(editForm.quantity),
-        price: parseFloat(editForm.price) || 0,
+        quantity: qty,
+        price,
         note: editForm.note,
       });
       setEditItem(null);
@@ -254,24 +316,28 @@ export default function WarehouseOutcome() {
                 <label className="label">
                   {uz ? 'Miqdor' : 'Количество'}{selectedProduct ? ` (${selectedProduct.unit})` : ''} *
                 </label>
-                <input className="input mono" type="number" min="0.001" step="any" inputMode="decimal" value={form.quantity}
-                  onChange={e => setForm({ ...form, quantity: e.target.value })} required placeholder="0" />
+                <input className="input mono" type="text" inputMode="decimal" value={form.quantity}
+                  onChange={e => setForm({ ...form, quantity: cleanDec(e.target.value) })}
+                  onBlur={blurNorm(setForm, 'quantity', 3)}
+                  required placeholder="0" />
               </div>
               <div>
                 <label className="label">
                   {uz ? 'Narxi' : 'Цена'}{selectedProduct ? ` (UZS / ${selectedProduct.unit})` : ' (UZS)'}
                 </label>
-                <input className="input mono" type="number" min="0" step="any" inputMode="decimal" value={form.price}
-                  onChange={e => setForm({ ...form, price: e.target.value })} placeholder="0" />
+                <input className="input mono" type="text" inputMode="decimal" value={form.price}
+                  onChange={e => setForm({ ...form, price: cleanDec(e.target.value) })}
+                  onBlur={blurNorm(setForm, 'price', 2)}
+                  placeholder="0" />
               </div>
             </div>
 
             {/* Total summary */}
-            {parseFloat(form.quantity) > 0 && parseFloat(form.price) > 0 && (
+            {qtyNum > 0 && priceNum > 0 && (
               <div style={{ background: 'rgba(67,56,202,.06)', borderRadius: '10px', padding: '10px 14px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text2)' }}>{uz ? 'Jami:' : 'Итого:'}</span>
                 <span className="mono" style={{ fontSize: '18px', fontWeight: 900, color: '#4338ca' }}>
-                  {fmtMoney(parseFloat(form.quantity) * parseFloat(form.price))}
+                  {fmtMoney(qtyNum * priceNum)}
                 </span>
               </div>
             )}
@@ -323,8 +389,10 @@ export default function WarehouseOutcome() {
             {form.payment_status === 'partial' && (
               <div style={{ marginBottom: '10px' }}>
                 <label className="label">{t('paidNow') || 'Внесено сейчас (UZS)'}</label>
-                <input className="input" type="number" min="0" step="any" value={form.paid_amount}
-                  onChange={e => setForm({ ...form, paid_amount: e.target.value })} placeholder="0" />
+                <input className="input" type="text" inputMode="decimal" value={form.paid_amount}
+                  onChange={e => setForm({ ...form, paid_amount: cleanDec(e.target.value) })}
+                  onBlur={blurNorm(setForm, 'paid_amount', 2)}
+                  placeholder="0" />
               </div>
             )}
 
@@ -541,16 +609,23 @@ export default function WarehouseOutcome() {
                 {sellerName(editItem)} · {formatDate(editItem.created_at)} · {statusBadge(editItem.status)}
               </div>
             </div>
+            {/* Ошибки проверки цены/количества показываем здесь — из окна истории
+                общий баннер формы не виден. */}
+            {msg && msg.type === 'error' && (
+              <div className={`alert alert-${msg.type}`} style={{ marginBottom: '12px' }}>{msg.text}</div>
+            )}
             <div className="form-grid" style={{ marginBottom: '12px' }}>
               <div>
                 <label className="label">{t('quantity')}</label>
-                <input className="input mono" type="number" min="0.001" step="any" value={editForm.quantity}
-                  onChange={e => setEditForm({ ...editForm, quantity: e.target.value })} />
+                <input className="input mono" type="text" inputMode="decimal" value={editForm.quantity}
+                  onChange={e => setEditForm({ ...editForm, quantity: cleanDec(e.target.value) })}
+                  onBlur={blurNorm(setEditForm, 'quantity', 3)} />
               </div>
               <div>
                 <label className="label">{t('priceSellSum')}</label>
-                <input className="input mono" type="number" min="0" step="any" value={editForm.price}
-                  onChange={e => setEditForm({ ...editForm, price: e.target.value })} />
+                <input className="input mono" type="text" inputMode="decimal" value={editForm.price}
+                  onChange={e => setEditForm({ ...editForm, price: cleanDec(e.target.value) })}
+                  onBlur={blurNorm(setEditForm, 'price', 2)} />
               </div>
             </div>
             <div style={{ marginBottom: '16px' }}>

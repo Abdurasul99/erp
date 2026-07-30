@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Редактор HR-критериев (учредитель / директор / менеджер задают правила на компанию).
 // tool: 'workday' | 'fire' | 'health'. Тянет /hr/criteria, сохраняет через PUT.
@@ -12,6 +13,15 @@ const FIELDS = {
   ],
   health: [['health', 'risk_low', 'Красная зона: score <', 0, 99], ['health', 'risk_mid', 'Жёлтая зона: score <', 1, 100]],
 };
+// Все поля всех групп — save() отправляет сразу три группы, значит приводить к
+// числу нужно каждое поле, а не только видимые в текущем инструменте.
+const ALL_FIELDS = Object.values(FIELDS).flat();
+
+// Значения полей держим СТРОКАМИ: Number() в onChange ломал ввод (Number('12.') = 12 —
+// точка исчезала и «12.5» набрать было нельзя, Number('1,5') = NaN уезжал в стейт и в PUT).
+const clean = (s) => String(s).replace(/[^\d.,]/g, '');
+const parseVal = (v) => parseFloat(normalizeDecimal(v));
+const clamp = (n, mn, mx) => Math.min(mx, Math.max(mn, n));
 
 export default function HrCriteriaBar({ tool }) {
   const { tt } = useTt();
@@ -22,10 +32,29 @@ export default function HrCriteriaBar({ tool }) {
   useEffect(() => { api.get('/hr/criteria').then(r => setC(r.data)).catch(() => {}); }, []);
   if (!c) return null;
   const set = (grp, key, val) => setC(prev => ({ ...prev, [grp]: { ...prev[grp], [key]: val } }));
+  // Ушли из поля — зажимаем в допустимый диапазон. Пустое оставляем пустым:
+  // при сохранении сервер вернёт текущее значение и поле заполнится ответом.
+  const blur = (grp, key, mn, mx) => {
+    const raw = String(c[grp]?.[key] ?? '').trim();
+    if (raw === '') return;
+    const n = parseVal(raw);
+    set(grp, key, Number.isFinite(n) ? String(clamp(n, mn, mx)) : '');
+  };
+  // Строки → числа только здесь, перед отправкой. Пустое/мусорное поле не
+  // отправляем вовсе: сервер сохранит уже заданное значение, а не 0.
+  const payload = () => {
+    const out = { workday: { ...(c.workday || {}) }, fire: { ...(c.fire || {}) }, health: { ...(c.health || {}) } };
+    ALL_FIELDS.forEach(([g, k, , mn, mx]) => {
+      const n = parseVal(out[g]?.[k]);
+      if (Number.isFinite(n)) out[g][k] = clamp(n, mn, mx);
+      else delete out[g][k];
+    });
+    return out;
+  };
   const save = async () => {
     setSaving(true);
     try {
-      const r = await api.put('/hr/criteria', { workday: c.workday, fire: c.fire, health: c.health });
+      const r = await api.put('/hr/criteria', payload());
       setC(x => ({ ...x, workday: r.data.workday, fire: r.data.fire, health: r.data.health }));
       setMsg('✅ Сохранено — обнови данные');
     } catch (e) { setMsg('⚠️ ' + (e.response?.data?.error || 'Ошибка')); }
@@ -45,8 +74,10 @@ export default function HrCriteriaBar({ tool }) {
             {fields.map(([g, k, label, mn, mx]) => (
               <div key={g + k}>
                 <label className="label" style={{ fontSize: 11 }}>{tt(label)}</label>
-                <input className="input" type="number" min={mn} max={mx} style={{ width: 130 }}
-                  value={c[g]?.[k] ?? ''} onChange={e => set(g, k, e.target.value === '' ? '' : Number(e.target.value))} />
+                <input className="input" type="text" inputMode="decimal" style={{ width: 130 }}
+                  value={c[g]?.[k] ?? ''}
+                  onChange={e => set(g, k, clean(e.target.value))}
+                  onBlur={() => blur(g, k, mn, mx)} />
               </div>
             ))}
             <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>{saving ? '…' : tt('Сохранить')}</button>

@@ -5,6 +5,37 @@ import { useMsg, fmtMoney, fmtNum, formatDate, formatTime } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// ── Числовые поля (цены, количество в заказе) ────────────────────────────────
+// Стейт таких полей — СТРОКА, а сам input — type="text" inputMode="decimal".
+// У type="number" браузер при промежуточно-невалидном вводе («45 000» с пробелом,
+// «1,5» с запятой) отдаёт e.target.value = '' — контролируемое поле само себя
+// очищало, и сохранялось не то, что ввели. Поэтому: в onChange только чистка
+// символов, диапазон и округление — в onBlur.
+const cleanDec = (v) => String(v ?? '').replace(/[^\d.,]/g, '');
+const isBlank  = (v) => String(v ?? '').trim() === '';
+// Строка поля → число. Запятая = десятичный разделитель (RU/UZ раскладка):
+// без этой замены parseFloat('45,5') на сервере превратился бы в 45.
+const toNum = (v) => {
+  const n = parseFloat(normalizeDecimal(v));
+  return Number.isFinite(n) ? n : NaN;
+};
+// Нормализация на blur: пустое остаётся пустым (поле можно полностью очистить),
+// число зажимаем в диапазон и округляем. Нечисловой остаток НЕ превращаем в 0 —
+// его поймает проверка при сохранении и покажет ошибку.
+const normDec = (v, dp = 3, min = 0, max = Infinity) => {
+  if (isBlank(v)) return '';
+  const n = toNum(v);
+  if (!Number.isFinite(n)) return cleanDec(v);
+  return String(Number(Math.min(max, Math.max(min, n)).toFixed(dp)));
+};
+// onBlur-нормализатор поля формы: значение читаем сразу, а стейт обновляем
+// функционально — чтобы не перетереть остальные поля формы (фото, категорию).
+const blurNorm = (setState, key, dp) => (e) => {
+  const v = e.target.value;
+  setState(f => ({ ...f, [key]: normDec(v, dp) }));
+};
 
 export default function WarehouseBalance() {
   const { t, lang } = useTranslation();
@@ -16,6 +47,7 @@ export default function WarehouseBalance() {
   const [filter, setFilter] = useState('all');
   const [editItem, setEditItem] = useState(null);
   const [editForm, setEditForm] = useState({});
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [types, setTypes] = useState([]);
   const [editMsg, setEditMsg, clearEditMsg] = useMsg();
   // Email composer modal state
@@ -67,16 +99,53 @@ export default function WarehouseBalance() {
 
   const openEdit = (item) => {
     setEditItem(item);
+    // photo_url и category_id ОБЯЗАТЕЛЬНО в форме: без них сохранение затирало фото
+    // и категорию товара (жалоба «при сохранении стираются фотографии»).
     setEditForm({ name_ru: item.name_ru, name_uz: item.name_uz || '', type_id: item.type_id || '',
-      barcode: item.barcode || '', unit: item.unit || 'шт',
-      price_buy: item.price_buy || 0, price_sell: item.price_sell || 0,
-      color_size: item.color_size || '', brand: item.brand || '' });
+      category_id: item.category_id || '', barcode: item.barcode || '', unit: item.unit || 'шт',
+      // Цены — строками: «45000.00» из БД приводим к «45000», чтобы поле можно
+      // было дописать и полностью стереть.
+      price_buy: item.price_buy == null ? '' : normDec(item.price_buy, 2),
+      price_sell: item.price_sell == null ? '' : normDec(item.price_sell, 2),
+      color_size: item.color_size || '', brand: item.brand || '',
+      photo_url: item.photo_url || '' });
     clearEditMsg();
   };
 
-  const handleEditSave = async () => {
+  // Замена фото прямо в форме редактирования: файл → /upload/photo → url в форму.
+  const uploadEditPhoto = async (file) => {
+    if (!file) return;
+    setUploadingPhoto(true);
     try {
-      await api.put(`/products/${editItem.id}`, editForm);
+      const fd = new FormData();
+      fd.append('photo', file);
+      const { data } = await api.post('/upload/photo', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setEditForm(f => ({ ...f, photo_url: data.url }));
+      clearEditMsg();
+    } catch (e) {
+      setEditMsg('error', e.response?.data?.error || (uz ? 'Suratni yuklab bo\'lmadi' : 'Не удалось загрузить фото'));
+    } finally { setUploadingPhoto(false); }
+  };
+
+  const handleEditSave = async () => {
+    // Цены в стейте — строки. Приводим их к числам ЗДЕСЬ: пустое поле отправляем
+    // как '' (сервер трактует это как «не задано» и оставляет прежнюю цену), а
+    // нечисловую строку не отправляем вовсе — показываем ошибку.
+    const prices = {};
+    for (const [key, label] of [
+      ['price_buy',  uz ? 'Sotib olish narxi' : 'Цена закупки'],
+      ['price_sell', uz ? 'Sotish narxi'      : 'Цена продажи'],
+    ]) {
+      if (isBlank(editForm[key])) { prices[key] = ''; continue; }
+      const n = toNum(editForm[key]);
+      if (!Number.isFinite(n) || n < 0) {
+        setEditMsg('error', `${label}: ${uz ? 'raqam kiriting' : 'введите число'}`);
+        return;
+      }
+      prices[key] = n;
+    }
+    try {
+      await api.put(`/products/${editItem.id}`, { ...editForm, ...prices });
       setEditMsg('success', t('success'));
       setEditItem(null);
       load();
@@ -134,7 +203,10 @@ export default function WarehouseBalance() {
   // Build email body from current draft state. Re-computed on every send/preview.
   const buildBody = (draft) => {
     const lines = (draft.orderItems || []).map(it => {
-      const qty = it.qty || '___';
+      // Количество нормализуем перед отправкой: «1,5» → 1.5, а пустое/нечисловое
+      // остаётся прочерком — молчаливый 0 в письме поставщику недопустим.
+      const qtyNum = toNum(it.qty);
+      const qty = Number.isFinite(qtyNum) && qtyNum > 0 ? String(Number(qtyNum.toFixed(3))) : '___';
       const stockTxt = it.stock != null ? ` (${tpl.stockShort()}: ${parseFloat(it.stock)} ${it.unit || ''})` : '';
       const barcodeTxt = it.barcode ? ` [${it.barcode}]` : '';
       return `  • ${it.name}${barcodeTxt} — ${tpl.qtyLabel()}: ${qty} ${it.unit || ''}${stockTxt}`;
@@ -636,9 +708,10 @@ ${draft.from || fromLabel()}`;
                               {parseFloat(parseFloat(it.stock || 0).toFixed(3)).toString()} {it.unit}
                             </td>
                             <td style={{ padding: '6px 10px' }}>
-                              <input type="number" min="0" step="any"
+                              <input type="text" inputMode="decimal"
                                 value={it.qty}
-                                onChange={e => setOrderItemQty(it.product_id, e.target.value)}
+                                onChange={e => setOrderItemQty(it.product_id, cleanDec(e.target.value))}
+                                onBlur={e => setOrderItemQty(it.product_id, normDec(e.target.value, 3))}
                                 placeholder="0"
                                 style={{ width: '100%', textAlign: 'right', padding: '6px 8px', border: '1.5px solid #E2E4F0', borderRadius: '6px', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, outline: 'none' }} />
                             </td>
@@ -710,8 +783,8 @@ ${draft.from || fromLabel()}`;
             </div>
             {editMsg && <div className={`alert alert-${editMsg.type}`}>{editMsg.text}</div>}
             <div className="form-grid" style={{ marginBottom: '12px' }}>
-              <div><label className="label">{t('nameRu')}</label><input className="input" value={editForm.name_ru} onChange={e => setEditForm({ ...editForm, name_ru: e.target.value })} /></div>
-              <div><label className="label">{t('nameUz')}</label><input className="input" value={editForm.name_uz} onChange={e => setEditForm({ ...editForm, name_uz: e.target.value })} /></div>
+              <div><label className="label">{t('nameRu')}</label><input className="input" maxLength={200} value={editForm.name_ru} onChange={e => setEditForm({ ...editForm, name_ru: e.target.value })} /></div>
+              <div><label className="label">{t('nameUz')}</label><input className="input" maxLength={200} value={editForm.name_uz} onChange={e => setEditForm({ ...editForm, name_uz: e.target.value })} /></div>
             </div>
             <div className="form-grid" style={{ marginBottom: '12px' }}>
               <div>
@@ -721,19 +794,61 @@ ${draft.from || fromLabel()}`;
                   {types.map(tp => <option key={tp.id} value={tp.id}>{tp.name_ru}</option>)}
                 </select>
               </div>
-              <div><label className="label">{t('unit')}</label><input className="input" value={editForm.unit} onChange={e => setEditForm({ ...editForm, unit: e.target.value })} /></div>
+              <div><label className="label">{t('unit')}</label><input className="input" maxLength={32} value={editForm.unit} onChange={e => setEditForm({ ...editForm, unit: e.target.value })} /></div>
             </div>
             <div className="form-grid" style={{ marginBottom: '12px' }}>
-              <div><label className="label">{t('priceBuy')}</label><input className="input" type="number" min="0" step="any" value={editForm.price_buy} onChange={e => setEditForm({ ...editForm, price_buy: e.target.value })} /></div>
-              <div><label className="label">{t('priceSell')}</label><input className="input" type="number" min="0" step="any" value={editForm.price_sell} onChange={e => setEditForm({ ...editForm, price_sell: e.target.value })} /></div>
+              <div><label className="label">{t('priceBuy')}</label><input className="input" type="text" inputMode="decimal" value={editForm.price_buy}
+                onChange={e => setEditForm({ ...editForm, price_buy: cleanDec(e.target.value) })}
+                onBlur={blurNorm(setEditForm, 'price_buy', 2)} /></div>
+              <div><label className="label">{t('priceSell')}</label><input className="input" type="text" inputMode="decimal" value={editForm.price_sell}
+                onChange={e => setEditForm({ ...editForm, price_sell: cleanDec(e.target.value) })}
+                onBlur={blurNorm(setEditForm, 'price_sell', 2)} /></div>
             </div>
             <div className="form-grid" style={{ marginBottom: '12px' }}>
-              <div><label className="label">{t('colorSize')}</label><input className="input" value={editForm.color_size} onChange={e => setEditForm({ ...editForm, color_size: e.target.value })} /></div>
-              <div><label className="label">{t('brand')}</label><input className="input" value={editForm.brand} onChange={e => setEditForm({ ...editForm, brand: e.target.value })} /></div>
+              <div>
+                <label className="label">{t('colorSize')}</label>
+                <input className="input" maxLength={255} value={editForm.color_size} onChange={e => setEditForm({ ...editForm, color_size: e.target.value })} />
+              </div>
+              <div>
+                <label className="label">{t('brand')}</label>
+                <input className="input" maxLength={150} value={editForm.brand} onChange={e => setEditForm({ ...editForm, brand: e.target.value })} />
+              </div>
             </div>
-            <div style={{ marginBottom: '20px' }}>
+            <div style={{ marginBottom: '16px' }}>
               <label className="label">{t('barcode')}</label>
-              <input className="input mono" value={editForm.barcode} onChange={e => setEditForm({ ...editForm, barcode: e.target.value })} />
+              <input className="input mono" maxLength={50} value={editForm.barcode} onChange={e => setEditForm({ ...editForm, barcode: e.target.value })} />
+            </div>
+
+            {/* Фото товара — раньше его нельзя было менять при редактировании,
+                и оно к тому же затиралось при сохранении. */}
+            <div style={{ marginBottom: '20px' }}>
+              <label className="label">{uz ? 'Surat' : 'Фото товара'}</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: 72, height: 72, borderRadius: 10, overflow: 'hidden', flexShrink: 0, border: '1px solid var(--line)', background: '#F4F5FA', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {editForm.photo_url
+                    ? <img src={editForm.photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    : (
+                      /* Line-иконка вместо эмодзи — канон светлой темы. */
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M3 8.5A2 2 0 0 1 5 6.5h1.6a1 1 0 0 0 .83-.45l.74-1.1A1 1 0 0 1 9 4.5h6a1 1 0 0 1 .83.45l.74 1.1a1 1 0 0 0 .83.45H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8Z" />
+                        <circle cx="12" cy="12.5" r="3.2" />
+                      </svg>
+                    )}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <label className="btn btn-ghost btn-sm" style={{ cursor: uploadingPhoto ? 'progress' : 'pointer' }}>
+                    {uploadingPhoto ? (uz ? 'Yuklanmoqda…' : 'Загрузка…') : (uz ? 'Suratni almashtirish' : 'Заменить фото')}
+                    <input type="file" accept="image/*" style={{ display: 'none' }} disabled={uploadingPhoto}
+                      onChange={e => uploadEditPhoto(e.target.files?.[0])} />
+                  </label>
+                  {editForm.photo_url && (
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
+                      onClick={() => setEditForm({ ...editForm, photo_url: '' })}>
+                      {uz ? 'Olib tashlash' : 'Убрать'}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className="btn btn-primary" onClick={handleEditSave} style={{ flex: 1, justifyContent: 'center' }}>{t('save')}</button>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   PAPER_SIZES,
   getPaperSize,
@@ -13,6 +13,11 @@ import {
 //   value    — current paper size object (from PAPER_SIZES or makeCustomPaperSize).
 //   onChange — fired when preset OR custom dimensions change with the new paper-size object.
 //   compact  — smaller paddings/fonts for use inside dense toolbars.
+// Допустимый диапазон своего размера в см — те же границы, что зажимает
+// makeCustomPaperSize (10…300 мм).
+const CM_MIN = 1;
+const CM_MAX = 30;
+
 export default function PaperSizeControl({ value, onChange, compact = false, lang = 'ru' }) {
   const isCustom = value?.id === 'custom';
 
@@ -25,12 +30,23 @@ export default function PaperSizeControl({ value, onChange, compact = false, lan
   };
   const tt = L[lang] || L.ru;
 
-  const [wCm, setWCm] = useState(() => +(value.w / 10).toFixed(1));
-  const [hCm, setHCm] = useState(() => +(value.h / 10).toFixed(1));
+  // Размеры хранятся СТРОКАМИ — поле можно полностью очистить и ввести заново
+  // (числовой стейт с «|| 0» мгновенно возвращал значение и стереть было нельзя).
+  const [wCm, setWCm] = useState(() => String(+(value.w / 10).toFixed(1)));
+  const [hCm, setHCm] = useState(() => String(+(value.h / 10).toFixed(1)));
+
+  // Что мы сами отдали наверх — чтобы обратная синхронизация не переписывала
+  // текст, который человек прямо сейчас набирает («5.80» → «5.8» под пальцами).
+  const pushedRef = useRef(null);
+  // Трогали ли поля руками — чтобы простой уход фокуса не переключал готовый
+  // пресет в «своё».
+  const touchedRef = useRef(false);
 
   useEffect(() => {
-    setWCm(+(value.w / 10).toFixed(1));
-    setHCm(+(value.h / 10).toFixed(1));
+    const p = pushedRef.current;
+    if (p && p.id === value.id && p.w === value.w && p.h === value.h) return;
+    setWCm(String(+(value.w / 10).toFixed(1)));
+    setHCm(String(+(value.h / 10).toFixed(1)));
   }, [value.id, value.w, value.h]);
 
   const selectStyle = {
@@ -61,6 +77,7 @@ export default function PaperSizeControl({ value, onChange, compact = false, lan
   const onPickPreset = (e) => {
     const id = e.target.value;
     savePaperSize(id);
+    pushedRef.current = null;
     if (id === 'custom') {
       const cm = loadSavedCustomDimensions();
       onChange(makeCustomPaperSize(cm.w, cm.h));
@@ -69,14 +86,50 @@ export default function PaperSizeControl({ value, onChange, compact = false, lan
     }
   };
 
+  const parseCm = (s) => parseFloat(String(s).replace(',', '.'));
+  const inRange = (n) => Number.isFinite(n) && n >= CM_MIN && n <= CM_MAX;
+
+  // Пишем в поля как есть (пустая строка допустима). Наверх отдаём размер ТОЛЬКО
+  // когда оба значения валидны и попадают в допустимый диапазон. Иначе размер
+  // этикетки не трогаем: makeCustomPaperSize зажимает 1…30 см, и раньше этот
+  // зажатый результат тут же возвращался в поле — стираешь точку в «5.8», а поле
+  // само становилось «30». Выход за диапазон поправим на blur.
   const onCustom = (newW, newH) => {
+    touchedRef.current = true;
     setWCm(newW);
     setHCm(newH);
-    if (newW > 0 && newH > 0) {
-      saveCustomDimensions(newW, newH);
+    const w = parseCm(newW);
+    const h = parseCm(newH);
+    if (inRange(w) && inRange(h)) {
+      saveCustomDimensions(w, h);
       savePaperSize('custom');
-      onChange(makeCustomPaperSize(newW, newH));
+      const next = makeCustomPaperSize(w, h);
+      pushedRef.current = next;
+      onChange(next);
     }
+  };
+
+  // Ушли из поля — приводим к допустимому виду: пустое/мусор возвращаем к текущему
+  // размеру этикетки, выход за границы зажимаем в 1…30 см.
+  const onBlurDims = () => {
+    if (!touchedRef.current) return;
+    touchedRef.current = false;
+    const w = parseCm(wCm);
+    const h = parseCm(hCm);
+    // Округляем до 0.1 см ЗДЕСЬ, а не только при выводе — иначе поле показывало
+    // «4.6», а этикетка печаталась 45.8 мм.
+    const norm = (n, fallbackMm) => (Number.isFinite(n) && n > 0
+      ? Math.round(Math.min(CM_MAX, Math.max(CM_MIN, n)) * 10) / 10
+      : Math.round(fallbackMm) / 10);
+    const fixW = norm(w, value.w);
+    const fixH = norm(h, value.h);
+    setWCm(String(fixW));
+    setHCm(String(fixH));
+    saveCustomDimensions(fixW, fixH);
+    savePaperSize('custom');
+    const next = makeCustomPaperSize(fixW, fixH);
+    pushedRef.current = next;
+    onChange(next);
   };
 
   return (
@@ -89,18 +142,20 @@ export default function PaperSizeControl({ value, onChange, compact = false, lan
       </select>
       <span style={labelStyle}>{tt.w}</span>
       <input
-        type="number" min="1" max="30" step="0.1"
+        type="text" inputMode="decimal"
         value={wCm}
-        onChange={e => onCustom(parseFloat(e.target.value) || 0, hCm)}
+        onChange={e => onCustom(e.target.value.replace(/[^\d.,]/g, ''), hCm)}
+        onBlur={onBlurDims}
         title={tt.wTitle}
         style={inputStyle}
       />
       <span style={labelStyle}>×</span>
       <span style={labelStyle}>{tt.h}</span>
       <input
-        type="number" min="1" max="30" step="0.1"
+        type="text" inputMode="decimal"
         value={hCm}
-        onChange={e => onCustom(wCm, parseFloat(e.target.value) || 0)}
+        onChange={e => onCustom(wCm, e.target.value.replace(/[^\d.,]/g, ''))}
+        onBlur={onBlurDims}
         title={tt.hTitle}
         style={inputStyle}
       />

@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Progress, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Страховой запас (safety stock) — read-only.
 // Бэкенд считает sigma среднесуточного спроса за 90 дн и safety_stock = Z·sigma·sqrt(lead_time)
@@ -18,6 +19,23 @@ const SERVICE_OPTIONS = [
   { value: 98, label: '98%', desc: 'Высокая защита — больше запас' },
   { value: 99, label: '99%', desc: 'Максимум — почти без дефицита' },
 ];
+
+// Поля what-if — строковый стейт. В onChange только чистим символы: запятая → точка
+// (ru-клавиатура пишет «3,5»), один разделитель, без минусов; диапазон и нормализацию
+// применяем на onBlur. type="text" вместо type="number": последний на промежуточно
+// невалидном вводе («3,») отдаёт e.target.value === '' и поле само себя очищает.
+const cleanDec = (s) => {
+  const t = normalizeDecimal(s).replace(/[^\d.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '');
+};
+const cleanInt = (s) => String(s).replace(/[^\d]/g, '');
+// Пусто оставляем пустым (расчёт трактует как 0), «3.» приводим к «3», «007» к «7».
+const normNum = (s) => {
+  if (s === '') return '';
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n >= 0 ? String(n) : '';
+};
 
 // «Нестабильность спроса» по коэффициенту вариации (CoV = sigma/avg).
 function volatility(cov, tt) {
@@ -177,8 +195,10 @@ export default function SafetyStockTool() {
                   {tt('Нестабильность спроса (шт/день)')}
                 </label>
                 <input
-                  type="number" min="0" step="0.1" className="input mono"
-                  value={wiSigma} onChange={e => setWiSigma(e.target.value)}
+                  type="text" inputMode="decimal" className="input mono"
+                  value={wiSigma}
+                  onChange={e => setWiSigma(cleanDec(e.target.value))}
+                  onBlur={() => setWiSigma(v => normNum(v))}
                   placeholder={tt('напр. 3.5')}
                 />
               </div>
@@ -187,8 +207,10 @@ export default function SafetyStockTool() {
                   {tt('Срок поставки (дней)')}
                 </label>
                 <input
-                  type="number" min="0" step="1" className="input mono"
-                  value={wiLead} onChange={e => setWiLead(e.target.value)}
+                  type="text" inputMode="numeric" className="input mono"
+                  value={wiLead}
+                  onChange={e => setWiLead(cleanInt(e.target.value))}
+                  onBlur={() => setWiLead(v => normNum(v))}
                   placeholder={tt('напр. 7')}
                 />
               </div>

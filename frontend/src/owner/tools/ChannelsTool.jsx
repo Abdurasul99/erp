@@ -4,6 +4,7 @@ import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtN
 import { BranchScope } from '../OwnerShell.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 const CH_OPTIONS = [
   { value: 'instagram', label: '📷 Instagram' },
@@ -14,6 +15,18 @@ const CH_OPTIONS = [
   { value: 'marketplace', label: '🛒 Маркетплейс' },
   { value: 'other', label: '📌 Другое' },
 ];
+
+// Сумма расхода — СТРОКА в стейте: в onChange только чистка символов, округление — на blur.
+// type="number" тут ломал ввод: Chrome на промежуточном вводе («150 000», «1500,»)
+// возвращает e.target.value === '', поле само себя стирало, а кнопка «Сохранить»
+// гасла на визуально заполненном поле.
+const cleanMoney = (s) => String(s).replace(/[^\d.,]/g, '');
+// Строка → целое число сум, либо null если ввода нет. Ноль — валидная сумма
+// (обнуление расхода по каналу), поэтому отличаем его от «пусто» через null.
+const parseMoney = (s) => {
+  const n = parseFloat(normalizeDecimal(s));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+};
 
 export default function ChannelsTool() {
   const { tt } = useTt();
@@ -42,10 +55,20 @@ export default function ChannelsTool() {
   const best = channels.filter(c => c.roi != null).sort((a, b) => b.roi - a.roi)[0];
   const hasAnySource = channels.some(c => c.channel !== 'unknown' && c.customers > 0);
 
+  // Нормализованная сумма: по ней считаем и доступность кнопки, и то, что уйдёт на сервер
+  // (сервер отвечает 400 на нечисловой amount — строку с запятой отправлять нельзя).
+  const spendAmount = parseMoney(spendForm.amount);
+
+  const blurSpendAmount = () => setSpendForm(f => {
+    if (f.amount === '') return f;
+    const n = parseMoney(f.amount);
+    return { ...f, amount: n == null ? '' : String(n) };
+  });
+
   const saveSpend = async () => {
-    if (!spendForm.amount) return;
+    if (spendAmount == null) return;
     setSaving(true);
-    try { await api.post('/marketing/channel-spend', spendForm); setSpendForm({ ...spendForm, amount: '' }); await reload(); }
+    try { await api.post('/marketing/channel-spend', { ...spendForm, amount: spendAmount }); setSpendForm({ ...spendForm, amount: '' }); await reload(); }
     catch (e) { setError(e.response?.data?.error || e.message); }
     setSaving(false);
   };
@@ -125,9 +148,11 @@ export default function ChannelsTool() {
               </div>
               <div>
                 <label className="label">{tt('Расход (сум)')}</label>
-                <input className="input" type="number" min="0" value={spendForm.amount} onChange={e => setSpendForm({ ...spendForm, amount: e.target.value })} placeholder="0" />
+                <input className="input" type="text" inputMode="numeric" value={spendForm.amount}
+                  onChange={e => setSpendForm({ ...spendForm, amount: cleanMoney(e.target.value) })}
+                  onBlur={blurSpendAmount} placeholder="0" />
               </div>
-              <button className="btn btn-primary btn-sm" onClick={saveSpend} disabled={saving || !spendForm.amount}>{saving ? '...' : '💾 ' + tt('Сохранить')}</button>
+              <button className="btn btn-primary btn-sm" onClick={saveSpend} disabled={saving || spendAmount == null}>{saving ? '...' : '💾 ' + tt('Сохранить')}</button>
             </div>
             {spendRows.length > 0 && (
               <div style={{ overflowX: 'auto' }}>

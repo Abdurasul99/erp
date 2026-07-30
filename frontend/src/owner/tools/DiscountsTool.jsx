@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Скидки и акции — KPI (активных акций, % чеков со скидкой, средняя скидка, потери)
 // + таблица акций + форма создания. Данные из /api/discounts.
@@ -15,6 +16,29 @@ const TYPE_LABEL = {
 const fmtDate = (d) => {
   if (!d) return '—';
   try { return new Date(d).toLocaleDateString('ru-RU'); } catch { return '—'; }
+};
+
+// Числовые поля формы хранятся СТРОКАМИ: в onChange только чистка символов,
+// диапазон и округление — на blur.
+// «Значение» бывает и процентом с десятыми («7,5»), и суммой («10000»), поэтому
+// type="number" здесь ломался: на промежуточно-невалидном вводе (запятая как
+// разделитель, пробел в сумме) Chrome отдаёт пустую e.target.value — поле само
+// себя очищало, срабатывала нативная ошибка required либо акция уходила с нулём.
+const cleanDec = (s) => String(s).replace(/[^\d.,]/g, '').slice(0, 16);
+// «Мин. кол-во» — штуки, только целые (min_qty INTEGER; раньше можно было завести 2.5).
+const cleanInt = (s) => String(s).replace(/[^\d]/g, '').slice(0, 9);
+const parseDec = (s) => {
+  const n = parseFloat(normalizeDecimal(s));
+  return Number.isFinite(n) && n >= 0 ? n : NaN;
+};
+// Приведение «Значения» к тому, что уйдёт на сервер: процент — до сотых и не
+// больше 100, сумма — целые сумы. NaN наружу не отдаём.
+const normValue = (raw, type) => {
+  const n = parseDec(raw);
+  if (!Number.isFinite(n)) return NaN;
+  return type === 'percent'
+    ? Math.min(100, Math.round(n * 100) / 100)
+    : Math.min(999999999999, Math.round(n));
 };
 
 export default function DiscountsTool() {
@@ -46,13 +70,18 @@ export default function DiscountsTool() {
 
   const submit = (e) => {
     e.preventDefault();
-    if (!form.name.trim() || form.value === '') return;
+    if (!form.name.trim() || form.value.trim() === '') return;
+    // Значение могли отправить по Enter, не уходя из поля (без blur), поэтому
+    // приводим строку к числу здесь же — на сервер не должен уйти NaN или «7,5».
+    const value = normValue(form.value, form.type);
+    if (!Number.isFinite(value)) { setError(tt('Укажите значение акции числом')); return; }
+    const minQty = parseInt(form.min_qty, 10);
     setSaving(true); setError(null);
     const body = {
       name: form.name.trim(),
       type: form.type,
-      value: parseFloat(form.value) || 0,
-      min_qty: form.min_qty === '' ? null : parseInt(form.min_qty, 10),
+      value,
+      min_qty: Number.isFinite(minQty) ? minQty : null,
       starts_at: form.starts_at || null,
       ends_at: form.ends_at || null,
     };
@@ -107,11 +136,24 @@ export default function DiscountsTool() {
               </div>
               <div>
                 <label style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700 }}>{tt('Значение')}</label>
-                <input style={inputStyle} type="number" step="any" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} placeholder={form.type === 'percent' ? '15' : '10000'} required />
+                <input style={inputStyle} type="text" inputMode="decimal" value={form.value}
+                  onChange={e => setForm({ ...form, value: cleanDec(e.target.value) })}
+                  onBlur={() => setForm(f => {
+                    if (f.value.trim() === '') return f;               // пустое поле оставляем пустым
+                    const n = normValue(f.value, f.type);
+                    return { ...f, value: Number.isFinite(n) ? String(n) : '' };
+                  })}
+                  placeholder={form.type === 'percent' ? '15' : '10000'} required />
               </div>
               <div>
                 <label style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700 }}>{tt('Мин. кол-во')}</label>
-                <input style={inputStyle} type="number" value={form.min_qty} onChange={e => setForm({ ...form, min_qty: e.target.value })} placeholder={tt('необязательно')} />
+                <input style={inputStyle} type="text" inputMode="numeric" value={form.min_qty}
+                  onChange={e => setForm({ ...form, min_qty: cleanInt(e.target.value) })}
+                  onBlur={() => setForm(f => {
+                    const n = parseInt(f.min_qty, 10);
+                    return { ...f, min_qty: Number.isFinite(n) ? String(n) : '' };
+                  })}
+                  placeholder={tt('необязательно')} />
               </div>
               <div>
                 <label style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700 }}>{tt('Начало')}</label>

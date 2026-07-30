@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Progress, EmptyState, SkeletonCard, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt, fmtDate } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Инвентаризация склада — снапшот учётных остатков (product_stock) → ввод факта → отклонения.
 // Статусы позиции: match (факт = учёт), shortage (недостача), surplus (излишек).
@@ -19,6 +20,16 @@ const PERIODS = [
   { value: 'month', label: 'Месяц' },
   { value: 'year',  label: 'Год' },
 ];
+
+// Факт. количество вводится строкой: только цифры и один разделитель (минус не нужен —
+// факт не может быть отрицательным). type="number" здесь нельзя: при вводе «12,5» браузер
+// отдаёт e.target.value = '' и сохранение на onBlur молча обнуляло бы факт.
+const cleanQty = (raw) => {
+  let s = normalizeDecimal(raw).replace(/[^\d.]/g, '');
+  const dot = s.indexOf('.');
+  if (dot !== -1) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+  return s;
+};
 
 function statusOf(book, actual) {
   if (actual == null) return 'pending';
@@ -38,6 +49,8 @@ export default function InventoryAuditTool() {
   const [period, setPeriod] = useState('month');
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState('all');
+  const [drafts, setDrafts] = useState({});     // item_id → строка, введённая в поле факта
+  const [badRows, setBadRows] = useState({});   // item_id → true, если введённое нечитаемо
 
   const branchParam = useCallback(() => (branchId ? { branch_id: branchId } : {}), [branchId]);
 
@@ -60,6 +73,7 @@ export default function InventoryAuditTool() {
       .then(r => {
         setActive(r.data?.audit || null);
         setItems(r.data?.items || []);
+        setDrafts({}); setBadRows({});   // другая инвентаризация — черновики полей факта не нужны
       })
       .catch(e => setError(e.response?.data?.error || e.message));
   }, [branchParam]);
@@ -87,14 +101,36 @@ export default function InventoryAuditTool() {
       .finally(() => setBusy(false));
   };
 
-  const saveActual = (item, val) => {
-    const actual = val === '' ? null : Math.max(0, parseFloat(val) || 0);
+  // actual — уже число (>= 0) или null (сброс факта). Коэрсию делает commitActual.
+  const saveActual = (item, actual) => {
     api.patch('/warehouse/audits', { item_id: item.id, actual_qty: actual })
       .then(r => {
         const upd = r.data?.item;
         setItems(prev => prev.map(i => i.id === item.id ? { ...i, ...(upd || {}), actual_qty: actual } : i));
       })
       .catch(e => setError(e.response?.data?.error || e.message));
+  };
+
+  const setDraft = (id, v) => setDrafts(prev => ({ ...prev, [id]: v }));
+  const setBad = (id, v) => setBadRows(prev => (!!prev[id] === v ? prev : { ...prev, [id]: v }));
+
+  // Ушли из поля факта: СНАЧАЛА нормализуем строку (пробелы вон, «,» → «.»), потом сохраняем.
+  // Пусто — осознанный сброс факта (null). Нечитаемо («.», «,», мусор) — подсвечиваем поле
+  // и НЕ сохраняем, чтобы введённое количество не превратилось молча в «факт не введён».
+  const commitActual = (item, raw) => {
+    const s = normalizeDecimal(raw);
+    if (s === '') {
+      setBad(item.id, false);
+      setDraft(item.id, '');
+      saveActual(item, null);
+      return;
+    }
+    const n = parseFloat(s);
+    if (!Number.isFinite(n)) { setBad(item.id, true); return; }
+    const val = Math.max(0, n);
+    setBad(item.id, false);
+    setDraft(item.id, String(val));
+    saveActual(item, val);
   };
 
   // Сводка по позициям активной инвентаризации
@@ -225,10 +261,15 @@ export default function InventoryAuditTool() {
                           <td style={{ textAlign: 'right' }}>
                             {isOpen ? (
                               <input
-                                type="number" min="0"
-                                defaultValue={act == null ? '' : act}
-                                onBlur={e => saveActual(it, e.target.value)}
-                                style={{ width: 90, textAlign: 'right', padding: '4px 8px', border: '1px solid var(--border)', borderRadius: 8 }}
+                                type="text" inputMode="decimal"
+                                value={drafts[it.id] !== undefined ? drafts[it.id] : (act == null ? '' : String(act))}
+                                onChange={e => { setDraft(it.id, cleanQty(e.target.value)); setBad(it.id, false); }}
+                                onBlur={e => commitActual(it, e.target.value)}
+                                title={badRows[it.id] ? tt('Введите количество числом, например 12 или 12,5') : undefined}
+                                style={{
+                                  width: 90, textAlign: 'right', padding: '4px 8px', borderRadius: 8,
+                                  border: '1px solid ' + (badRows[it.id] ? '#DC2626' : 'var(--border)'),
+                                }}
                               />
                             ) : (
                               <span className="mono">{act == null ? '—' : fmtNum(act)}</span>

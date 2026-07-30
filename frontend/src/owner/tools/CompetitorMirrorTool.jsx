@@ -4,6 +4,7 @@ import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtNum, fmt
 import { BranchScope } from '../OwnerShell.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // 6 KPI-осей зеркала. higherBetter=false → меньше лучше (средняя цена дешевле = выгоднее).
 const AXES = [
@@ -14,6 +15,29 @@ const AXES = [
   { key: 'locations', label: 'Кол-во точек',       icon: '📍', higherBetter: true  },
   { key: 'online',    label: 'Онлайн-присутствие', icon: '🌐', higherBetter: true  },
 ];
+
+// ── Числовой ввод ────────────────────────────────────────────────────────────
+// Стейт полей формы — СТРОКИ: в onChange только чистка символов, диапазон и
+// приведение к числу — на onBlur / при сохранении. type="number" тут нельзя:
+// на промежуточно-невалидном вводе («1 500 000», «4,5») браузер отдаёт
+// e.target.value === '' и контролируемое поле само себя очищает.
+const cleanDec = (s) => String(s ?? '').replace(/[^\d.,\s]/g, ''); // цифры, разделитель, пробелы-разряды
+const cleanInt = (s) => String(s ?? '').replace(/[^\d]/g, '');     // только цифры (целые счётчики)
+const normNum = (s) => normalizeDecimal(s);
+const toNum = (s, dflt = 0) => { const n = parseFloat(normNum(s)); return Number.isFinite(n) ? n : dflt; };
+const toInt = (s, dflt = 0) => { const n = parseInt(normNum(s), 10); return Number.isFinite(n) ? n : dflt; };
+const clampNum = (n, min, max) => Math.min(max, Math.max(min, n));
+// onBlur: пустое остаётся пустым (поле можно очистить целиком), мусор гасим,
+// выход за диапазон зажимаем. Валидный ввод отдаём как набрали (уже без пробелов).
+const tidyNum = (s, min = null, max = null) => {
+  const t = normNum(s).replace(/^0+(?=\d)/, ''); // «020» → «20»
+  if (t === '') return '';
+  let n = parseFloat(t);
+  if (!Number.isFinite(n)) return '';
+  if (min != null) n = Math.max(min, n);
+  if (max != null) n = Math.min(max, n);
+  return (n === parseFloat(t) && /^\d+(\.\d+)?$/.test(t)) ? t : String(n);
+};
 
 // Нормализация значения оси в 0–100 относительно «макс» по паре (своя vs конкурент).
 // Для метрик где меньше = лучше инвертируем шкалу.
@@ -144,12 +168,13 @@ export default function CompetitorMirrorTool() {
       const body = {
         id: form.id || undefined,
         name: form.name.trim(),
-        sku: parseInt(form.sku, 10) || 0,
-        avg_price: parseFloat(form.avg_price) || 0,
-        rating: parseFloat(form.rating) || 0,
-        service: parseInt(form.service, 10) || 0,
-        locations: parseInt(form.locations, 10) || 0,
-        online: parseInt(form.online, 10) || 0,
+        // Явное приведение к числу с дефолтом: пустое поле даёт 0, не NaN.
+        sku: toInt(form.sku),
+        avg_price: toNum(form.avg_price),
+        rating: clampNum(toNum(form.rating), 0, 5),
+        service: clampNum(toInt(form.service), 0, 100),
+        locations: toInt(form.locations),
+        online: clampNum(toInt(form.online), 0, 100),
         source: form.source.trim() || null,
       };
       if (branchId) body.branch_id = branchId;
@@ -377,33 +402,39 @@ export default function CompetitorMirrorTool() {
           <div className="grid-2" style={{ gap: 12 }}>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('📦 Ассортимент (SKU)')}</div>
-              <input className="input" type="number" min="0" style={{ width: '100%' }} value={form.sku}
-                onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="0" />
+              <input className="input" type="text" inputMode="numeric" style={{ width: '100%' }} value={form.sku}
+                onChange={e => setForm(f => ({ ...f, sku: cleanInt(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, sku: tidyNum(e.target.value, 0) }))} placeholder="0" />
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('💵 Средняя цена')}</div>
-              <input className="input" type="number" min="0" style={{ width: '100%' }} value={form.avg_price}
-                onChange={e => setForm(f => ({ ...f, avg_price: e.target.value }))} placeholder="0" />
+              <input className="input" type="text" inputMode="decimal" style={{ width: '100%' }} value={form.avg_price}
+                onChange={e => setForm(f => ({ ...f, avg_price: cleanDec(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, avg_price: tidyNum(e.target.value, 0) }))} placeholder="0" />
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('⭐ Рейтинг (0–5)')}</div>
-              <input className="input" type="number" min="0" max="5" step="0.1" style={{ width: '100%' }} value={form.rating}
-                onChange={e => setForm(f => ({ ...f, rating: e.target.value }))} placeholder="0.0" />
+              <input className="input" type="text" inputMode="decimal" style={{ width: '100%' }} value={form.rating}
+                onChange={e => setForm(f => ({ ...f, rating: cleanDec(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, rating: tidyNum(e.target.value, 0, 5) }))} placeholder="0.0" />
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('🛎️ Сервис (0–100)')}</div>
-              <input className="input" type="number" min="0" max="100" style={{ width: '100%' }} value={form.service}
-                onChange={e => setForm(f => ({ ...f, service: e.target.value }))} placeholder="0" />
+              <input className="input" type="text" inputMode="numeric" style={{ width: '100%' }} value={form.service}
+                onChange={e => setForm(f => ({ ...f, service: cleanInt(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, service: tidyNum(e.target.value, 0, 100) }))} placeholder="0" />
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('📍 Кол-во точек')}</div>
-              <input className="input" type="number" min="0" style={{ width: '100%' }} value={form.locations}
-                onChange={e => setForm(f => ({ ...f, locations: e.target.value }))} placeholder="0" />
+              <input className="input" type="text" inputMode="numeric" style={{ width: '100%' }} value={form.locations}
+                onChange={e => setForm(f => ({ ...f, locations: cleanInt(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, locations: tidyNum(e.target.value, 0) }))} placeholder="0" />
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('🌐 Онлайн (0–100)')}</div>
-              <input className="input" type="number" min="0" max="100" style={{ width: '100%' }} value={form.online}
-                onChange={e => setForm(f => ({ ...f, online: e.target.value }))} placeholder="0" />
+              <input className="input" type="text" inputMode="numeric" style={{ width: '100%' }} value={form.online}
+                onChange={e => setForm(f => ({ ...f, online: cleanInt(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, online: tidyNum(e.target.value, 0, 100) }))} placeholder="0" />
             </label>
           </div>
           <label style={{ display: 'block' }}>

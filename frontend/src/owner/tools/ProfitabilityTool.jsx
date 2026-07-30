@@ -4,10 +4,31 @@ import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, Pills, fmtMoneyFul
 import { BranchScope } from '../OwnerShell.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Рентабельность — раздел Финансы, ТОЛЬКО учредитель/гендиректор.
 // revenue/net_profit берутся из продаж/расходов; балансовые данные (активы/капитал/
 // амортизация/проценты/налоги) вводятся вручную через POST /api/finance/balance-entry.
+
+// ── Числовой ввод ────────────────────────────────────────────────────────────
+// Стейт полей — СТРОКИ: в onChange только чистка символов, пробелы-разряды
+// убираем на onBlur, к числу приводим при отправке. type="number" для сум
+// не годится: суммы девятизначные, их вводят с пробелами («1 200 000 000»), а
+// браузер на таком промежуточном вводе отдаёт e.target.value === '' — поле само
+// себя очищает. Сумы целые, поэтому клавиатура numeric (без разделителя дроби).
+const cleanInt = (s) => String(s ?? '').replace(/[^\d\s]/g, ''); // цифры и пробелы-разряды
+const normNum = (s) => normalizeDecimal(s);
+const toNum = (s, dflt = 0) => { const n = parseFloat(normNum(s)); return Number.isFinite(n) ? n : dflt; };
+// onBlur: пустое остаётся пустым (поле можно очистить целиком), мусор гасим,
+// пробелы убираем. Валидное число отдаём как набрали — String() у сумм от 1e21
+// перешёл бы в экспоненциальную запись.
+const tidyInt = (s) => {
+  const t = normNum(s).replace(/^0+(?=\d)/, ''); // «0012» → «12»
+  if (t === '') return '';
+  const n = parseFloat(t);
+  if (!Number.isFinite(n)) return '';
+  return /^\d+$/.test(t) ? t : String(Math.max(0, n));
+};
 export default function ProfitabilityTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
@@ -39,12 +60,14 @@ export default function ProfitabilityTool() {
   const submitBalance = (e) => {
     e.preventDefault();
     setSaving(true); setSaveErr(null);
+    // Явное приведение к числу с дефолтом 0: пустое поле не должно уехать как NaN
+    // или строка с пробелами («1 200 000» у parseFloat превратилось бы в 1).
     const body = {
-      total_assets: parseFloat(form.total_assets) || 0,
-      equity: parseFloat(form.equity) || 0,
-      depreciation: parseFloat(form.depreciation) || 0,
-      interest_expense: parseFloat(form.interest_expense) || 0,
-      taxes: parseFloat(form.taxes) || 0,
+      total_assets: toNum(form.total_assets),
+      equity: toNum(form.equity),
+      depreciation: toNum(form.depreciation),
+      interest_expense: toNum(form.interest_expense),
+      taxes: toNum(form.taxes),
     };
     if (branchId) body.branch_id = branchId;
     api.post('/finance/balance-entry', body)
@@ -140,9 +163,10 @@ export default function ProfitabilityTool() {
                     <label key={k} style={{ display: 'block', fontSize: 12.5, color: 'var(--text2)' }}>
                       {lbl}
                       <input
-                        type="number" inputMode="numeric" min="0" step="any"
+                        type="text" inputMode="numeric"
                         value={form[k]}
-                        onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
+                        onChange={e => setForm(f => ({ ...f, [k]: cleanInt(e.target.value) }))}
+                        onBlur={e => setForm(f => ({ ...f, [k]: tidyInt(e.target.value) }))}
                         placeholder="0"
                         style={{ width: '100%', marginTop: 4, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8 }}
                       />

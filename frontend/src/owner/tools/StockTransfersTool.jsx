@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, EmptyState, Skeleton, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt, fmtDate } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 const PERIODS = [
   { value: 'day',   label: 'День' },
@@ -14,6 +15,16 @@ const PERIODS = [
 const STATUS_META = {
   in_transit: { label: 'В пути',  tone: 'amber' },
   received:   { label: 'Принято', tone: 'green' },
+};
+
+// «Кол-во» хранится СТРОКОЙ: в onChange только чистка символов, округление —
+// на blur. type="number" здесь ломался: дробное количество через запятую («2,5»)
+// Chrome отдаёт как пустую e.target.value, стейт обнулялся и «Отправить» уходило
+// с пустым qty (сервер получал 0 и возвращал «Неверные данные перемещения»).
+const cleanQty = (s) => String(s).replace(/[^\d.,]/g, '').slice(0, 12);
+const parseQty = (s) => {
+  const n = parseFloat(normalizeDecimal(s));
+  return Number.isFinite(n) ? n : NaN;
 };
 
 export default function StockTransfersTool() {
@@ -47,19 +58,23 @@ export default function StockTransfersTool() {
   const submit = async (e) => {
     e.preventDefault();
     setFormErr(null);
-    if (!form.product_id || !form.from_branch || !form.to_branch || !form.qty) {
+    if (!form.product_id || !form.from_branch || !form.to_branch || form.qty.trim() === '') {
       setFormErr(tt('Заполните все поля')); return;
     }
     if (form.from_branch === form.to_branch) {
       setFormErr(tt('Склады отправки и получения должны отличаться')); return;
     }
+    // Количество могли отправить по Enter, не уходя из поля (без blur): приводим
+    // строку к числу здесь же, чтобы на сервер не ушёл NaN или ноль.
+    const qty = parseQty(form.qty);
+    if (!(qty > 0)) { setFormErr(tt('Количество должно быть больше нуля')); return; }
     setSaving(true);
     try {
       await api.post('/warehouse/transfers', {
         product_id: parseInt(form.product_id),
         from_branch: parseInt(form.from_branch),
         to_branch: parseInt(form.to_branch),
-        qty: parseFloat(form.qty),
+        qty,
       });
       setForm({ product_id: '', from_branch: '', to_branch: '', qty: '' });
       load();
@@ -130,7 +145,14 @@ export default function StockTransfersTool() {
               </label>
               <label style={{ display: 'block' }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Кол-во (шт)')}</div>
-                <input className="input" type="number" min="0" step="any" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} placeholder="0" />
+                <input className="input" type="text" inputMode="decimal" value={form.qty}
+                  onChange={e => setForm({ ...form, qty: cleanQty(e.target.value) })}
+                  onBlur={() => setForm(f => {
+                    const n = parseQty(f.qty);
+                    // Пустое/мусор → пусто; иначе округляем до 3 знаков (шт с дробью допустимы).
+                    return { ...f, qty: n >= 0 ? String(Math.round(n * 1000) / 1000) : '' };
+                  })}
+                  placeholder="0" />
               </label>
               <button type="submit" className="btn btn-primary" disabled={saving}>
                 {saving ? tt('Отправка...') : tt('Отправить')}

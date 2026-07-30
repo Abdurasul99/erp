@@ -5,9 +5,40 @@ import { useTranslation } from '../useTranslation.js';
 import PeriodFilter from './PeriodFilter.jsx';
 import SupplierCombobox from './SupplierCombobox.jsx';
 import ProductCombobox from './ProductCombobox.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// ── Числовые поля (деньги и количество) ──────────────────────────────────────
+// Стейт таких полей — СТРОКА, а сам input — type="text" inputMode="decimal".
+// У type="number" браузер при промежуточно-невалидном вводе («12 500» с пробелом,
+// «1500,» с запятой) отдаёт e.target.value = '' — контролируемое поле само себя
+// очищало, а на сервер уходил приход с ценой 0. Поэтому: в onChange только чистка
+// символов, диапазон и округление — в onBlur.
+const cleanDec = (v) => String(v ?? '').replace(/[^\d.,]/g, '');
+const isBlank  = (v) => String(v ?? '').trim() === '';
+// Строка поля → число. Запятая = десятичный разделитель (RU/UZ раскладка).
+const toNum = (v) => {
+  const n = parseFloat(normalizeDecimal(v));
+  return Number.isFinite(n) ? n : NaN;
+};
+// Нормализация на blur: пустое остаётся пустым (поле можно полностью очистить),
+// число зажимаем в диапазон и округляем. Нечисловой остаток НЕ превращаем в 0 —
+// его поймает проверка при отправке и покажет ошибку.
+const normDec = (v, dp = 3, min = 0, max = Infinity) => {
+  if (isBlank(v)) return '';
+  const n = toNum(v);
+  if (!Number.isFinite(n)) return cleanDec(v);
+  return String(Number(Math.min(max, Math.max(min, n)).toFixed(dp)));
+};
+// onBlur-нормализатор поля формы: значение читаем сразу, а стейт обновляем
+// функционально — чтобы не перетереть остальные поля формы.
+const blurNorm = (setState, key, dp) => (e) => {
+  const v = e.target.value;
+  setState(f => ({ ...f, [key]: normDec(v, dp) }));
+};
 
 export default function WarehouseIncome() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
+  const uz = lang === 'uz';
   const [products, setProducts] = useState([]);
   const [list, setList] = useState([]);
   const [form, setForm] = useState({ product_id: '', quantity: '', price: '', price_sell: '', supplier_id: null, note: '' });
@@ -30,8 +61,9 @@ export default function WarehouseIncome() {
     if (selectedProduct) {
       setForm(f => ({
         ...f,
-        price:      f.price      === '' ? (selectedProduct.price_buy  ? String(selectedProduct.price_buy)  : '') : f.price,
-        price_sell: f.price_sell === '' ? (selectedProduct.price_sell ? String(selectedProduct.price_sell) : '') : f.price_sell,
+        // normDec, а не String(): «45000.00» из БД в поле выглядит как «45000».
+        price:      f.price      === '' ? (selectedProduct.price_buy  ? normDec(selectedProduct.price_buy, 2)  : '') : f.price,
+        price_sell: f.price_sell === '' ? (selectedProduct.price_sell ? normDec(selectedProduct.price_sell, 2) : '') : f.price_sell,
       }));
     }
   }, [selectedProduct?.id]);
@@ -62,16 +94,35 @@ export default function WarehouseIncome() {
     return acc;
   }, { count: 0, qty: 0, sum: 0 });
 
+  // Числа из строковых полей — считаем один раз и для формы, и для отправки.
+  const qtyNum   = toNum(form.quantity);
+  const buyNum   = toNum(form.price);
+  const sellNum  = toNum(form.price_sell);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.quantity || parseFloat(form.quantity) <= 0) { setMsg('error', t('error')); return; }
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) { setMsg('error', t('error')); return; }
+    // Пустая цена = «не указана» (как и раньше → 0), но набранный мусор молча
+    // нулём не подменяем: иначе приход проведётся с нулевой себестоимостью.
+    const priceOut = isBlank(form.price) ? 0 : buyNum;
+    if (!Number.isFinite(priceOut) || priceOut < 0) {
+      setMsg('error', uz ? 'Sotib olish narxini tekshiring — raqam kiriting'
+                         : 'Проверьте цену закупки — введите число');
+      return;
+    }
+    const priceSellOut = isBlank(form.price_sell) ? null : sellNum;
+    if (priceSellOut !== null && (!Number.isFinite(priceSellOut) || priceSellOut < 0)) {
+      setMsg('error', uz ? 'Sotish narxini tekshiring — raqam kiriting'
+                         : 'Проверьте цену продажи — введите число');
+      return;
+    }
     setLoading(true);
     try {
       await api.post('/stock/income', {
         product_id: parseInt(form.product_id),
-        quantity: parseFloat(form.quantity),
-        price: parseFloat(form.price) || 0,
-        price_sell: form.price_sell !== '' ? parseFloat(form.price_sell) || 0 : null,
+        quantity: qtyNum,
+        price: priceOut,
+        price_sell: priceSellOut,
         supplier_id: form.supplier_id || null,
         note: form.note,
       });
@@ -136,19 +187,23 @@ export default function WarehouseIncome() {
           <div className="form-grid" style={{ marginBottom: '10px' }}>
             <div>
               <label className="label">{t('quantity')}{selectedProduct ? ` (${selectedProduct.unit})` : ''} *</label>
-              <input className="input mono" type="number" min="0.001" step="any" inputMode="decimal"
-                value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })}
+              <input className="input mono" type="text" inputMode="decimal"
+                value={form.quantity}
+                onChange={e => setForm({ ...form, quantity: cleanDec(e.target.value) })}
+                onBlur={blurNorm(setForm, 'quantity', 3)}
                 required placeholder="0" />
             </div>
             <div>
               <label className="label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>📥 {t('priceBuySum')}</span>
-                {selectedProduct?.price_buy && form.price && parseFloat(form.price) !== parseFloat(selectedProduct.price_buy) && (
+                {selectedProduct?.price_buy && Number.isFinite(buyNum) && buyNum !== parseFloat(selectedProduct.price_buy) && (
                   <span style={{ color: 'var(--orange)', fontSize: '10px', fontWeight: 800 }}>↑ ИЗМЕНИТСЯ</span>
                 )}
               </label>
-              <input className="input mono" type="number" min="0" step="any" inputMode="decimal"
-                value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}
+              <input className="input mono" type="text" inputMode="decimal"
+                value={form.price}
+                onChange={e => setForm({ ...form, price: cleanDec(e.target.value) })}
+                onBlur={blurNorm(setForm, 'price', 2)}
                 placeholder={selectedProduct?.price_buy ? String(selectedProduct.price_buy) : '0'} />
             </div>
           </div>
@@ -156,24 +211,26 @@ export default function WarehouseIncome() {
             <div>
               <label className="label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>🏷️ {t('priceSellSum')}</span>
-                {selectedProduct?.price_sell && form.price_sell && parseFloat(form.price_sell) !== parseFloat(selectedProduct.price_sell) && (
+                {selectedProduct?.price_sell && Number.isFinite(sellNum) && sellNum !== parseFloat(selectedProduct.price_sell) && (
                   <span style={{ color: 'var(--orange)', fontSize: '10px', fontWeight: 800 }}>↑ ИЗМЕНИТСЯ</span>
                 )}
               </label>
-              <input className="input mono" type="number" min="0" step="any" inputMode="decimal"
-                value={form.price_sell} onChange={e => setForm({ ...form, price_sell: e.target.value })}
+              <input className="input mono" type="text" inputMode="decimal"
+                value={form.price_sell}
+                onChange={e => setForm({ ...form, price_sell: cleanDec(e.target.value) })}
+                onBlur={blurNorm(setForm, 'price_sell', 2)}
                 placeholder={selectedProduct?.price_sell ? String(selectedProduct.price_sell) : '0'}
                 style={{ borderColor: 'rgba(34,197,94,.3)' }} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-              {form.price && form.price_sell && parseFloat(form.price_sell) > 0 && parseFloat(form.price) > 0 && (
+              {buyNum > 0 && sellNum > 0 && (
                 <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,.08)', borderRadius: '8px', fontSize: '12px' }}>
                   <span style={{ color: 'var(--text2)', fontWeight: 700 }}>Маржа: </span>
                   <span className="mono" style={{ fontWeight: 800, color: 'var(--green)' }}>
-                    {Math.round((parseFloat(form.price_sell) - parseFloat(form.price)) / parseFloat(form.price_sell) * 1000) / 10}%
+                    {Math.round((sellNum - buyNum) / sellNum * 1000) / 10}%
                   </span>
                   <span style={{ color: 'var(--text3)', marginLeft: 8, fontSize: 11 }}>
-                    +{fmtNum(parseFloat(form.price_sell) - parseFloat(form.price))} UZS/шт
+                    +{fmtNum(sellNum - buyNum)} UZS/шт
                   </span>
                 </div>
               )}

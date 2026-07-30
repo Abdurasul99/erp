@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Progress, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // ROP — точка заказа. Read-only.
 // avg_daily_demand = продажи за период / дни периода (stock_outcome, sale, approved)
@@ -14,6 +15,26 @@ const PERIODS = [
   { value: 'year',  label: 'Год',    days: 365 },
 ];
 
+// Поля what-if — строковый стейт. В onChange только чистка символов, нормализация —
+// на onBlur (кламп в onChange не даёт стереть первую цифру). type="text" вместо
+// type="number": последний на промежуточно невалидном вводе («2,») отдаёт
+// e.target.value === '' и контролируемое поле само себя очищает.
+// Дробный расход — запятая приводится к точке, один разделитель.
+const cleanDec = (s) => {
+  const t = normalizeDecimal(s).replace(/[^\d.]/g, '');
+  const i = t.indexOf('.');
+  return i < 0 ? t : t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '');
+};
+// Дни и штуки — целые: точку/запятую не пропускаем вовсе (раньше step="1" не мешал
+// вписать «2.5» руками).
+const cleanInt = (s) => String(s).replace(/[^\d]/g, '');
+// Пусто оставляем пустым (в расчёте это 0), «2.» приводим к «2», «007» к «7».
+const normNum = (s) => {
+  if (s === '') return '';
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n >= 0 ? String(n) : '';
+};
+
 export default function ReorderPointTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
@@ -23,9 +44,9 @@ export default function ReorderPointTool() {
   const [period, setPeriod] = useState('month');
 
   // What-if калькулятор (на клиенте)
-  const [wAvg, setWAvg] = useState(5);
-  const [wLead, setWLead] = useState(7);
-  const [wSafe, setWSafe] = useState(10);
+  const [wAvg, setWAvg] = useState('5');
+  const [wLead, setWLead] = useState('7');
+  const [wSafe, setWSafe] = useState('10');
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -140,20 +161,23 @@ export default function ReorderPointTool() {
             <div className="grid-4" style={{ alignItems: 'end' }}>
               <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>
                 {tt('Ср. продаж/день')}
-                <input type="number" min="0" step="0.1" value={wAvg}
-                  onChange={e => setWAvg(e.target.value)}
+                <input type="text" inputMode="decimal" value={wAvg}
+                  onChange={e => setWAvg(cleanDec(e.target.value))}
+                  onBlur={() => setWAvg(v => normNum(v))}
                   style={{ width: '100%', marginTop: 6, padding: '8px 10px', border: '1px solid var(--border, #E3EAF3)', borderRadius: 8 }} />
               </label>
               <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>
                 {tt('Срок поставки')} ({tt('дн')})
-                <input type="number" min="0" step="1" value={wLead}
-                  onChange={e => setWLead(e.target.value)}
+                <input type="text" inputMode="numeric" value={wLead}
+                  onChange={e => setWLead(cleanInt(e.target.value))}
+                  onBlur={() => setWLead(v => normNum(v))}
                   style={{ width: '100%', marginTop: 6, padding: '8px 10px', border: '1px solid var(--border, #E3EAF3)', borderRadius: 8 }} />
               </label>
               <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)' }}>
                 {tt('Страх. запас')}
-                <input type="number" min="0" step="1" value={wSafe}
-                  onChange={e => setWSafe(e.target.value)}
+                <input type="text" inputMode="numeric" value={wSafe}
+                  onChange={e => setWSafe(cleanInt(e.target.value))}
+                  onBlur={() => setWSafe(v => normNum(v))}
                   style={{ width: '100%', marginTop: 6, padding: '8px 10px', border: '1px solid var(--border, #E3EAF3)', borderRadius: 8 }} />
               </label>
               <div style={{

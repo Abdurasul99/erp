@@ -4,6 +4,27 @@ import api from '../api.js';
 import { formatDate, formatTime, useMsg } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import ProductCombobox from './ProductCombobox.jsx';
+import { normalizeDecimal } from '../utils/decimalInput.js';
+
+// Количество держим СТРОКОЙ и type="text": у type="number" Chrome отдаёт
+// e.target.value === '' на промежуточно-невалидном вводе («0,75» кг), и
+// контролируемое поле само себя очищает — дробное количество ввести нельзя.
+// В onChange только чистка символов, нормализация — на onBlur.
+const cleanDec = (s) => String(s).replace(/[^\d.,\s]/g, '');
+// Строка поля → число; пустое/мусор → NaN, чтобы NaN не ушёл на сервер.
+const toNum = (s) => {
+  const v = normalizeDecimal(s);
+  if (v === '' || v === '.') return NaN;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : NaN;
+};
+// На уходе фокуса: пустое остаётся пустым, иначе убираем пробелы, запятую меняем
+// на точку и режем до 3 знаков (склад считает с точностью до 0.001).
+const normDec = (s, decimals) => {
+  const n = toNum(s);
+  if (!Number.isFinite(n)) return '';
+  return String(parseFloat(Math.max(0, n).toFixed(decimals)));
+};
 
 // Spisanie / writeoff: tovar испорчен, утерян, истёк, разбит и т.п.
 // Only decrements stock; no cash movement.
@@ -48,7 +69,11 @@ export default function WarehouseWriteoff() {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.product_id || !form.quantity || parseFloat(form.quantity) <= 0) {
+    // Своя проверка вместо required: у type="text" нативного пузыря нет, а с
+    // required на type="number" браузер ругался «Введите число» на заполненном
+    // с виду поле и не давал отправить форму.
+    const qtyNum = toNum(form.quantity);
+    if (!form.product_id || !Number.isFinite(qtyNum) || qtyNum <= 0) {
       setMsg('error', uz ? 'Tovar va miqdor majburiy' : 'Товар и количество обязательны');
       return;
     }
@@ -60,7 +85,7 @@ export default function WarehouseWriteoff() {
     try {
       await api.post('/stock/writeoff', {
         product_id: parseInt(form.product_id),
-        quantity: parseFloat(form.quantity),
+        quantity: qtyNum,
         reason: form.writeoff_reason,
         note: form.note,
       });
@@ -109,8 +134,10 @@ export default function WarehouseWriteoff() {
 
           <div style={{ marginBottom: '12px' }}>
             <label className="label">{uz ? 'Miqdor' : 'Количество'} *</label>
-            <input className="input mono" type="number" min="0.001" step="any" value={form.quantity}
-              onChange={e => setForm({ ...form, quantity: e.target.value })} required placeholder="0" />
+            <input className="input mono" type="text" inputMode="decimal" value={form.quantity}
+              onChange={e => setForm(f => ({ ...f, quantity: cleanDec(e.target.value) }))}
+              onBlur={() => setForm(f => ({ ...f, quantity: normDec(f.quantity, 3) }))}
+              placeholder="0" />
           </div>
 
           <div style={{ marginBottom: '12px' }}>

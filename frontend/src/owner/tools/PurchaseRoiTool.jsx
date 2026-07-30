@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 const PERIODS = [
   { value: 'day',   label: 'День' },
@@ -10,6 +11,17 @@ const PERIODS = [
   { value: 'month', label: 'Месяц' },
   { value: 'year',  label: 'Год' },
 ];
+
+// Поля калькулятора «что если» — СТРОКИ: в onChange только чистка символов,
+// нормализация — на blur. type="number" ломал ввод: Chrome на промежуточно-невалидном
+// вводе («12 500», «12,5») отдаёт e.target.value === '', поле само себя стирало и весь
+// расчёт ROI показывал нули при заполненных на вид полях.
+const cleanNum = (s) => String(s).replace(/[^\d.,]/g, '');
+// Строка → число (>= 0). Пусто и мусор дают 0, поэтому в итогах NaN не появляется.
+const toNum = (s) => {
+  const n = parseFloat(normalizeDecimal(s));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
 
 // Performance tiers by ROI% — best → worst.
 function roiTier(roi) {
@@ -47,15 +59,23 @@ export default function PurchaseRoiTool() {
   const items = data?.items || [];
 
   const whatIf = useMemo(() => {
-    const buy = parseFloat(wBuy) || 0;
-    const sell = parseFloat(wSell) || 0;
-    const qty = parseFloat(wQty) || 0;
+    const buy = toNum(wBuy);
+    const sell = toNum(wSell);
+    const qty = toNum(wQty);
     const invest = buy * qty;
     const revenue = sell * qty;
     const profit = revenue - invest;
     const roi = invest > 0 ? (profit / invest) * 100 : null;
     return { invest, revenue, profit, roi };
   }, [wBuy, wSell, wQty]);
+
+  // Приводим значение к виду только при уходе фокуса: пустое остаётся пустым (поле можно
+  // полностью очистить и стереть первую цифру), «12,5» → «12.5», мусор → пусто.
+  const normOnBlur = (val, set) => {
+    if (val === '') return;
+    const n = toNum(val);
+    set(n > 0 ? String(n) : '');
+  };
 
   const inputStyle = {
     width: '100%', padding: '8px 10px', borderRadius: 8,
@@ -141,15 +161,21 @@ export default function PurchaseRoiTool() {
             <div className="grid-3" style={{ marginBottom: 16 }}>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700, marginBottom: 6 }}>{tt('Цена закупки за ед. (сум)')}</div>
-                <input type="number" min="0" style={inputStyle} value={wBuy} onChange={e => setWBuy(e.target.value)} placeholder="0" />
+                <input type="text" inputMode="decimal" style={inputStyle} value={wBuy}
+                  onChange={e => setWBuy(cleanNum(e.target.value))}
+                  onBlur={() => normOnBlur(wBuy, setWBuy)} placeholder="0" />
               </div>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700, marginBottom: 6 }}>{tt('Цена продажи за ед. (сум)')}</div>
-                <input type="number" min="0" style={inputStyle} value={wSell} onChange={e => setWSell(e.target.value)} placeholder="0" />
+                <input type="text" inputMode="decimal" style={inputStyle} value={wSell}
+                  onChange={e => setWSell(cleanNum(e.target.value))}
+                  onBlur={() => normOnBlur(wSell, setWSell)} placeholder="0" />
               </div>
               <div>
                 <div style={{ fontSize: 12, color: 'var(--text2)', fontWeight: 700, marginBottom: 6 }}>{tt('Количество закупки')}</div>
-                <input type="number" min="0" style={inputStyle} value={wQty} onChange={e => setWQty(e.target.value)} placeholder="0" />
+                <input type="text" inputMode="decimal" style={inputStyle} value={wQty}
+                  onChange={e => setWQty(cleanNum(e.target.value))}
+                  onBlur={() => normOnBlur(wQty, setWQty)} placeholder="0" />
               </div>
             </div>
             <div className="grid-4">

@@ -31,8 +31,13 @@ const CUSTOM_KEY  = 'wareapp_print_paper_custom_cm';
 // Build a paper-size object from custom cm dimensions.
 // `wCm` / `hCm` allow decimals (e.g. 5.8 × 4.0 cm = 58×40mm).
 export function makeCustomPaperSize(wCm, hCm) {
-  const w = Math.max(10, Math.min(300, Math.round(parseFloat(wCm) * 100) / 10));
-  const h = Math.max(10, Math.min(300, Math.round(parseFloat(hCm) * 100) / 10));
+  // NaN не должен молча превращаться в край диапазона — откатываемся к 5.8×4.0 см.
+  const mm = (cm, fallback) => {
+    const n = Math.round(parseFloat(cm) * 100) / 10;
+    return Number.isFinite(n) && n > 0 ? Math.max(10, Math.min(300, n)) : fallback;
+  };
+  const w = mm(wCm, 58);
+  const h = mm(hCm, 40);
   return {
     id: 'custom',
     label: `${(w / 10).toFixed(1)}×${(h / 10).toFixed(1)} см (своё)`,
@@ -139,9 +144,13 @@ export function makeLabelHTML({ paper = DEFAULT_PAPER, labels = [], count = 1 })
   // 2mm padding (absolute, prevents edge crop) regardless of total size.
   // Name occupies ~25% of vertical space, barcode ~55%, price ~20%.
   const padMm = Math.min(2, w * 0.05);
-  const nameFontPt = clamp(Math.round(h * 0.22 * 2.83), 6, 14); // 1mm ≈ 2.83pt
+  const nameFontPt = clamp(Math.round(h * 0.20 * 2.83), 6, 13); // 1mm ≈ 2.83pt
+  // Низкие этикетки (<32мм) — 1 строка имени с многоточием; выше — 2 строки.
+  // Высота блока имени считается ОТ реальной высоты строк (раньше фикс-25% высоты
+  // срезал низ второй строки или прятал её целиком без «…»).
+  const nameLines = h >= 32 ? 2 : 1;
+  const nameBlockMm = +(nameFontPt * 1.2 * nameLines / 2.83).toFixed(1);
   const priceFontPt = clamp(Math.round(h * 0.26 * 2.83), 7, 16);
-  const barcodeMaxH = Math.max(8, h * 0.55);  // mm
   const barcodeMaxW = Math.max(10, w - padMm * 2); // mm
 
   const availPt = barcodeMaxW * 2.8346; // usable width in points (1mm ≈ 2.8346pt)
@@ -187,13 +196,13 @@ export function makeLabelHTML({ paper = DEFAULT_PAPER, labels = [], count = 1 })
     font-size: ${nameFontPt}pt;
     font-weight: 700;
     text-align: center;
-    line-height: 1.15;
-    max-height: ${(h * 0.25).toFixed(1)}mm;
+    line-height: 1.2;
+    max-height: ${nameBlockMm}mm;
     overflow: hidden;
     width: 100%;
     word-break: break-word;
     display: -webkit-box;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: ${nameLines};
     -webkit-box-orient: vertical;
   }
   .bc {
@@ -203,11 +212,15 @@ export function makeLabelHTML({ paper = DEFAULT_PAPER, labels = [], count = 1 })
     align-items: center;
     justify-content: center;
     min-height: 0;
+    overflow: hidden;
   }
+  /* ВАЖНО: масштаб даёт viewBox (проставляет renderPrintBarcodes) + width/height
+     100% + preserveAspectRatio meet → код ЦЕЛИКОМ (штрихи и цифры) вписывается
+     в отведённое место на любом размере бумаги. Без viewBox svg не масштабируется
+     и обрезался справа/снизу («не до конца»). */
   .bc-svg {
-    width: ${barcodeMaxW}mm !important;
-    height: auto !important;
-    max-height: ${barcodeMaxH}mm;
+    width: 100%;
+    height: 100%;
     display: block;
   }
   .p {
@@ -254,6 +267,18 @@ export function renderPrintBarcodes(win, JsBarcode, paper = DEFAULT_PAPER) {
         margin: 1,
         displayValue: true,
       });
+      // КРИТИЧНО: JsBarcode не ставит viewBox — без него svg не масштабируется
+      // под CSS-ширину, и штрихи/цифры ОБРЕЗАЮТСЯ на печати («не до конца»).
+      // Переносим натуральные размеры в viewBox → браузер вписывает код целиком
+      // в этикетку с сохранением пропорций на любом размере бумаги.
+      const natW = parseFloat(svg.getAttribute('width'));
+      const natH = parseFloat(svg.getAttribute('height'));
+      if (natW > 0 && natH > 0) {
+        svg.setAttribute('viewBox', `0 0 ${natW} ${natH}`);
+        svg.removeAttribute('width');
+        svg.removeAttribute('height');
+        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      }
     } catch (e) { /* ignore unrenderable codes */ }
   });
 

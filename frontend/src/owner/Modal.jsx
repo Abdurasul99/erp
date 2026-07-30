@@ -6,11 +6,20 @@ export function Modal({ open, onClose, title, icon, children, footer, width = 52
   const dialogRef = useRef(null);
   const titleId = useRef('modal-title-' + Math.random().toString(36).slice(2, 8)).current;
 
+  // onClose приходит инлайн-стрелкой, то есть НОВОЙ функцией на каждый рендер.
+  // Пока он был в зависимостях эффекта ниже, эффект перезапускался на каждое
+  // нажатие клавиши, а его очистка возвращала фокус на кнопку, открывшую окно:
+  // первый символ попадал в поле, остальные улетали на кнопку, а пробел её
+  // нажимал. Держим колбэк в ref, чтобы эффект зависел ТОЛЬКО от open.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  const prevFocusRef = useRef(null);
+
   useEffect(() => {
     if (!open) return;
-    const prevFocus = document.activeElement;
+    prevFocusRef.current = document.activeElement;
     const onKey = (e) => {
-      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Escape') { onCloseRef.current?.(); return; }
       // Focus trap: Tab/Shift+Tab держим фокус внутри модалки
       if (e.key === 'Tab' && dialogRef.current) {
         const focusables = dialogRef.current.querySelectorAll(
@@ -34,9 +43,10 @@ export function Modal({ open, onClose, title, icon, children, footer, width = 52
       document.body.style.overflow = '';
       clearTimeout(t);
       // Вернуть фокус на элемент, открывший модалку
-      if (prevFocus && prevFocus.focus) prevFocus.focus();
+      const pf = prevFocusRef.current;
+      if (pf && pf.focus) pf.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (

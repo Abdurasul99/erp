@@ -4,6 +4,7 @@ import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, Progress, f
 import { BranchScope } from '../OwnerShell.jsx';
 import { Modal, toast } from '../Modal.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // Авто-источники подставляют факт из живых данных (бэкенд bscLoadFull):
 // выручка POS / число новых клиентов / текущая стоимость склада за год стратегии.
@@ -16,6 +17,36 @@ const SOURCE_OPTS = [
 
 const pctTone = (p) => p == null ? 'gray' : p >= 100 ? 'green' : p >= 70 ? 'blue' : p >= 40 ? 'yellow' : 'red';
 const pctColor = (p) => p == null ? '#9CA3AF' : p >= 100 ? '#16A34A' : p >= 70 ? '#1D4ED8' : p >= 40 ? '#D97706' : '#DC2626';
+
+// ── Числовой ввод ────────────────────────────────────────────────────────────
+// Стейт поля — СТРОКА: в onChange только чистка символов, диапазон и приведение
+// к числу — на onBlur / при отправке. type="number" для денег и процентов не
+// годится: на промежуточно-невалидном вводе («120 000 000», «12,5») браузер
+// отдаёт e.target.value === '' и контролируемое поле само себя очищает.
+const cleanDec = (s) => String(s ?? '').replace(/[^\d.,\s]/g, ''); // цифры, разделитель, пробелы-разряды
+const normNum = (s) => normalizeDecimal(s);
+// Пустое поле — это «не менять», а НЕ «поставить 0». Раньше очистка веса отдела
+// давала parseFloat('') = NaN, условие «значение изменилось» срабатывало, и вес
+// молча сохранялся нулём — доля отдела в ССП обнулялась без ведома пользователя.
+const changedNum = (raw, prev) => {
+  const s = normNum(raw).trim();
+  if (s === '') return false;
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n !== Number(prev);
+};
+const toNum = (s, dflt = 0) => { const n = parseFloat(normNum(s)); return Number.isFinite(n) ? n : dflt; };
+// onBlur: пустое остаётся пустым (поле можно полностью очистить), мусор гасим,
+// выход за диапазон зажимаем. Валидный ввод отдаём как набрали (уже без пробелов),
+// чтобы девятизначные суммы не превратились в экспоненциальную запись.
+const tidyNum = (s, min = null, max = null) => {
+  const t = normNum(s).replace(/^0+(?=\d)/, ''); // «020» → «20»
+  if (t === '') return '';
+  let n = parseFloat(t);
+  if (!Number.isFinite(n)) return '';
+  if (min != null) n = Math.max(min, n);
+  if (max != null) n = Math.min(max, n);
+  return (n === parseFloat(t) && /^\d+(\.\d+)?$/.test(t)) ? t : String(n);
+};
 
 export default function SspTool() {
   const { tt } = useTt();
@@ -55,13 +86,15 @@ export default function SspTool() {
     d.metrics.filter(m => m.source_type === 'manual').map(m => ({ ...m, dept: d.name })));
 
   const submitFact = async () => {
-    if (!factForm.metric_id || factForm.fact_value === '') { toast(tt('Заполните метрику и значение'), 'error'); return; }
+    // Значение приводим к числу явно: на сервер не должны уйти NaN или строка.
+    const val = toNum(factForm.fact_value, NaN);
+    if (!factForm.metric_id || !Number.isFinite(val)) { toast(tt('Заполните метрику и значение'), 'error'); return; }
     setFactSaving(true);
     try {
       await api.post('/bsc/fact', {
         metric_id: parseInt(factForm.metric_id, 10),
         fact_date: factForm.fact_date,
-        fact_value: parseFloat(factForm.fact_value),
+        fact_value: val,
       });
       toast(tt('Факт сохранён'));
       setFactForm({ ...factForm, fact_value: '' });
@@ -72,6 +105,7 @@ export default function SspTool() {
 
   const TABS = [
     { value: 'dashboard', label: tt('Дашборд') },
+    { value: 'period', label: tt('План / факт') },
     { value: 'table', label: tt('Таблица') },
     { value: 'facts', label: tt('Факты') },
     { value: 'forecast', label: tt('Прогноз') },
@@ -109,6 +143,7 @@ export default function SspTool() {
           </div>
 
           {tab === 'dashboard' && <DashboardTab dash={dash} tt={tt} />}
+          {tab === 'period' && <PeriodTab tt={tt} canEdit={isFounder} />}
           {tab === 'table' && <TableTab table={table} tt={tt} />}
           {tab === 'facts' && (
             <FactsTab tt={tt} metrics={allMetrics} form={factForm} setForm={setFactForm}
@@ -127,6 +162,201 @@ export default function SspTool() {
 }
 
 // ---------- Dashboard ----------
+// ═══ Вкладка «План / факт» — калька листа ССП клиента ═════════════════════════
+// Столбцы как в таблице: Метрика · Reja (план) · Fakt (факт) · % выполнения ·
+// Muhimligi (вес метрики) · % отдела · вес отдела · Natija (итог).
+// Период выбирается: год / полугодие / квартал / месяц / неделя.
+const PERIOD_TYPES = [
+  { value: 'year', label: 'Год', short: 'Г' },
+  { value: 'half', label: 'Полугодие', short: 'П' },
+  { value: 'quarter', label: 'Квартал', short: 'К' },
+  { value: 'month', label: 'Месяц', short: 'М' },
+  { value: 'week', label: 'Неделя', short: 'Н' },
+];
+const periodPctColor = (v) => (v == null ? 'var(--text3)' : v >= 100 ? '#16A34A' : v >= 80 ? '#D97706' : '#DC2626');
+
+function PeriodTab({ tt, canEdit }) {
+  const [type, setType] = useState('month');
+  const [no, setNo] = useState(1);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [edit, setEdit] = useState({});     // черновики полей (мгновенный ввод без запроса)
+  const [saving, setSaving] = useState(null);
+  // Текстовое зеркало номера периода: зажимать 1…maxNo прямо во время набора
+  // нельзя — иначе первую цифру не стереть (поле мгновенно возвращает «1»).
+  // Объявляем ДО ранних return ниже: хуки не должны вызываться условно.
+  const [noInput, setNoInput] = useState(String(no));
+  useEffect(() => { setNoInput(String(no)); }, [no]);
+
+  const load = React.useCallback(() => {
+    setLoading(true); setErr(null);
+    api.get('/bsc/period', { params: { type, no } })
+      .then(r => { setData(r.data); setEdit({}); })
+      .catch(e => setErr(e.response?.data?.error || e.message))
+      .finally(() => setLoading(false));
+  }, [type, no]);
+  useEffect(() => { load(); }, [load]);
+
+  const savePlan = async (metricId, value) => {
+    setSaving('p' + metricId);
+    try {
+      // toNum, а не parseFloat: план вида «120 000 000» / «12,5» иначе обрезается.
+      await api.post('/bsc/period-plan', { metric_id: metricId, period_type: type, period_no: no, plan_value: toNum(value) });
+      load();
+    } catch (e) { toast(e.response?.data?.error || tt('Не удалось сохранить план'), 'error'); }
+    setSaving(null);
+  };
+  const saveWeight = async (metricId, value) => {
+    setSaving('w' + metricId);
+    try {
+      await api.put(`/bsc/metric/${metricId}`, { weight_pct: toNum(value) });
+      load();
+    } catch (e) { toast(e.response?.data?.error || tt('Не удалось сохранить вес'), 'error'); }
+    setSaving(null);
+  };
+  const saveDeptWeight = async (deptId, value) => {
+    setSaving('d' + deptId);
+    try {
+      await api.put(`/bsc/department/${deptId}`, { weight_pct: toNum(value) });
+      load();
+    } catch (e) { toast(e.response?.data?.error || tt('Не удалось сохранить вес отдела'), 'error'); }
+    setSaving(null);
+  };
+
+  if (loading && !data) return <Card><Skeleton height={240} /></Card>;
+  if (err) return <Card><div style={{ color: 'var(--red)' }}>{err}</div></Card>;
+  if (!data?.strategy) return <Card><EmptyState icon="" title={tt('Нет стратегии')} description={tt('Создайте стратегию ССП, чтобы планировать по периодам.')} /></Card>;
+
+  const maxNo = data.period?.count || 36;
+  const onNoBlur = () => {
+    const n = parseInt(noInput, 10);
+    const fix = Number.isFinite(n) && n >= 1 ? Math.min(maxNo, n) : no;
+    setNo(fix);
+    setNoInput(String(fix));
+  };
+  const fmtDate = (d) => new Date(d).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  const inp = { width: 78, padding: '4px 7px', border: '1.5px solid var(--border,#E2E4F0)', borderRadius: 7, fontSize: 12.5, textAlign: 'right', fontFamily: 'inherit', outline: 'none' };
+
+  return (
+    <>
+      {/* Селектор периода — «Muddatni tanlang» из таблицы */}
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text2)' }}>{tt('Период')}:</span>
+          <Pills value={type} onChange={(v) => { setType(v); setNo(1); }}
+            options={PERIOD_TYPES.map(p => ({ value: p.value, label: tt(p.label) }))} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button className="btn btn-ghost btn-sm" disabled={no <= 1} onClick={() => setNo(n => Math.max(1, n - 1))}>←</button>
+            <input type="text" inputMode="numeric" value={noInput}
+              onChange={e => {
+                const raw = e.target.value.replace(/[^\d]/g, '');
+                setNoInput(raw);
+                const n = parseInt(raw, 10);
+                if (Number.isFinite(n) && n >= 1 && n <= maxNo) setNo(n);
+              }}
+              onBlur={onNoBlur}
+              style={{ ...inp, width: 62, textAlign: 'center', fontWeight: 800 }} />
+            <span style={{ fontSize: 12, color: 'var(--text3)' }}>{tt('из')} {maxNo}</span>
+            <button className="btn btn-ghost btn-sm" disabled={no >= maxNo} onClick={() => setNo(n => Math.min(maxNo, n + 1))}>→</button>
+          </div>
+          {data.period && (
+            <span style={{ fontSize: 12, color: 'var(--text3)' }}>
+              {fmtDate(data.period.from)} — {fmtDate(data.period.to)}
+            </span>
+          )}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text3)', textTransform: 'uppercase' }}>{tt('Итог')}</span>
+            <span style={{ fontSize: 26, fontWeight: 800, color: periodPctColor(data.total_score), fontVariantNumeric: 'tabular-nums' }}>
+              {data.total_score == null ? '—' : data.total_score + '%'}
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      {(data.departments || []).length === 0 && (
+        <Card><EmptyState icon="" title={tt('Нет отделов')} description={tt('Добавьте отделы и метрики в стратегию.')} /></Card>
+      )}
+
+      {(data.departments || []).map(d => (
+        <Card key={d.id} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: d.color || '#0A84FF', flexShrink: 0 }} />
+            <div style={{ fontWeight: 800, fontSize: 15 }}>{d.name}</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--text3)' }}>
+              {tt('вес отдела')}
+              {canEdit ? (
+                <input defaultValue={d.weight_pct} onBlur={e => { if (changedNum(e.target.value, d.weight_pct)) saveDeptWeight(d.id, e.target.value); }}
+                  inputMode="decimal" style={{ ...inp, width: 58 }} />
+              ) : <b style={{ color: 'var(--text2)' }}>{d.weight_pct}%</b>}
+            </label>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text3)', textTransform: 'uppercase', fontWeight: 700 }}>{tt('% отдела')}</span>
+              <span style={{ fontSize: 20, fontWeight: 800, color: periodPctColor(d.completion), fontVariantNumeric: 'tabular-nums' }}>
+                {d.completion == null ? '—' : d.completion + '%'}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.03em' }}>
+                  <th style={{ textAlign: 'left', padding: '6px 8px' }}>{tt('Метрика')}</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px', width: 110 }}>{tt('План')}</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px', width: 100 }}>{tt('Факт')}</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px', width: 105 }}>{tt('% выполнения')}</th>
+                  <th style={{ textAlign: 'right', padding: '6px 8px', width: 95 }}>{tt('Важность')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.metrics.map(m => (
+                  <tr key={m.id} style={{ borderTop: '1px solid var(--border,#EDF1F7)' }}>
+                    <td style={{ padding: '6px 8px', fontSize: 13, fontWeight: 600 }}>
+                      {m.name}
+                      {m.unit && <span style={{ color: 'var(--text3)', fontWeight: 400 }}> · {m.unit}</span>}
+                      {m.source_type !== 'manual' && <Badge tone="blue">{tt('авто')}</Badge>}
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                      {canEdit ? (
+                        <input defaultValue={m.plan} key={`${m.id}-${type}-${no}`} inputMode="decimal"
+                          onBlur={e => { if (changedNum(e.target.value, m.plan)) savePlan(m.id, e.target.value); }}
+                          title={m.plan_explicit ? tt('План задан вручную') : tt('Доля годового плана — измените, чтобы задать точно')}
+                          style={{ ...inp, opacity: saving === 'p' + m.id ? .5 : 1, borderStyle: m.plan_explicit ? 'solid' : 'dashed' }} />
+                      ) : <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtNum(m.plan)}</span>}
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+                      {fmtNum(m.fact)}
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 800, fontSize: 13, color: periodPctColor(m.pct), fontVariantNumeric: 'tabular-nums' }}>
+                      {m.pct == null ? '—' : m.pct + '%'}
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                      {canEdit ? (
+                        <input defaultValue={m.weight_pct} inputMode="decimal"
+                          onBlur={e => { if (changedNum(e.target.value, m.weight_pct)) saveWeight(m.id, e.target.value); }}
+                          title={tt('Важность метрики внутри отдела. 0 у всех = равные веса')}
+                          style={{ ...inp, width: 62, opacity: saving === 'w' + m.id ? .5 : 1 }} />
+                      ) : <span style={{ color: 'var(--text2)' }}>{m.weight_pct}%</span>}
+                    </td>
+                  </tr>
+                ))}
+                {d.metrics.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: 16, textAlign: 'center', color: 'var(--text3)', fontSize: 13 }}>{tt('Нет метрик')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ))}
+
+      <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.55 }}>
+        {tt('Как считается: «% выполнения» = Факт ÷ План. «% отдела» = среднее по метрикам, взвешенное по их важности (если важность у всех 0 — веса равные). «Итог» = среднее по отделам, взвешенное по весу отдела. План с пунктирной рамкой — доля годового плана; впишите своё значение, чтобы закрепить план именно на этот период. Факт подтягивается из внесённых фактов за даты периода.')}
+      </div>
+    </>
+  );
+}
+
 function DashboardTab({ dash, tt }) {
   const ts = dash.total_score;
   return (
@@ -246,8 +476,10 @@ function FactsTab({ tt, metrics, form, setForm, saving, onSubmit }) {
               onChange={e => setForm({ ...form, fact_date: e.target.value })} style={{ width: '100%', marginTop: 4 }} />
           </label>
           <label style={{ fontSize: 12, fontWeight: 700 }}>{tt('Значение')}
-            <input type="number" className="input" value={form.fact_value} placeholder="0"
-              onChange={e => setForm({ ...form, fact_value: e.target.value })} style={{ width: '100%', marginTop: 4 }} />
+            <input type="text" inputMode="decimal" className="input" value={form.fact_value} placeholder="0"
+              onChange={e => setForm({ ...form, fact_value: cleanDec(e.target.value) })}
+              onBlur={e => setForm({ ...form, fact_value: tidyNum(e.target.value) })}
+              style={{ width: '100%', marginTop: 4 }} />
           </label>
           <button className="btn btn-primary" disabled={saving} onClick={onSubmit}>
             {saving ? tt('Сохранение…') : tt('Сохранить факт')}
@@ -313,14 +545,15 @@ function CreateStrategyModal({ tt, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(end3y);
+  // Веса и планы храним строками (см. cleanDec/tidyNum выше).
   const [depts, setDepts] = useState([
-    { name: 'Маркетинг', weight_pct: 20, metrics: [{ name: '', unit: '', source_type: 'manual', plan_year_1: '', plan_year_2: '', plan_year_3: '' }] },
+    { name: 'Маркетинг', weight_pct: '20', metrics: [{ name: '', unit: '', source_type: 'manual', plan_year_1: '', plan_year_2: '', plan_year_3: '' }] },
   ]);
   const [saving, setSaving] = useState(false);
 
-  const sumW = depts.reduce((a, d) => a + (parseFloat(d.weight_pct) || 0), 0);
+  const sumW = depts.reduce((a, d) => a + toNum(d.weight_pct), 0);
 
-  const addDept = () => setDepts([...depts, { name: '', weight_pct: 0, metrics: [{ name: '', unit: '', source_type: 'manual', plan_year_1: '', plan_year_2: '', plan_year_3: '' }] }]);
+  const addDept = () => setDepts([...depts, { name: '', weight_pct: '', metrics: [{ name: '', unit: '', source_type: 'manual', plan_year_1: '', plan_year_2: '', plan_year_3: '' }] }]);
   const delDept = (i) => setDepts(depts.filter((_, idx) => idx !== i));
   const setDept = (i, patch) => setDepts(depts.map((d, idx) => idx === i ? { ...d, ...patch } : d));
   const addMetric = (i) => setDept(i, { metrics: [...depts[i].metrics, { name: '', unit: '', source_type: 'manual', plan_year_1: '', plan_year_2: '', plan_year_3: '' }] });
@@ -335,12 +568,12 @@ function CreateStrategyModal({ tt, onClose, onCreated }) {
       await api.post('/bsc/strategies', {
         name, start_date: startDate, end_date: endDate,
         departments: depts.map(d => ({
-          name: d.name, weight_pct: parseFloat(d.weight_pct) || 0,
+          name: d.name, weight_pct: toNum(d.weight_pct),
           metrics: d.metrics.filter(m => m.name.trim()).map(m => ({
             name: m.name, unit: m.unit, source_type: m.source_type,
-            plan_year_1: parseFloat(m.plan_year_1) || 0,
-            plan_year_2: parseFloat(m.plan_year_2) || 0,
-            plan_year_3: parseFloat(m.plan_year_3) || 0,
+            plan_year_1: toNum(m.plan_year_1),
+            plan_year_2: toNum(m.plan_year_2),
+            plan_year_3: toNum(m.plan_year_3),
           })),
         })),
       });
@@ -384,7 +617,10 @@ function CreateStrategyModal({ tt, onClose, onCreated }) {
                 <input className="input" value={d.name} onChange={e => setDept(di, { name: e.target.value })} style={{ width: '100%', marginTop: 4 }} />
               </label>
               <label style={{ fontSize: 11, fontWeight: 700 }}>{tt('Вес, %')}
-                <input type="number" className="input" value={d.weight_pct} onChange={e => setDept(di, { weight_pct: e.target.value })} style={{ width: '100%', marginTop: 4 }} />
+                <input type="text" inputMode="decimal" className="input" value={d.weight_pct} placeholder="0"
+                  onChange={e => setDept(di, { weight_pct: cleanDec(e.target.value) })}
+                  onBlur={e => setDept(di, { weight_pct: tidyNum(e.target.value, 0, 100) })}
+                  style={{ width: '100%', marginTop: 4 }} />
               </label>
               <button className="btn btn-ghost btn-sm" onClick={() => delDept(di)} disabled={depts.length === 1}>🗑 {tt('удалить')}</button>
             </div>
@@ -397,9 +633,15 @@ function CreateStrategyModal({ tt, onClose, onCreated }) {
                 <select className="input" value={m.source_type} onChange={e => setMetric(di, mi, { source_type: e.target.value })}>
                   {SOURCE_OPTS.map(o => <option key={o.value} value={o.value}>{tt(o.label)}</option>)}
                 </select>
-                <input type="number" className="input" placeholder={tt('Год 1')} value={m.plan_year_1} onChange={e => setMetric(di, mi, { plan_year_1: e.target.value })} />
-                <input type="number" className="input" placeholder={tt('Год 2')} value={m.plan_year_2} onChange={e => setMetric(di, mi, { plan_year_2: e.target.value })} />
-                <input type="number" className="input" placeholder={tt('Год 3')} value={m.plan_year_3} onChange={e => setMetric(di, mi, { plan_year_3: e.target.value })} />
+                <input type="text" inputMode="decimal" className="input" placeholder={tt('Год 1')} value={m.plan_year_1}
+                  onChange={e => setMetric(di, mi, { plan_year_1: cleanDec(e.target.value) })}
+                  onBlur={e => setMetric(di, mi, { plan_year_1: tidyNum(e.target.value, 0) })} />
+                <input type="text" inputMode="decimal" className="input" placeholder={tt('Год 2')} value={m.plan_year_2}
+                  onChange={e => setMetric(di, mi, { plan_year_2: cleanDec(e.target.value) })}
+                  onBlur={e => setMetric(di, mi, { plan_year_2: tidyNum(e.target.value, 0) })} />
+                <input type="text" inputMode="decimal" className="input" placeholder={tt('Год 3')} value={m.plan_year_3}
+                  onChange={e => setMetric(di, mi, { plan_year_3: cleanDec(e.target.value) })}
+                  onBlur={e => setMetric(di, mi, { plan_year_3: tidyNum(e.target.value, 0) })} />
                 <button className="btn btn-ghost btn-sm" onClick={() => delMetric(di, mi)}>×</button>
               </div>
             ))}

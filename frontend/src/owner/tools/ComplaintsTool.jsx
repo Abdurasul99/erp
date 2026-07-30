@@ -3,6 +3,7 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, fmtNum, fmtMoneyFull } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 const CATEGORY_META = {
   product_quality: { icon: '🛒', label: 'Качество товара' },
@@ -51,6 +52,17 @@ const STATUS_TABS = [
   { value: 'resolved',    label: 'Решено' },
   { value: 'rejected',    label: 'Отклонено' },
 ];
+
+// Деньги вводим СТРОКОЙ: в onChange только чистка символов, округление — на blur.
+// type="number" здесь недопустим: Chrome на промежуточно-невалидном вводе («1500,»)
+// отдаёт e.target.value === '', и контролируемое поле само себя стирало —
+// сумма компенсации уходила на сервер нулём.
+const cleanMoney = (s) => String(s).replace(/[^\d.,]/g, '');
+// Строка → целое число сум (>= 0). Мусор и пустое дают 0, NaN не возвращается никогда.
+const moneyToNum = (s) => {
+  const n = parseFloat(normalizeDecimal(s));
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+};
 
 function fmtHours(h) {
   if (h == null) return '—';
@@ -115,13 +127,20 @@ export default function ComplaintsTool() {
     setRForm({ resolution: '', compensation_type: 'none', compensation_amount: '', customer_satisfaction: '' });
     setResolveTarget(c);
   };
+  // Границы и округление — только на blur. Пустое поле остаётся пустым (его можно
+  // полностью очистить), мусор сбрасывается в пустоту, а не в NaN.
+  const blurCompensation = () => setRForm(f => {
+    if (f.compensation_amount === '') return f;
+    const n = moneyToNum(f.compensation_amount);
+    return { ...f, compensation_amount: n > 0 ? String(n) : '' };
+  });
   const submitResolve = () => {
     if (!rForm.resolution.trim()) { setError(tt('Опишите решение')); return; }
     setBusy(true);
     const body = {
       resolution: rForm.resolution,
       compensation_type: rForm.compensation_type,
-      compensation_amount: rForm.compensation_amount || 0,
+      compensation_amount: moneyToNum(rForm.compensation_amount),
     };
     if (rForm.customer_satisfaction) body.customer_satisfaction = rForm.customer_satisfaction;
     api.patch(`/crm/complaints/${resolveTarget.id}/resolve`, body)
@@ -312,9 +331,10 @@ export default function ComplaintsTool() {
               </div>
               <div>
                 <label style={lbl}>{tt('Сумма компенсации')}</label>
-                <input style={inp} type="number" value={rForm.compensation_amount}
+                <input style={inp} type="text" inputMode="numeric" value={rForm.compensation_amount}
                   disabled={rForm.compensation_type !== 'refund' && rForm.compensation_type !== 'discount'}
-                  onChange={e => setRForm({ ...rForm, compensation_amount: e.target.value })} placeholder="0" />
+                  onChange={e => setRForm({ ...rForm, compensation_amount: cleanMoney(e.target.value) })}
+                  onBlur={blurCompensation} placeholder="0" />
               </div>
             </div>
             <div style={{ marginTop: 12 }}>

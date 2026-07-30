@@ -3,23 +3,33 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
 
 // «Что если — Закупки»: 3 сценария закупочных решений.
 // Бэкенд отдаёт baseline (спрос/оборачиваемость/хранение/маржа/поставщики),
 // ВСЯ сценарная математика — на фронте (как в макете).
 
-const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const num = (v) => { const n = parseFloat(normalizeDecimal(v)); return Number.isFinite(n) ? n : 0; };
 
 // Маленькое поле ввода в строку «лейбл → значение».
+// type="text": у type="number" Chrome отдаёт пустую строку на промежуточно
+// невалидном вводе (запятая как разделитель), и поле стирало само себя.
+// Заодно колёсико мыши больше не меняет значение при прокрутке страницы.
 function NumRow({ label, value, onChange, suffix }) {
+  const onBlur = () => {
+    const s = String(value ?? '').trim();
+    if (s === '') return;
+    onChange(String(num(s)));
+  };
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border, #E3EAF3)' }}>
       <span style={{ fontSize: 12.5, color: 'var(--text2)' }}>{label}</span>
       <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <input
-          type="number"
+          type="text" inputMode="decimal"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(e.target.value.replace(/[^\d.,\s]/g, ''))}
+          onBlur={onBlur}
           style={{
             width: 130, textAlign: 'right', padding: '6px 9px',
             border: '1.5px solid var(--border, #E3EAF3)', borderRadius: 8,
