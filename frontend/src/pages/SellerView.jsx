@@ -2,6 +2,7 @@
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, LangContext } from '../App.jsx';
 import MyTasks from '../components/MyTasks.jsx';
+import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 import { t } from '../i18n.js';
 import api from '../api.js';
 import JsBarcode from 'jsbarcode';
@@ -20,33 +21,310 @@ function BarcodeImg({ value }) {
   return <svg ref={ref} style={{ maxWidth: '100%' }} />;
 }
 
-function Scanner({ onScan, onClose }) {
+// ─────────────────────────── Ввод чисел ───────────────────────────
+// Стейт числовых полей — СТРОКА. В onChange только чистка символов, никакой
+// коэрсии: иначе поле нельзя очистить. Отдельно: у <input type="number"> при
+// промежуточно-невалидном вводе (запятая как разделитель, «1500,») Chrome отдаёт
+// e.target.value === '' — контролируемое поле стирает само себя, и пользователь
+// «не может ввести число». Поэтому у денег и количеств type="text" + inputMode.
+// В onChange НИЧЕГО не решаем про смысл разделителей — только отсекаем мусор.
+// Раньше здесь все запятые превращались в точку и оставалась лишь первая:
+// «1 500 000», набранное как «1.500.000», становилось «1.500000» → 1.5 сума.
+const cleanNum = (raw) => String(raw ?? '').replace(/[^\d.,\s]/g, '');
+
+// Смысл разделителей решаем один раз, при чтении значения: два и больше
+// разделителя — это разряды тысяч, один — десятичная запятая/точка.
+const normNum = (raw) => {
+  const s = String(raw ?? '').replace(/\s+/g, '');
+  const seps = (s.match(/[.,]/g) || []).length;
+  return seps > 1 ? s.replace(/[.,]/g, '') : s.replace(',', '.');
+};
+// Единая точка чтения числа из поля: любые расчёты берут значение только отсюда.
+const toNum = (raw) => {
+  const n = parseFloat(normNum(raw));
+  return Number.isFinite(n) ? n : 0;
+};
+// Нормализация на blur: «1500.» → «1500», «.5» → «0.5», «1.500.000» → «1500000».
+const tidyNum = (raw) => {
+  let v = normNum(raw);
+  if (!v || v === '.') return '';
+  if (v.startsWith('.')) v = '0' + v;
+  if (v.endsWith('.')) v = v.slice(0, -1);
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? String(n) : '';
+};
+
+// Чисто цифровой ввод из 6+ знаков — это штрих-код: ищем точным совпадением,
+// а не ILIKE (иначе «7» находит десяток товаров).
+const isBarcodeLike = (s) => /^\d{6,}$/.test(String(s || '').trim());
+
+// ─────────────────────────── Сканер ШК ───────────────────────────
+// Форматы перечисляем явно: без formatsToSupport библиотека перебирает ВСЕ 17
+// (включая 2D — DataMatrix/Aztec/PDF417/MaxiCode), и каждый кадр ZXing тратит
+// время на форматы, которых у нас не бывает. Печатаем CODE128, у поставщиков
+// EAN/UPC; QR оставлен на случай QR-этикеток.
+const SCAN_FORMATS = ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'ITF', 'QR_CODE'];
+
+// qrbox задаёт не «рамку», а РАЗРЕШЕНИЕ канваса декодера: библиотека делает
+// canvas ровно этого размера и ужимает в него кадр камеры. Фиксированные
+// 260×140 давали декодеру полосу 260px — у EAN-13 95 модулей, значит код должен
+// был занять ~76% рамки, отсюда «поднеси телефон и жди». Считаем от реальной
+// ширины видоискателя: широкая невысокая полоса под линейный код.
+const linearQrbox = (viewfinderWidth, viewfinderHeight) => {
+  const vw = viewfinderWidth || 320;
+  const vh = viewfinderHeight || 240;
+  const w = Math.min(vw, Math.max(200, Math.floor(vw * 0.92)));
+  const h = Math.min(vh, Math.max(80, Math.min(Math.floor(vh * 0.55), Math.floor(w * 0.45))));
+  return { width: w, height: h };
+};
+
+// Html5Qrcode.stop() бросает СИНХРОННО строкой, если сканер не запущен, —
+// .catch() такую ошибку не поймает, нужен try/catch и проверка состояния.
+const safeStopScanner = (inst) => {
+  if (!inst) return;
+  try { if (inst.isScanning) inst.stop().catch(() => {}); } catch {}
+};
+
+// Понятный текст вместо сырого DOMException.
+const cameraErrText = (e, uz) => {
+  const name = e?.name || '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return uz ? 'Kameraga ruxsat berilmagan. Brauzer sozlamalarida ruxsat bering yoki kodni qoʻlda kiriting.'
+              : 'Доступ к камере запрещён. Разрешите его в настройках браузера или введите код вручную.';
+  }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError' || name === 'DevicesNotFoundError') {
+    return uz ? 'Kamera topilmadi. Kodni qoʻlda kiriting.' : 'Камера не найдена. Введите код вручную.';
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return uz ? 'Kamera boshqa ilova tomonidan band. Uni yopib qayta urinib koʻring.'
+              : 'Камера занята другим приложением. Закройте его и попробуйте снова.';
+  }
+  return (typeof e === 'string' ? e : e?.message) || (uz ? 'Kamera ishlamadi' : 'Камера недоступна');
+};
+
+// Разрешение, в котором библиотека распознаёт, равно размеру рамки в CSS-пикселях
+// видоискателя. На узком телефоне рамка выходила ~300 px, и штрих-коду не хватало
+// 2 px на полосу — приходилось ловить точную дистанцию. Держим видоискатель
+// логически широким и визуально сжимаем его трансформацией под ширину экрана.
+const SCAN_VIEW_W = 480;
+
+function Scanner({ onScan, onClose, uz = false }) {
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [caps, setCaps] = useState({ torch: false, zoom: false });
+  const [zoomPct, setZoomPct] = useState(0);
+  const [manual, setManual] = useState('');
+  const [scale, setScale] = useState(1);
+  const [viewH, setViewH] = useState(0);
+  const hostRef = useRef(null);
+  const instRef = useRef(null);
+  const featRef = useRef({ torch: null, zoom: null });
+  const doneRef = useRef(false);
+  // id генерируем на монтирование: при жёсткой строке два инстанса (двойной
+  // маунт / незакрытый предыдущий) борются за один и тот же контейнер, а start()
+  // затирает его innerHTML — старый сканер после этого не может даже остановиться.
+  const idRef = useRef('seller-scanner-' + Math.random().toString(36).slice(2));
+  // Колбэк держим в ref: эффект запускаем один раз, пересоздавать камеру
+  // из-за нового замыкания родителя нельзя.
+  const onScanRef = useRef(onScan);
+  useEffect(() => { onScanRef.current = onScan; }, [onScan]);
+  // Язык тоже через ref — смена языка не должна перезапускать камеру.
+  const uzRef = useRef(uz);
+  useEffect(() => { uzRef.current = uz; }, [uz]);
+
+  // Видоискатель держим логически широким (SCAN_VIEW_W) и сжимаем под экран:
+  // от его ширины в CSS-пикселях зависит разрешение распознавания.
   useEffect(() => {
-    let stopped = false;
-    import('html5-qrcode').then(({ Html5Qrcode }) => {
-      if (stopped) return;
-      const s = new Html5Qrcode('seller-scanner', { verbose: false });
-      s.start({ facingMode: 'environment' }, { fps: 15, qrbox: { width: 260, height: 140 }, aspectRatio: 1.5 },
-        (code) => { if (!stopped) { stopped = true; s.stop().catch(() => {}); onScan(code); } },
-        () => {}
-      ).then(() => setReady(true)).catch(e => setError(e?.message || t('cameraUnavailable')));
-    }).catch(() => setError(t('scannerLoadError')));
-    return () => { stopped = true; };
+    const measure = () => {
+      const w = hostRef.current?.clientWidth || 0;
+      if (w > 0) setScale(Math.min(1, w / SCAN_VIEW_W));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
   }, []);
+
+  // Ровно один onScan на одно сканирование.
+  const handleDecoded = useCallback((text) => {
+    const code = String(text || '').trim();
+    if (!code || doneRef.current) return;
+    doneRef.current = true;
+    const inst = instRef.current;
+    instRef.current = null;
+    safeStopScanner(inst);
+    onScanRef.current?.(code);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    import('html5-qrcode').then(({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
+      if (cancelled) return;
+      const formats = SCAN_FORMATS
+        .map(n => Html5QrcodeSupportedFormats?.[n])
+        .filter(v => v !== undefined && v !== null);
+      const inst = new Html5Qrcode(idRef.current, {
+        verbose: false,
+        ...(formats.length ? { formatsToSupport: formats } : {}),
+        // Встроенный BarcodeDetector браузера вместо JS-перебора ZXing.
+        useBarCodeDetectorIfSupported: true,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      });
+      instRef.current = inst;
+
+      // aspectRatio НЕ передаём: библиотека применяет его через applyConstraints
+      // уже после открытия потока — на iOS/старом Android это OverconstrainedError,
+      // start() падает, а поток остаётся открытым. Геометрию задаёт CSS контейнера.
+      const startWith = (videoConstraints) => inst.start(
+        { facingMode: 'environment' },
+        {
+          fps: 22,
+          // Функция вызывается, когда видоискатель готов, — попутно узнаём его
+          // высоту, чтобы обжать внешний блок под визуально сжатое видео.
+          qrbox: (vw, vh) => { if (vh > 0) setViewH(vh); return linearQrbox(vw, vh); },
+          disableFlip: true, // зеркальный второй проход для линейных кодов бесполезен
+          videoConstraints,
+        },
+        handleDecoded,
+        () => {},
+      );
+
+      // Просим непрерывный автофокус и высокое разрешение. ВАЖНО: если
+      // videoConstraints валиден, первый аргумент start() игнорируется целиком —
+      // поэтому facingMode обязан быть здесь.
+      const hiQ = {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        focusMode: 'continuous',
+        advanced: [{ focusMode: 'continuous' }],
+      };
+      const basic = { facingMode: { ideal: 'environment' } };
+
+      const onStarted = () => {
+        if (cancelled) { instRef.current = null; safeStopScanner(inst); return; }
+        setReady(true);
+        // Фонарик и зум — единственное спасение в полутёмном зале и для мелких EAN.
+        try {
+          const c = inst.getRunningTrackCameraCapabilities();
+          const torch = c.torchFeature();
+          const zoom = c.zoomFeature();
+          featRef.current = { torch, zoom };
+          setCaps({ torch: !!torch?.isSupported(), zoom: !!zoom?.isSupported() });
+        } catch {}
+      };
+
+      startWith(hiQ)
+        .then(onStarted)
+        .catch(() => {
+          if (cancelled) return null;
+          // Телефон не дал 1920×1080 или focusMode — пробуем без пожеланий.
+          return startWith(basic).then(onStarted).catch(e => {
+            if (!cancelled) setError(cameraErrText(e, uzRef.current));
+          });
+        });
+    }).catch(() => {
+      if (!cancelled) setError(uzRef.current ? 'Skaner yuklanmadi' : 'Не удалось загрузить сканер');
+    });
+    return () => {
+      cancelled = true;
+      const inst = instRef.current;
+      instRef.current = null;
+      safeStopScanner(inst);
+    };
+  }, [handleDecoded]);
+
+  const toggleTorch = () => {
+    const torch = featRef.current.torch;
+    if (!torch) return;
+    const next = !torchOn;
+    Promise.resolve(torch.apply(next)).then(() => setTorchOn(next)).catch(() => {});
+  };
+
+  // Ступенчатый зум по кругу: 0 → 40% → 70% → 100% → 0.
+  const stepZoom = () => {
+    const zoom = featRef.current.zoom;
+    if (!zoom) return;
+    const order = [0, 40, 70, 100];
+    const next = order[(order.indexOf(zoomPct) + 1) % order.length] ?? 0;
+    try {
+      const min = zoom.min(), max = zoom.max();
+      const value = min + (max - min) * (next / 100);
+      Promise.resolve(zoom.apply(value)).then(() => setZoomPct(next)).catch(() => {});
+    } catch {}
+  };
+
+  const overlayBtn = {
+    background: 'rgba(0,0,0,.6)', border: '1px solid rgba(255,255,255,.35)', color: '#fff',
+    borderRadius: '20px', padding: '6px 12px', cursor: 'pointer', fontWeight: 700,
+    fontSize: '12px', fontFamily: "'Nunito', sans-serif",
+  };
+
   return (
-    <div style={{ borderRadius: '14px', overflow: 'hidden', background: '#000', position: 'relative', minHeight: '160px' }}>
-      <div id="seller-scanner" style={{ width: '100%' }} />
-      {!ready && !error && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.8)', color: '#fff', gap: '10px' }}>
-          <div className="spinner" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: '#fff' }} />
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>{t('cameraStarting')}</span>
+    <div>
+      <div ref={hostRef} style={{
+        borderRadius: '14px', overflow: 'hidden', background: '#000',
+        position: 'relative', width: '100%',
+        height: (viewH ? Math.ceil(viewH * scale) : 200) + 'px',
+      }}>
+        {/* Ширина логическая (SCAN_VIEW_W), визуально сжимается трансформацией:
+            так рамка распознавания получается вдвое шире, чем при width:100%. */}
+        <div id={idRef.current} style={{
+          width: SCAN_VIEW_W + 'px',
+          transform: `scale(${scale})`, transformOrigin: '0 0',
+        }} />
+        {!ready && !error && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.8)', color: '#fff', gap: '10px' }}>
+            <div className="spinner" style={{ borderColor: 'rgba(255,255,255,.2)', borderTopColor: '#fff' }} />
+            <span style={{ fontSize: '13px', fontWeight: 600 }}>{t('cameraStarting')}</span>
+          </div>
+        )}
+        {error && (
+          <div style={{ padding: '20px 18px', textAlign: 'center', color: '#f87171', fontSize: '13px', fontWeight: 700, lineHeight: 1.45 }}>{error}</div>
+        )}
+        {ready && (
+          <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', gap: '8px', zIndex: 10 }}>
+            {caps.torch && (
+              <button type="button" onClick={toggleTorch}
+                style={{ ...overlayBtn, background: torchOn ? 'rgba(255,107,43,.9)' : 'rgba(0,0,0,.6)' }}>
+                {uz ? 'Chiroq' : 'Фонарик'}
+              </button>
+            )}
+            {caps.zoom && (
+              <button type="button" onClick={stepZoom} style={overlayBtn}>
+                {uz ? 'Kattalashtirish' : 'Увеличить'}{zoomPct > 0 ? ` ${zoomPct}%` : ''}
+              </button>
+            )}
+          </div>
+        )}
+        <button onClick={onClose} style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10, background: 'rgba(0,0,0,.6)', border: 'none', color: '#fff', borderRadius: '20px', padding: '6px 14px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', fontFamily: "'Nunito', sans-serif" }}>✕</button>
+      </div>
+
+      {ready && !error && (
+        <div style={{ fontSize: '11px', color: '#9EA3BF', textAlign: 'center', marginTop: '6px' }}>
+          {uz ? 'Kodni keng chiziq ichida tuting — 10-20 sm masofada'
+              : 'Держите код внутри широкой полосы, на 10–20 см от камеры'}
         </div>
       )}
-      {error && <div style={{ padding: '24px', textAlign: 'center', color: '#f87171', fontSize: '14px', fontWeight: 700 }}>{error}</div>}
-      {ready && <div style={{ position: 'absolute', inset: 0, border: '3px solid #FF6B2B', borderRadius: '14px', pointerEvents: 'none' }} />}
-      <button onClick={onClose} style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 10, background: 'rgba(0,0,0,.6)', border: 'none', color: '#fff', borderRadius: '20px', padding: '6px 14px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', fontFamily: "'Nunito', sans-serif" }}>✕</button>
+
+      {/* Ручной ввод — экран не должен быть тупиком, если камера не читает код */}
+      <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+        <input
+          type="text" inputMode="numeric" value={manual}
+          onChange={e => setManual(e.target.value.replace(/[^\dA-Za-z-]/g, ''))}
+          onKeyDown={e => { if (e.key === 'Enter') handleDecoded(manual); }}
+          placeholder={uz ? 'Shtrix-kodni qoʻlda kiriting' : 'Ввести штрих-код вручную'}
+          style={{ flex: 1, height: '44px', padding: '0 12px', border: '2px solid #E2E4F0', borderRadius: '12px', fontSize: '15px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }}
+        />
+        <button type="button" onClick={() => handleDecoded(manual)} disabled={!manual.trim()}
+          style={{ background: '#FF6B2B', border: 'none', color: '#fff', padding: '0 18px', borderRadius: '12px', cursor: manual.trim() ? 'pointer' : 'default', fontWeight: 800, fontSize: '14px', fontFamily: "'Nunito', sans-serif", opacity: manual.trim() ? 1 : 0.5, flexShrink: 0 }}>
+          {uz ? 'Topish' : 'Найти'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -90,10 +368,10 @@ function SuccessScreen({ product, qty, price, discount, onNext, uz }) {
 export default function SellerView() {
   const { user, logout } = useContext(AuthContext);
   const [tasksOpen, setTasksOpen] = useState(false);
-  const [taskCount, setTaskCount] = useState(0);
-  useEffect(() => {
-    api.get('/tasks/my').then(r => setTaskCount(r.data?.metrics?.active ?? 0)).catch(() => {});
-  }, []);
+  // Кружок на кнопке «Задачи» — НЕПРОЧИТАННЫЕ события, а не число активных задач:
+  // активные висят у продавца постоянно, и кружок перестал бы что-либо значить.
+  // Гасит его сам MyTasks при открытии шторки, по видимым задачам.
+  const { unread: tasksUnread } = useTaskInbox();
   const { lang, changeLang } = useContext(LangContext);
   const navigate = useNavigate();
   const uz = lang === 'uz';
@@ -108,9 +386,9 @@ export default function SellerView() {
   // Количество хранится СТРОКОЙ (поле можно очистить и ввести заново — числовой
   // стейт с «|| 1» не давал стереть единицу). Для расчётов — qty (число ниже).
   const [qtyInput, setQtyInput] = useState('1');
-  const qty = parseFloat(qtyInput) || 0;
-  const setQty = (v) => setQtyInput(typeof v === 'function' ? String(v(parseFloat(qtyInput) || 0)) : String(v));
-  const [discount, setDiscount] = useState(0); // UZS, applied to total
+  const qty = toNum(qtyInput) || 0;
+  const setQty = (v) => setQtyInput(typeof v === 'function' ? String(v(toNum(qtyInput) || 0)) : String(v));
+  const [discount, setDiscount] = useState(''); // UZS, строкой — поле должно полностью очищаться
   const [paymentMethod, setPaymentMethod] = useState('cash'); // cash / card / transfer / wire
   // Multi-currency sale: customer pays in non-UZS. Empty saleCurrency means UZS-priced (legacy).
   const [saleCurrency, setSaleCurrency] = useState('UZS');
@@ -235,7 +513,7 @@ export default function SellerView() {
     setSuggestions([]);
     setShowSugg(false);
     setQty(1);
-    setDiscount(0);
+    setDiscount('');
     setError('');
     setNotFound(false);
   };
@@ -245,8 +523,16 @@ export default function SellerView() {
     setShowSugg(false);
     setSuggestions([]);
     try {
-      const params = isBarcode ? { barcode: query } : { search: query };
-      const { data } = await api.get('/products', { params });
+      const q = query.trim();
+      const params = isBarcode ? { barcode: q } : { search: q };
+      let { data } = await api.get('/products', { params });
+      // Скан или цифровой ввод: точного совпадения по barcode может не быть
+      // (наклеен код поставщика, лишняя цифра) — доищем обычным поиском,
+      // он на сервере покрывает и barcode ILIKE.
+      if (isBarcode && data.length === 0) {
+        const r = await api.get('/products', { params: { search: q } });
+        data = r.data;
+      }
       if (data.length === 1) {
         selectProduct(data[0]);
       } else if (data.length > 1) {
@@ -266,7 +552,10 @@ export default function SellerView() {
   };
 
   const handleSell = async () => {
-    if (!product || qty <= 0) return;
+    if (!product) return;
+    // Раньше здесь был молчаливый return: при пустом поле количества кнопка
+    // «Продать» просто ничего не делала — ни продажи, ни ошибки.
+    if (!(qty > 0)) { setError(uz ? 'Miqdorni kiriting' : 'Введите количество'); return; }
     const stock = parseFloat(product.stock);
     if (stock <= 0) { setError(uz ? 'Omborda mahsulot yo\'q!' : 'Нет в наличии!'); return; }
     if (qty > stock) { setError(uz ? `Faqat ${stock} ${product.unit} bor` : `В наличии только ${stock} ${product.unit}`); return; }
@@ -275,8 +564,8 @@ export default function SellerView() {
     const isForeign = saleCurrency !== 'UZS';
     let baseUnitUZS;
     if (isForeign) {
-      const op = parseFloat(origUnitPrice);
-      const r  = parseFloat(saleRate);
+      const op = toNum(origUnitPrice);
+      const r  = toNum(saleRate);
       if (!Number.isFinite(op) || op <= 0) { setError(uz ? 'Narxi noto\'g\'ri' : 'Введите цену в выбранной валюте'); return; }
       if (!Number.isFinite(r)  || r  <= 0) { setError(uz ? 'Kurs noto\'g\'ri' : 'Введите курс обмена'); return; }
       baseUnitUZS = op * r;
@@ -285,7 +574,7 @@ export default function SellerView() {
     }
 
     const gross = qty * baseUnitUZS;
-    const disc = Math.max(0, parseFloat(discount) || 0);
+    const disc = Math.max(0, toNum(discount) || 0);
     if (disc >= gross) { setError(uz ? 'Chegirma jami summadan ko\'p bo\'lmasligi kerak' : 'Скидка не может быть больше суммы'); return; }
     const effectivePrice = (gross - disc) / qty;
 
@@ -298,12 +587,12 @@ export default function SellerView() {
         payment_method: paymentMethod,
         currency: saleCurrency,
         ...(isForeign && {
-          original_price: (parseFloat(origUnitPrice) * qty - disc / parseFloat(saleRate)) / qty, // per-unit in foreign cur, post-discount
-          exchange_rate: parseFloat(saleRate),
+          original_price: (toNum(origUnitPrice) * qty - disc / toNum(saleRate)) / qty, // per-unit in foreign cur, post-discount
+          exchange_rate: toNum(saleRate),
         }),
       });
       setSuccess({ product, qty, price: effectivePrice, discount: disc, paymentMethod, currency: saleCurrency });
-      setProduct(null); setSearchText(''); setQty(1); setDiscount(0); setPaymentMethod('cash');
+      setProduct(null); setSearchText(''); setQty(1); setDiscount(''); setPaymentMethod('cash');
       setSaleCurrency('UZS'); setSaleRate(''); setOrigUnitPrice('');
       loadHistory();
     } catch (e) { setError(e.response?.data?.error || (uz ? 'Xato!' : 'Ошибка!')); }
@@ -312,7 +601,7 @@ export default function SellerView() {
 
   const reset = () => {
     setProduct(null); setNotFound(false); setSearchText('');
-    setSuccess(null); setError(''); setQty(1); setDiscount(0); setSuggestions([]); setShowSugg(false);
+    setSuccess(null); setError(''); setQty(1); setDiscount(''); setSuggestions([]); setShowSugg(false);
     loadHistory();
     setTimeout(() => searchRef.current?.focus(), 100);
   };
@@ -390,9 +679,9 @@ export default function SellerView() {
   // Unit price in UZS — switches based on selected sale currency
   const unitPriceUZS = saleCurrency === 'UZS'
     ? parseFloat(product?.price_sell || 0)
-    : (parseFloat(origUnitPrice) || 0) * (parseFloat(saleRate) || 0);
+    : (toNum(origUnitPrice) || 0) * (toNum(saleRate) || 0);
   const gross = qty * unitPriceUZS;
-  const discNum = Math.max(0, Math.min(gross, parseFloat(discount) || 0));
+  const discNum = Math.max(0, Math.min(gross, toNum(discount) || 0));
   const total = gross - discNum;
   const effectiveUnitPrice = qty > 0 ? total / qty : 0;
 
@@ -413,8 +702,8 @@ export default function SellerView() {
             title={uz ? 'Vazifalarim' : 'Мои задачи'}
             style={{ position: 'relative', background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', padding: '5px 11px', borderRadius: '12px', cursor: 'pointer', fontWeight: 800, fontSize: '11px', fontFamily: "'Nunito', sans-serif" }}>
             {uz ? 'Vazifa' : 'Задачи'}
-            {taskCount > 0 && (
-              <span style={{ position: 'absolute', top: -6, right: -6, background: '#DC2626', color: '#fff', borderRadius: 10, minWidth: 17, height: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, padding: '0 4px', boxShadow: '0 1px 4px rgba(0,0,0,.25)' }}>{taskCount}</span>
+            {tasksUnread > 0 && (
+              <span style={{ position: 'absolute', top: -6, right: -6, background: '#DC2626', color: '#fff', borderRadius: 10, minWidth: 17, height: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, padding: '0 4px', boxShadow: '0 1px 4px rgba(0,0,0,.25)' }}>{tasksUnread > 99 ? '99+' : tasksUnread}</span>
             )}
           </button>
           {['uz','ru'].map(l => (
@@ -440,7 +729,7 @@ export default function SellerView() {
             <button onClick={() => setTasksOpen(false)} style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 13 }}>✕</button>
           </div>
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
-            <MyTasks onCount={setTaskCount} />
+            <MyTasks />
           </div>
         </div>
       )}
@@ -535,7 +824,7 @@ export default function SellerView() {
           {/* Scanner */}
           {scanning ? (
             <div style={{ marginBottom: '12px' }}>
-              <Scanner onScan={handleScan} onClose={() => setScanning(false)} />
+              <Scanner onScan={handleScan} onClose={() => setScanning(false)} uz={uz} />
             </div>
           ) : (
             <button onClick={() => setScanning(true)} style={{
@@ -567,16 +856,16 @@ export default function SellerView() {
                   style={{ flex: 1, border: 'none', outline: 'none', padding: '14px 0', fontSize: '15px', background: 'transparent', fontFamily: "'Nunito', sans-serif" }}
                   value={searchText}
                   onChange={e => handleSearchChange(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && doSearch(searchText)}
+                  onKeyDown={e => e.key === 'Enter' && doSearch(searchText, isBarcodeLike(searchText))}
                   onFocus={handleSearchFocus}
-                  placeholder={uz ? 'Tovar nomini kiriting...' : 'Введите название товара...'}
+                  placeholder={uz ? 'Nomi yoki shtrix-kod...' : 'Название или штрих-код...'}
                   autoComplete="off"
                 />
                 {searchText && (
                   <button onClick={reset} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9EA3BF', fontSize: '20px', lineHeight: 1, padding: '4px' }}>×</button>
                 )}
               </div>
-              <button onClick={() => doSearch(searchText)} disabled={!searchText.trim()}
+              <button onClick={() => doSearch(searchText, isBarcodeLike(searchText))} disabled={!searchText.trim()}
                 style={{ background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)', border: 'none', color: '#fff', padding: '0 20px', borderRadius: '12px', cursor: 'pointer', fontWeight: 800, fontSize: '14px', fontFamily: "'Nunito', sans-serif", opacity: !searchText.trim() ? 0.5 : 1, flexShrink: 0 }}>
                 {uz ? 'Topish' : 'Найти'}
               </button>
@@ -717,8 +1006,9 @@ export default function SellerView() {
                   <button onClick={() => setQty(q => Math.max(1, q - 1))}
                     style={{ height: '52px', borderRadius: '12px', border: '2px solid #E2E4F0', background: '#F4F5FA', fontSize: '26px', fontWeight: 700, cursor: 'pointer', color: '#FF6B2B', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
                   <input
-                    type="number" min="1" step="any" value={qtyInput}
-                    onChange={e => setQtyInput(e.target.value)}
+                    type="text" inputMode="decimal" value={qtyInput}
+                    onChange={e => setQtyInput(cleanNum(e.target.value))}
+                    onBlur={() => { const v = tidyNum(qtyInput); setQtyInput(parseFloat(v) > 0 ? v : '1'); }}
                     style={{ height: '52px', textAlign: 'center', padding: '0 12px', border: '2px solid #E2E4F0', borderRadius: '12px', fontSize: '24px', fontWeight: 900, fontFamily: "'JetBrains Mono', monospace", outline: 'none', width: '100%', boxSizing: 'border-box' }}
                   />
                   <button onClick={() => setQty(q => q + 1)}
@@ -761,23 +1051,25 @@ export default function SellerView() {
                         <label style={{ fontSize: '10px', fontWeight: 800, color: '#6B6F8A', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: '4px' }}>
                           {uz ? `Narxi (${saleCurrency}/dona)` : `Цена (${saleCurrency}/шт)`}
                         </label>
-                        <input type="number" min="0" step="any" inputMode="decimal" value={origUnitPrice}
-                          onChange={e => setOrigUnitPrice(e.target.value)} placeholder="0"
+                        <input type="text" inputMode="decimal" value={origUnitPrice}
+                          onChange={e => setOrigUnitPrice(cleanNum(e.target.value))}
+                          onBlur={() => setOrigUnitPrice(tidyNum(origUnitPrice))} placeholder="0"
                           style={{ width: '100%', height: '40px', textAlign: 'right', padding: '0 10px', border: '1.5px solid #E2E4F0', borderRadius: '8px', fontSize: '15px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }} />
                       </div>
                       <div>
                         <label style={{ fontSize: '10px', fontWeight: 800, color: '#6B6F8A', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: '4px' }}>
                           {uz ? `Kursi (1 ${saleCurrency})` : `Курс (1 ${saleCurrency})`}
                         </label>
-                        <input type="number" min="0" step="any" inputMode="decimal" value={saleRate}
-                          onChange={e => setSaleRate(e.target.value)} placeholder="0"
+                        <input type="text" inputMode="decimal" value={saleRate}
+                          onChange={e => setSaleRate(cleanNum(e.target.value))}
+                          onBlur={() => setSaleRate(tidyNum(saleRate))} placeholder="0"
                           style={{ width: '100%', height: '40px', textAlign: 'right', padding: '0 10px', border: '1.5px solid #E2E4F0', borderRadius: '8px', fontSize: '15px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }} />
                       </div>
                     </div>
-                    {parseFloat(origUnitPrice) > 0 && parseFloat(saleRate) > 0 && (
+                    {toNum(origUnitPrice) > 0 && toNum(saleRate) > 0 && (
                       <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
                         <span style={{ color: '#6B6F8A', fontWeight: 700 }}>{uz ? '1 dona UZSda:' : '1 шт в UZS:'}</span>
-                        <span className="mono" style={{ fontWeight: 800, color: '#0A84FF' }}>{fmtMoney(parseFloat(origUnitPrice) * parseFloat(saleRate))}</span>
+                        <span className="mono" style={{ fontWeight: 800, color: '#0A84FF' }}>{fmtMoney(toNum(origUnitPrice) * toNum(saleRate))}</span>
                       </div>
                     )}
                   </div>
@@ -790,14 +1082,14 @@ export default function SellerView() {
                       {uz ? 'Chegirma' : 'Скидка'} (UZS)
                     </span>
                     {discNum > 0 && (
-                      <button onClick={() => setDiscount(0)} style={{ background: 'none', border: 'none', color: '#9EA3BF', fontSize: '11px', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
+                      <button onClick={() => setDiscount('')} style={{ background: 'none', border: 'none', color: '#9EA3BF', fontSize: '11px', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
                         {uz ? 'tozalash' : 'сбросить'}
                       </button>
                     )}
                   </div>
-                  <input type="number" min="0" step="any" inputMode="decimal" value={discount}
-                    onChange={e => setDiscount(e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                    onFocus={e => { if (parseFloat(e.target.value) === 0) e.target.select(); }}
+                  <input type="text" inputMode="decimal" value={discount}
+                    onChange={e => setDiscount(cleanNum(e.target.value))}
+                    onBlur={() => setDiscount(tidyNum(discount))}
                     placeholder="0"
                     style={{ width: '100%', height: '46px', textAlign: 'right', padding: '0 14px', border: '2px solid #E2E4F0', borderRadius: '12px', fontSize: '18px', fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box', color: discNum > 0 ? '#FF6B2B' : '#1A1B2E' }} />
                 </div>
@@ -825,13 +1117,13 @@ export default function SellerView() {
                     <span style={{ fontSize: '14px', fontWeight: 700, color: '#6B6F8A' }}>{uz ? 'To\'lov:' : 'К оплате:'}</span>
                     <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '22px', fontWeight: 900, color: discNum > 0 ? '#16a34a' : '#1A1B2E' }}>{fmtMoney(total)}</span>
                   </div>
-                  {saleCurrency !== 'UZS' && parseFloat(saleRate) > 0 && (
+                  {saleCurrency !== 'UZS' && toNum(saleRate) > 0 && (
                     <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px dashed #E2E4F0', paddingTop: '6px' }}>
                       <span style={{ fontSize: '11px', color: '#0A84FF', fontWeight: 700 }}>
                         💱 {uz ? `${saleCurrency}da:` : `Принять в ${saleCurrency}:`}
                       </span>
                       <span className="mono" style={{ fontSize: '16px', fontWeight: 900, color: '#0A84FF' }}>
-                        {curSymbol[saleCurrency] || ''}{parseFloat((total / parseFloat(saleRate)).toFixed(2)).toLocaleString('ru-RU')}
+                        {curSymbol[saleCurrency] || ''}{parseFloat((total / toNum(saleRate)).toFixed(2)).toLocaleString('ru-RU')}
                       </span>
                     </div>
                   )}
@@ -1073,13 +1365,17 @@ export default function SellerView() {
             <div className="form-grid" style={{ marginBottom: '10px' }}>
               <div>
                 <label className="label">{uz ? 'Miqdor' : 'Кол-во'}</label>
-                <input className="input mono" type="number" min="0.001" step="any"
-                  value={editReq.qty} onChange={e => setEditReq({ ...editReq, qty: e.target.value })} />
+                <input className="input mono" type="text" inputMode="decimal"
+                  value={editReq.qty}
+                  onChange={e => setEditReq({ ...editReq, qty: cleanNum(e.target.value) })}
+                  onBlur={() => setEditReq(p => (p ? { ...p, qty: tidyNum(p.qty) } : p))} />
               </div>
               <div>
                 <label className="label">{uz ? 'Narxi' : 'Цена'}</label>
-                <input className="input mono" type="number" min="0" step="any"
-                  value={editReq.price} onChange={e => setEditReq({ ...editReq, price: e.target.value })} />
+                <input className="input mono" type="text" inputMode="decimal"
+                  value={editReq.price}
+                  onChange={e => setEditReq({ ...editReq, price: cleanNum(e.target.value) })}
+                  onBlur={() => setEditReq(p => (p ? { ...p, price: tidyNum(p.price) } : p))} />
               </div>
             </div>
             <div style={{ marginBottom: '10px' }}>
@@ -1126,20 +1422,31 @@ export default function SellerView() {
             <div className="form-grid" style={{ marginBottom: '10px' }}>
               <div>
                 <label className="label">{uz ? 'Qaytarish miqdori' : 'Сколько возвращают'} *</label>
-                <input className="input mono" type="number" min="0.001" step="any" max={parseFloat(custReturn.sale.quantity)}
+                <input className="input mono" type="text" inputMode="decimal"
                   value={custReturn.quantity} onChange={e => {
-                    const q = e.target.value;
-                    const auto = (parseFloat(q) || 0) * parseFloat(custReturn.sale.price || 0);
-                    setCustReturn({ ...custReturn, quantity: q, refund_amount: auto.toString() });
-                  }} />
+                    const q = cleanNum(e.target.value);
+                    const n = parseFloat(q);
+                    // Сумму пересчитываем ТОЛЬКО когда количество разобралось:
+                    // на промежуточном «1.» сумма возврата обнулялась и клиенту
+                    // возвращали 0.
+                    setCustReturn(prev => {
+                      if (!prev) return prev;
+                      if (!(Number.isFinite(n) && n > 0)) return { ...prev, quantity: q };
+                      const auto = Math.round(n * parseFloat(prev.sale.price || 0) * 100) / 100;
+                      return { ...prev, quantity: q, refund_amount: String(auto) };
+                    });
+                  }}
+                  onBlur={() => setCustReturn(p => (p ? { ...p, quantity: tidyNum(p.quantity) } : p))} />
                 <div style={{ fontSize: '10px', color: 'var(--text3)', marginTop: '2px' }}>
                   {uz ? `Maks: ${parseFloat(custReturn.sale.quantity)}` : `Макс: ${parseFloat(custReturn.sale.quantity)}`}
                 </div>
               </div>
               <div>
                 <label className="label">{uz ? 'Qaytariladigan summa' : 'Сумма возврата'}</label>
-                <input className="input mono" type="number" min="0" step="any"
-                  value={custReturn.refund_amount} onChange={e => setCustReturn({ ...custReturn, refund_amount: e.target.value })} />
+                <input className="input mono" type="text" inputMode="decimal"
+                  value={custReturn.refund_amount}
+                  onChange={e => setCustReturn({ ...custReturn, refund_amount: cleanNum(e.target.value) })}
+                  onBlur={() => setCustReturn(p => (p ? { ...p, refund_amount: tidyNum(p.refund_amount) } : p))} />
               </div>
             </div>
             <div style={{ marginBottom: '10px' }}>

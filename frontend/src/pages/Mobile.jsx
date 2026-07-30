@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useContext } from 'react';
+﻿import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, LangContext } from '../App.jsx';
 import { t } from '../i18n.js';
@@ -6,6 +6,8 @@ import api from '../api.js';
 import JsBarcode from 'jsbarcode';
 import { fmtMoney } from '../utils.js';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
+import MyTasks from '../components/MyTasks.jsx';
+import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 
 const S = {
   page: {
@@ -14,14 +16,24 @@ const S = {
     fontFamily: "'Nunito', sans-serif",
   },
   header: {
-    background: 'linear-gradient(135deg, #3D33C4, #5B4FE8)',
+    background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)',
     padding: '14px 16px',
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     position: 'sticky', top: 0, zIndex: 100,
+    // На 360px пять кнопок справа (Задачи, UZ, RU, Меню, Выход) плюс название
+    // компании не влезали в строку и уносили экран вбок на 113px. Разрешаем
+    // перенос и даём левому блоку сжиматься.
+    flexWrap: 'wrap', gap: '8px', rowGap: '10px',
   },
-  headerLeft: { display: 'flex', flexDirection: 'column' },
-  headerTitle: { color: '#fff', fontWeight: 800, fontSize: '16px', lineHeight: 1.2 },
-  headerSub: { color: 'rgba(255,255,255,.65)', fontSize: '12px', marginTop: '2px' },
+  headerLeft: { display: 'flex', flexDirection: 'column', minWidth: 0, flex: '1 1 140px' },
+  headerTitle: {
+    color: '#fff', fontWeight: 800, fontSize: '16px', lineHeight: 1.2,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  headerSub: {
+    color: 'rgba(255,255,255,.65)', fontSize: '12px', marginTop: '2px',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
   backBtn: {
     background: 'rgba(255,255,255,.15)', border: 'none', color: '#fff',
     padding: '8px 14px', borderRadius: '20px', cursor: 'pointer',
@@ -29,13 +41,13 @@ const S = {
   },
   card: {
     background: '#fff', borderRadius: '14px',
-    boxShadow: '0 2px 12px rgba(91,79,232,.08)',
+    boxShadow: '0 2px 12px rgba(10,132,255,.08)',
     padding: '16px', margin: '12px 16px 0',
   },
   scanZone: {
-    border: '2px dashed #5B4FE8', borderRadius: '12px',
+    border: '2px dashed #0A84FF', borderRadius: '12px',
     padding: '28px 16px', textAlign: 'center', cursor: 'pointer',
-    background: 'rgba(91,79,232,.03)', transition: 'all .2s',
+    background: 'rgba(10,132,255,.03)', transition: 'all .2s',
   },
   scanZoneActive: {
     border: '2px solid #FF6B2B', background: 'rgba(255,107,43,.04)',
@@ -43,7 +55,7 @@ const S = {
   searchBox: {
     display: 'flex', alignItems: 'center', gap: '10px',
     background: '#fff', borderRadius: '12px',
-    boxShadow: '0 2px 12px rgba(91,79,232,.08)',
+    boxShadow: '0 2px 12px rgba(10,132,255,.08)',
     padding: '0 14px', margin: '10px 16px 0',
     border: '2px solid transparent', transition: 'border-color .2s',
   },
@@ -73,14 +85,14 @@ const S = {
   formGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' },
   saveBtn: {
     width: '100%', padding: '14px',
-    background: 'linear-gradient(135deg, #5B4FE8, #3D33C4)',
+    background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)',
     border: 'none', borderRadius: '10px', color: '#fff',
     fontWeight: 800, fontSize: '15px', cursor: 'pointer',
     fontFamily: "'Nunito', sans-serif", marginTop: '14px',
-    boxShadow: '0 4px 15px rgba(91,79,232,.3)',
+    boxShadow: '0 4px 15px rgba(10,132,255,.3)',
   },
   productCard: {
-    background: 'linear-gradient(135deg, #5B4FE8, #3D33C4)',
+    background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)',
     borderRadius: '14px', padding: '16px', color: '#fff',
   },
   qtyRow: {
@@ -103,6 +115,32 @@ const S = {
     fontFamily: "'Nunito', sans-serif",
   },
 };
+
+// ─── Числовой ввод ────────────────────────────────────────────────────────────
+// Стейт — СТРОКА, в onChange только чистка символов, нормализация и кламп — на
+// onBlur. Дополнительно: у input type="number" Chrome отдаёт e.target.value === ''
+// на промежуточно-невалидном вводе («12,5» с ru/uz-клавиатуры, «1 500 000»
+// с пробелами в разрядах) — контролируемое поле само себя очищало, и цену
+// физически нельзя было ввести. Поэтому у всех денег и количеств здесь
+// type="text" + inputMode="decimal".
+const numClean = (v) => String(v ?? '').replace(/[^\d.,\s]/g, '');
+const numNorm = (v) => {
+  let s = String(v ?? '').replace(/\s+/g, '');
+  const seps = (s.match(/[.,]/g) || []).length;
+  // Два и больше разделителя — это разряды тысяч («1.500.000», «1,500,000»).
+  s = seps > 1 ? s.replace(/[.,]/g, '') : s.replace(',', '.');
+  if (!s || s === '.') return '';
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? String(n) : '';
+};
+const numClamp = (v, min) => {
+  const s = numNorm(v);
+  if (s === '') return '';
+  const n = parseFloat(s);
+  return String(min != null && n < min ? min : n);
+};
+// Число из «сырого» поля — на случай отправки формы без blur.
+const numVal = (v) => { const s = numNorm(v); return s === '' ? NaN : parseFloat(s); };
 
 // simple barcode with external ref for printing
 function BarcodeImgRef({ value, svgRef }) {
@@ -134,7 +172,7 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '8px' }}>
           <button onClick={() => openPrint([{ name: productName, barcode: value }])} style={{
             display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 18px',
-            background: '#1e1b4b', color: '#fff', border: 'none', borderRadius: '8px',
+            background: '#141419', color: '#fff', border: 'none', borderRadius: '8px',
             cursor: 'pointer', fontWeight: 700, fontSize: '13px',
             fontFamily: "'Nunito', sans-serif",
           }}>
@@ -151,75 +189,351 @@ function BarcodeImg({ value, productName, showPrint = false, lang }) {
   );
 }
 
-// Reusable count selector for batch print: 1 / 3 / 6 / 9
 // ─── Camera Scanner ────────────────────────────────────────────────────────────
-function CameraScanner({ onScan, onClose }) {
-  const scannerRef = useRef(null);
-  const instanceRef = useRef(null);
+// Быстрый скан ЛИНЕЙНОГО штрих-кода. Скорость упиралась в четыре вещи сразу
+// (проверено по коду html5-qrcode 2.3.8 в node_modules):
+//  1) qrbox задаёт не рамку, а РАЗМЕР CANVAS декодера в CSS-пикселях
+//     видоискателя (setupUi → createCanvasElement(qrRegion.*)). При жёстких
+//     250x150 у EAN-13 (95 модулей) код обязан был занять ~76% ширины рамки,
+//     иначе на модуль приходилось меньше 2 px — отсюда «поднеси телефон и жди».
+//     Теперь: видоискатель держим логически широким (SCAN_VIEW_W CSS-px) и
+//     визуально сжимаем трансформацией под ширину экрана, а qrbox считаем
+//     ФУНКЦИЕЙ от его размеров — широкой невысокой полосой. Коридор дистанции,
+//     на котором код читается, становится примерно вдвое шире.
+//  2) formatsToSupport не был задан → getSupportedFormats возвращал ВСЕ 17
+//     форматов, и ZXing на каждый кадр гонял 2D-ридеры (QR/DataMatrix/Aztec/
+//     PDF417) плюс 11 одномерных. Оставляем только то, что реально печатаем
+//     и встречаем на упаковке.
+//  3) декодеры чередуются через кадр (code-decoder.js getDecoder), поэтому
+//     нативный BarcodeDetector включаем явно, а чтобы «дешёвым» был и
+//     ZXing-кадр — см. п.2.
+//  4) disableFlip не был задан → default false, и КАЖДЫЙ неудачный кадр
+//     декодировался второй раз в зеркале (линейному коду это бесполезно).
+//     Плюс videoConstraints с непрерывным автофокусом и aspectRatio убран:
+//     он применялся жёстким applyConstraints уже после открытия потока и на
+//     части телефонов ронял start() с включённой камерой.
+const SCAN_VIEW_W = 480;
+
+function CameraScanner({ onScan, onClose, lang }) {
+  const hostRef = useRef(null);
+  // id генерируем на монтирование: с жёсткой строкой два инстанса (StrictMode,
+  // повторное открытие) боролись за один и тот же div, и clearElement() одного
+  // сносил video/canvas другого.
+  const idRef = useRef('h5qr-' + Math.random().toString(36).slice(2));
+  const instRef = useRef(null);
+  const capsRef = useRef(null);
+  const doneRef = useRef(false);
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
+  // Язык через ref: он не должен попадать в deps эффекта, иначе переключение
+  // RU/UZ перезапускало бы камеру.
+  const langRef = useRef(lang);
+  langRef.current = lang;
+
+  const [attempt, setAttempt] = useState(0);
+  const [scale, setScale] = useState(1);
+  const [viewH, setViewH] = useState(0);
   const [error, setError] = useState('');
+  const [errDetail, setErrDetail] = useState('');
   const [ready, setReady] = useState(false);
+  const [torch, setTorch] = useState({ available: false, on: false });
+  const [zoom, setZoom] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manual, setManual] = useState('');
 
-  useEffect(() => {
-    const elementId = 'html5-qrcode-scanner';
-    let stopped = false;
+  // Гасим камеру безопасно: stop() бросает СИНХРОННО строкой, если сканер не
+  // запущен (html5-qrcode.js:225) — .catch() такую ошибку не поймает.
+  const stopInstance = useCallback((inst) => {
+    if (!inst) return;
+    try {
+      const st = inst.getState();
+      if (inst.isScanning || st === 2 /* SCANNING */ || st === 3 /* PAUSED */) {
+        const p = inst.stop();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch {}
+  }, []);
 
-    import('html5-qrcode').then(({ Html5Qrcode }) => {
-      if (stopped) return;
-      const scanner = new Html5Qrcode(elementId, { verbose: false });
-      instanceRef.current = scanner;
+  const stopScanner = useCallback(() => {
+    const inst = instRef.current;
+    instRef.current = null;
+    capsRef.current = null;
+    stopInstance(inst);
+  }, [stopInstance]);
 
-      scanner.start(
-        { facingMode: 'environment' },
-        { fps: 15, qrbox: { width: 250, height: 150 }, aspectRatio: 1.5 },
-        (decodedText) => {
-          if (!stopped) {
-            stopped = true;
-            scanner.stop().catch(() => {});
-            onScan(decodedText);
-          }
-        },
-        () => {}
-      ).then(() => setReady(true))
-       .catch(e => setError(e?.message || t('noCameraAccess')));
-    }).catch(() => setError(t('scannerLoadError')));
-
+  // Логическая ширина видоискателя фиксирована, поэтому сжимаем блок под экран.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const w = hostRef.current?.clientWidth || 0;
+      if (w > 0) setScale(Math.min(1, w / SCAN_VIEW_W));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
     return () => {
-      stopped = true;
-      instanceRef.current?.stop().catch(() => {});
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
     };
   }, []);
 
+  const readCapabilities = useCallback((inst) => {
+    let caps;
+    try { caps = inst.getRunningTrackCameraCapabilities(); } catch { return; }
+    capsRef.current = caps;
+    try {
+      const tf = caps.torchFeature();
+      if (tf.isSupported()) setTorch({ available: true, on: tf.value() === true });
+    } catch {}
+    try {
+      const zf = caps.zoomFeature();
+      if (zf.isSupported()) {
+        const min = zf.min(), max = zf.max(), step = zf.step() || 0.1;
+        const cur = zf.value();
+        if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+          setZoom({ min, max, step, value: Number.isFinite(cur) ? cur : min });
+        }
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const boot = async () => {
+      let lib;
+      try { lib = await import('html5-qrcode'); }
+      catch { if (!cancelled) setError(t('scannerLoadError', langRef.current)); return; }
+      if (cancelled) return;
+
+      const { Html5Qrcode, Html5QrcodeSupportedFormats: F } = lib;
+      let inst;
+      try {
+        inst = new Html5Qrcode(idRef.current, {
+          verbose: false,
+          // Только то, что мы печатаем (CODE128) и что бывает на упаковке.
+          formatsToSupport: [
+            F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E,
+            F.CODE_128, F.CODE_39, F.ITF, F.QR_CODE,
+          ],
+          // Нативный BarcodeDetector браузера вместо JS-перебора ZXing.
+          useBarCodeDetectorIfSupported: true,
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+        });
+      } catch {
+        if (!cancelled) { setError(t('cameraUnavailable', langRef.current)); setManualOpen(true); }
+        return;
+      }
+      if (cancelled) return;
+      instRef.current = inst;
+
+      // Широкая невысокая полоса под линейный код. Функция вызывается ровно
+      // тогда, когда видоискатель готов, — попутно узнаём его высоту.
+      const qrbox = (vw, vh) => {
+        const W = vw > 0 ? vw : SCAN_VIEW_W;
+        const H = vh > 0 ? vh : Math.round(SCAN_VIEW_W * 0.75);
+        if (vh > 0) setViewH(vh);
+        const width = Math.max(200, Math.floor(W * 0.95));
+        const height = Math.max(90, Math.min(Math.floor(H * 0.55), Math.floor(width * 0.38)));
+        return { width, height };
+      };
+
+      const onSuccess = (decodedText) => {
+        if (doneRef.current) return;   // ровно один onScan на одно сканирование
+        doneRef.current = true;
+        try { navigator.vibrate?.(60); } catch {}
+        stopScanner();
+        onScanRef.current(String(decodedText || '').trim());
+      };
+
+      const base = { fps: 20, qrbox, disableFlip: true };
+      // ВАЖНО: если videoConstraints задан и валиден, первый аргумент start()
+      // игнорируется полностью — facingMode обязан быть внутри constraints.
+      const tiers = [
+        {
+          ...base,
+          videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 1280 }, height: { ideal: 720 },
+            focusMode: 'continuous',
+            advanced: [{ focusMode: 'continuous' }],
+          },
+        },
+        { ...base, videoConstraints: { facingMode: 'environment' } },
+      ];
+
+      for (let i = 0; i < tiers.length; i++) {
+        if (cancelled || doneRef.current) return;
+        try {
+          await inst.start({ facingMode: 'environment' }, tiers[i], onSuccess, () => {});
+          // Размонтировались, пока камера открывалась: instRef уже обнулён
+          // очисткой эффекта, поэтому гасим ЭТОТ инстанс напрямую — иначе
+          // поток остался бы жить, а foreverScan крутиться на отсоединённом video.
+          if (cancelled) { instRef.current = null; stopInstance(inst); return; }
+          setError(''); setErrDetail('');
+          setReady(true);
+          readCapabilities(inst);
+          return;
+        } catch (e) {
+          if (i === tiers.length - 1 && !cancelled) {
+            // Сырое сообщение библиотеки («Error getting userMedia, error =
+            // NotAllowedError...») пользователю ничего не говорит: показываем
+            // человеческую причину, а техническую — мелким шрифтом.
+            const raw = typeof e === 'string' ? e : (e?.message || String(e || ''));
+            const notFound = /NotFound|DevicesNotFound|OverconstrainedError|NotReadable|TrackStart/i.test(raw);
+            setError(t(notFound ? 'cameraUnavailable' : 'noCameraAccess', langRef.current));
+            setErrDetail(raw.slice(0, 160));
+            setManualOpen(true);
+          }
+        }
+      }
+    };
+
+    boot();
+    return () => { cancelled = true; stopScanner(); };
+  }, [attempt, stopScanner, stopInstance, readCapabilities]);
+
+  const toggleTorch = async () => {
+    const caps = capsRef.current;
+    if (!caps) return;
+    const next = !torch.on;
+    try {
+      await caps.torchFeature().apply(next);
+      setTorch(s => ({ ...s, on: next }));
+    } catch {}
+  };
+
+  const applyZoom = async (v) => {
+    const caps = capsRef.current;
+    if (!caps || !zoom) return;
+    setZoom(z => ({ ...z, value: v }));
+    try { await caps.zoomFeature().apply(v); } catch {}
+  };
+
+  const retry = () => {
+    doneRef.current = false;
+    setError(''); setErrDetail(''); setReady(false); setViewH(0);
+    setTorch({ available: false, on: false }); setZoom(null);
+    setAttempt(a => a + 1);
+  };
+
+  const handleClose = () => { stopScanner(); onClose(); };
+
+  const submitManual = () => {
+    const code = manual.trim();
+    if (!code || doneRef.current) return;
+    doneRef.current = true;
+    stopScanner();
+    onScanRef.current(code);
+  };
+
+  const hostH = viewH ? Math.ceil(viewH * scale) : 220;
+  const overlay = {
+    position: 'absolute', inset: 0, zIndex: 8,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'rgba(0,0,0,.72)', color: '#fff',
+    fontSize: '13px', fontWeight: 700, textAlign: 'center',
+    fontFamily: "'Nunito', sans-serif",
+  };
+  const pill = {
+    background: 'rgba(0,0,0,.62)', border: '1px solid rgba(255,255,255,.28)',
+    color: '#fff', borderRadius: '18px', padding: '7px 13px', cursor: 'pointer',
+    fontWeight: 700, fontSize: '12px', fontFamily: "'Nunito', sans-serif",
+  };
+
   return (
-    <div style={{ borderRadius: '12px', overflow: 'hidden', background: '#000', position: 'relative' }}>
-      {/* html5-qrcode рендерит video внутри этого div */}
-      <div id="html5-qrcode-scanner" ref={scannerRef} style={{ width: '100%' }} />
-
-      {!ready && !error && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.7)', color: '#fff', fontSize: '13px', fontWeight: 700 }}>
-          {t('cameraLoading')}
-        </div>
-      )}
-
-      {error && (
-        <div style={{ padding: '20px', textAlign: 'center', color: '#f87171', fontSize: '13px', fontWeight: 700 }}>
-          {error}
-        </div>
-      )}
-
-      {/* Overlay frame */}
-      {ready && (
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          border: '3px solid #FF6B2B', borderRadius: '12px',
+    <div>
+      <div ref={hostRef} style={{
+        position: 'relative', width: '100%', height: hostH + 'px',
+        overflow: 'hidden', borderRadius: '12px', background: '#000',
+      }}>
+        {/* html5-qrcode рендерит video и canvas внутрь этого div. Ширина
+            логическая (SCAN_VIEW_W), визуально сжимается трансформацией. */}
+        <div id={idRef.current} style={{
+          width: SCAN_VIEW_W + 'px',
+          transform: `scale(${scale})`, transformOrigin: '0 0',
         }} />
+
+        {!ready && !error && <div style={overlay}>{t('cameraLoading', lang)}</div>}
+
+        {error && (
+          <div style={{ ...overlay, flexDirection: 'column', gap: '10px', padding: '16px', overflowY: 'auto' }}>
+            <span style={{ color: '#FCA5A5', wordBreak: 'break-word' }}>{error}</span>
+            {errDetail && (
+              <span style={{ color: 'rgba(255,255,255,.55)', fontSize: '10.5px', fontWeight: 600, wordBreak: 'break-word' }}>
+                {errDetail}
+              </span>
+            )}
+            <button type="button" onClick={retry} style={pill}>{t('cameraRetry', lang)}</button>
+          </div>
+        )}
+
+        {ready && !error && (torch.available || zoom) && (
+          <div style={{
+            position: 'absolute', left: 0, right: 0, bottom: '8px', zIndex: 12,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+          }}>
+            {torch.available && (
+              <button type="button" onClick={toggleTorch} style={{
+                ...pill,
+                background: torch.on ? '#0A84FF' : pill.background,
+                border: torch.on ? '1px solid #0A84FF' : pill.border,
+              }}>{t('scanTorch', lang)}</button>
+            )}
+            {zoom && (
+              <div style={{ ...pill, cursor: 'default', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>{t('scanZoom', lang)}</span>
+                <input type="range" min={zoom.min} max={zoom.max} step={zoom.step}
+                  value={zoom.value}
+                  onChange={e => applyZoom(parseFloat(e.target.value))}
+                  style={{ width: '86px' }} />
+              </div>
+            )}
+          </div>
+        )}
+
+        <button type="button" onClick={handleClose} style={{
+          position: 'absolute', top: '10px', right: '10px', zIndex: 14,
+          background: 'rgba(0,0,0,.6)', border: 'none', color: '#fff',
+          borderRadius: '20px', padding: '6px 14px', cursor: 'pointer',
+          fontWeight: 700, fontSize: '13px', fontFamily: "'Nunito', sans-serif",
+        }}>{t('stopScan', lang)}</button>
+      </div>
+
+      {/* Подсказка по дистанции + ручной ввод: экран не должен быть тупиком,
+          если камера не справилась или её вообще нет. */}
+      {ready && !error && (
+        <div style={{ marginTop: '7px', fontSize: '11.5px', color: '#6B6F8A', fontWeight: 600, textAlign: 'center' }}>
+          {t('scanAimHint', lang)}
+        </div>
       )}
 
-      <button onClick={onClose} style={{
-        position: 'absolute', top: '10px', right: '10px', zIndex: 10,
-        background: 'rgba(0,0,0,.6)', border: 'none', color: '#fff',
-        borderRadius: '20px', padding: '6px 14px', cursor: 'pointer',
-        fontWeight: 700, fontSize: '13px', fontFamily: "'Nunito', sans-serif",
-      }}>{t('stopScan')}</button>
+      <div style={{ marginTop: '8px' }}>
+        {manualOpen ? (
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <input
+              style={{ ...S.input, flex: 1, fontSize: '14px', padding: '10px 12px', fontFamily: "'JetBrains Mono', monospace" }}
+              type="text" inputMode="numeric"
+              value={manual}
+              onChange={e => setManual(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submitManual(); } }}
+              placeholder={t('codeManualPlaceholder', lang)}
+            />
+            <button type="button" onClick={submitManual} disabled={!manual.trim()} style={{
+              padding: '10px 16px', background: manual.trim() ? '#0A84FF' : '#C7CBDD',
+              color: '#fff', border: 'none', borderRadius: '8px',
+              cursor: manual.trim() ? 'pointer' : 'not-allowed',
+              fontWeight: 800, fontSize: '13px', fontFamily: "'Nunito', sans-serif",
+            }}>{t('findBtn', lang)}</button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setManualOpen(true)} style={{
+            width: '100%', padding: '9px', background: 'none',
+            border: '1.5px dashed #E2E4F0', borderRadius: '8px', cursor: 'pointer',
+            fontSize: '12.5px', fontWeight: 700, color: '#6B6F8A',
+            fontFamily: "'Nunito', sans-serif",
+          }}>{t('enterCodeManually', lang)}</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -290,10 +604,10 @@ function PhotoCapture({ onCapture, onClose, uz }) {
       </div>
       <div style={{ display: 'flex', gap: '12px', marginTop: '18px' }}>
         <button type="button" onClick={capture} disabled={!ready} style={{
-          padding: '14px 28px', background: ready ? 'linear-gradient(135deg, #4338ca, #5B4FE8)' : '#9EA3BF',
+          padding: '14px 28px', background: ready ? 'linear-gradient(135deg, #0A84FF, #5E5CE6)' : '#9EA3BF',
           color: '#fff', border: 'none', borderRadius: '12px', fontWeight: 800, fontSize: '15px',
           cursor: ready ? 'pointer' : 'not-allowed', fontFamily: "'Nunito', sans-serif",
-          boxShadow: ready ? '0 4px 15px rgba(67,56,202,.4)' : 'none',
+          boxShadow: ready ? '0 4px 15px rgba(10,132,255,.4)' : 'none',
         }}>
           📸 {uz ? 'Suratga olish' : 'Снять'}
         </button>
@@ -396,6 +710,11 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
       setMsg(uz ? 'Tovar nomini kiriting' : 'Введите название товара');
       return false;
     }
+    // Пустую цену НЕ глотаем нулём: раньше товар молча создавался с ценой 0.
+    if (numNorm(form.price_buy) === '') {
+      setMsg(uz ? 'Tan narxini kiriting' : 'Введите цену закупки');
+      return false;
+    }
     return true;
   };
 
@@ -404,7 +723,11 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
     if (!validateForm()) return;
     setMsg(null);
     setSaving(true);
-    const qty = parseFloat(form.quantity) || 0;
+    // Числа берём через numVal: поле могло не потерять фокус перед сабмитом,
+    // и в нём ещё лежит «12,5» / «1 500 000».
+    const qty = numVal(form.quantity) || 0;
+    const priceBuy = numVal(form.price_buy) || 0;
+    const priceSell = numVal(form.price_sell) || 0;
     try {
       const product = await api.post('/products', {
         name_ru: form.name_ru,
@@ -412,8 +735,8 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
         type_id: form.type_id ? parseInt(form.type_id) : null,
         barcode: form.barcode,
         photo_url: form.photo_url || null,
-        price_sell: parseFloat(form.price_sell) || 0,
-        price_buy: parseFloat(form.price_buy) || 0,
+        price_sell: priceSell,
+        price_buy: priceBuy,
         color_size: form.color_size || null,
         brand: form.brand || null,
         unit: form.unit || 'шт',
@@ -424,7 +747,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
         if (txType === 'income') {
           await api.post('/stock/income', {
             product_id: pid, quantity: qty,
-            price: parseFloat(form.price_buy) || parseFloat(form.price_sell) || 0,
+            price: priceBuy || priceSell || 0,
             supplier: '',
           });
           finalStock = qty;
@@ -433,12 +756,12 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           // then outcome (so we record the sale). Net stock = 0, but both movements tracked.
           await api.post('/stock/income', {
             product_id: pid, quantity: qty,
-            price: parseFloat(form.price_buy) || parseFloat(form.price_sell) || 0,
+            price: priceBuy || priceSell || 0,
             supplier: '',
           });
           await api.post('/stock/outcome', {
             product_id: pid, quantity: qty,
-            price: parseFloat(form.price_sell) || 0,
+            price: priceSell,
           });
           finalStock = 0;
         }
@@ -493,9 +816,9 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
                 style={{
                   padding: '8px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer',
                   fontSize: '13px', fontWeight: 700, fontFamily: "'Nunito', sans-serif",
-                  background: selected ? '#4338ca' : '#F4F5FA',
+                  background: selected ? '#0A84FF' : '#F4F5FA',
                   color: selected ? '#fff' : '#6B6F8A',
-                  boxShadow: selected ? '0 2px 8px rgba(67,56,202,.3)' : 'none',
+                  boxShadow: selected ? '0 2px 8px rgba(10,132,255,.3)' : 'none',
                   transition: 'all .15s',
                 }}>
                 {uz ? tp.name_uz : tp.name_ru}
@@ -514,7 +837,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           {newType.trim() && (
             <button type="button" onClick={handleAddType} style={{
               padding: '0 16px', border: 'none', borderRadius: '8px',
-              background: '#4338ca', color: '#fff', fontWeight: 800, cursor: 'pointer',
+              background: '#0A84FF', color: '#fff', fontWeight: 800, cursor: 'pointer',
               fontSize: '18px', fontFamily: "'Nunito', sans-serif",
             }}>+</button>
           )}
@@ -546,9 +869,9 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
             <button key={o.u} type="button" onClick={() => setForm({ ...form, unit: o.u })}
               style={{
                 padding: '7px 12px', borderRadius: '20px',
-                border: `1.5px solid ${form.unit === o.u ? '#4338ca' : '#E2E4F0'}`,
-                background: form.unit === o.u ? 'rgba(67,56,202,.08)' : '#fff',
-                color: form.unit === o.u ? '#4338ca' : '#6B6F8A',
+                border: `1.5px solid ${form.unit === o.u ? '#0A84FF' : '#E2E4F0'}`,
+                background: form.unit === o.u ? 'rgba(10,132,255,.08)' : '#fff',
+                color: form.unit === o.u ? '#0A84FF' : '#6B6F8A',
                 cursor: 'pointer', fontWeight: 700, fontSize: '12px', fontFamily: "'Nunito', sans-serif",
                 whiteSpace: 'nowrap', transition: 'all .15s ease',
               }}>{o.i} {o.l}</button>
@@ -573,7 +896,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
             <button type="button"
               onClick={() => { setForm({ ...form, unit: customUnit.trim() }); setCustomUnit(''); }}
               style={{
-                padding: '8px 14px', background: '#4338ca', color: '#fff',
+                padding: '8px 14px', background: '#0A84FF', color: '#fff',
                 border: 'none', borderRadius: '8px', cursor: 'pointer',
                 fontWeight: 700, fontSize: '13px', fontFamily: "'Nunito', sans-serif",
               }}>OK</button>
@@ -589,9 +912,10 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           </label>
           <input
             style={{ ...S.input, fontSize: '15px', padding: '12px', textAlign: 'center', fontFamily: "'JetBrains Mono', monospace", borderColor: form.price_buy ? '#16a34a' : '#E2E4F0' }}
-            type="number" min="0" step="any" inputMode="decimal"
+            type="text" inputMode="decimal"
             value={form.price_buy}
-            onChange={e => setForm({ ...form, price_buy: e.target.value })}
+            onChange={e => setForm(f => ({ ...f, price_buy: numClean(e.target.value) }))}
+            onBlur={e => setForm(f => ({ ...f, price_buy: numClamp(e.target.value, 0) }))}
             placeholder="0"
           />
           <div style={{ fontSize: '10px', color: 'var(--text3)', marginTop: '4px', textAlign: 'center' }}>
@@ -604,9 +928,10 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           </label>
           <input
             style={{ ...S.input, fontSize: '15px', padding: '12px', textAlign: 'center', fontFamily: "'JetBrains Mono', monospace", borderColor: form.price_sell ? '#FF6B2B' : '#E2E4F0' }}
-            type="number" min="0" step="any" inputMode="decimal"
+            type="text" inputMode="decimal"
             value={form.price_sell}
-            onChange={e => setForm({ ...form, price_sell: e.target.value })}
+            onChange={e => setForm(f => ({ ...f, price_sell: numClean(e.target.value) }))}
+            onBlur={e => setForm(f => ({ ...f, price_sell: numClamp(e.target.value, 0) }))}
             placeholder="0"
           />
           <div style={{ fontSize: '10px', color: 'var(--text3)', marginTop: '4px', textAlign: 'center' }}>
@@ -624,16 +949,17 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <button type="button"
               onClick={() => setForm(f => ({ ...f, quantity: String(Math.max(0, parseFloat(f.quantity || 0) - 1)) }))}
-              style={{ width: '38px', height: '42px', borderRadius: '8px', border: '1.5px solid #E2E4F0', background: '#F4F5FA', fontSize: '20px', cursor: 'pointer', fontWeight: 700, color: '#4338ca', flexShrink: 0 }}>−</button>
+              style={{ width: '38px', height: '42px', borderRadius: '8px', border: '1.5px solid #E2E4F0', background: '#F4F5FA', fontSize: '20px', cursor: 'pointer', fontWeight: 700, color: '#0A84FF', flexShrink: 0 }}>−</button>
             <input
               style={{ ...S.input, flex: 1, fontSize: '16px', fontWeight: 800, textAlign: 'center', padding: '10px 4px', fontFamily: "'JetBrains Mono', monospace" }}
-              type="number" min="0" step="any" inputMode="decimal"
+              type="text" inputMode="decimal"
               value={form.quantity}
-              onChange={e => setForm({ ...form, quantity: e.target.value })}
+              onChange={e => setForm(f => ({ ...f, quantity: numClean(e.target.value) }))}
+              onBlur={e => setForm(f => ({ ...f, quantity: numClamp(e.target.value, 0) }))}
             />
             <button type="button"
               onClick={() => setForm(f => ({ ...f, quantity: String(parseFloat(f.quantity || 0) + 1) }))}
-              style={{ width: '38px', height: '42px', borderRadius: '8px', border: 'none', background: '#4338ca', fontSize: '20px', cursor: 'pointer', fontWeight: 700, color: '#fff', flexShrink: 0 }}>+</button>
+              style={{ width: '38px', height: '42px', borderRadius: '8px', border: 'none', background: '#0A84FF', fontSize: '20px', cursor: 'pointer', fontWeight: 700, color: '#fff', flexShrink: 0 }}>+</button>
           </div>
         </div>
       </div>
@@ -645,7 +971,7 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
           <div style={{
             display: 'flex', alignItems: 'center', gap: '10px',
             border: '1.5px solid #E2E4F0', borderRadius: '10px',
-            padding: '10px', background: 'rgba(91,79,232,.04)',
+            padding: '10px', background: 'rgba(10,132,255,.04)',
           }}>
             <img src={form.photo_url} alt="" style={{ height: '56px', width: '56px', borderRadius: '6px', objectFit: 'cover', flexShrink: 0 }} />
             <div style={{ flex: 1, fontSize: '12px', color: 'var(--text2)', fontWeight: 600 }}>
@@ -736,9 +1062,24 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
         <span style={{ fontSize: '12px', color: '#6B6F8A', fontWeight: 700, flexShrink: 0 }}>
           {uz ? 'Shtrix-kod:' : 'Штрих-код:'}
         </span>
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#4338ca', fontWeight: 700, fontSize: '13px', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {form.barcode}
-        </span>
+        {/* Штрих-код можно вписать РУКАМИ: если камера не сработала, товар
+            иначе нельзя было завести с его настоящим кодом с упаковки. */}
+        <input
+          style={{
+            flex: 1, minWidth: 0, border: '1.5px solid #E2E4F0', borderRadius: '6px',
+            padding: '7px 9px', background: '#fff', outline: 'none', boxSizing: 'border-box',
+            fontFamily: "'JetBrains Mono', monospace", color: '#0A84FF',
+            fontWeight: 700, fontSize: '13px',
+          }}
+          type="text" inputMode="numeric"
+          value={form.barcode}
+          onChange={e => {
+            const v = e.target.value.replace(/\D/g, '').slice(0, 14);
+            setForm(f => ({ ...f, barcode: v }));
+            setGeneratedBarcode(v);
+          }}
+          placeholder={uz ? 'Shtrix-kod raqamlari' : 'Цифры штрих-кода'}
+        />
         <button type="button" onClick={genBarcode} title={uz ? 'Yangilash' : 'Обновить'} style={{
           background: 'none', border: '1.5px solid #E2E4F0', borderRadius: '6px',
           padding: '4px 8px', cursor: 'pointer', color: '#9EA3BF', lineHeight: 1,
@@ -778,7 +1119,9 @@ const fmtQty = (val) => parseFloat(parseFloat(val).toFixed(3)).toString();
 
 // ─── Product Found Card ────────────────────────────────────────────────────────
 function FoundProduct({ product, role, lang, onReset }) {
-  const [qty, setQty] = useState(1);
+  // Количество — СТРОКА: можно стереть поле в пустоту и ввести заново
+  // (числовой стейт с «|| 1» мгновенно возвращал единицу — жалоба клиента).
+  const [qty, setQty] = useState('1');
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
@@ -786,16 +1129,21 @@ function FoundProduct({ product, role, lang, onReset }) {
   const barcodeRef = useRef(null);
 
   const doAction = async (type) => {
+    const qtyNum = numVal(qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      setMsg({ ok: false, text: lang === 'uz' ? 'Miqdorni kiriting' : 'Введите количество' });
+      return;
+    }
     setLoading(true); setMsg(null);
     try {
       const price = type === 'income' ? currentProduct.price_buy : currentProduct.price_sell;
       await api.post(`/stock/${type}`, {
-        product_id: currentProduct.id, quantity: qty, price: price || 0,
+        product_id: currentProduct.id, quantity: qtyNum, price: price || 0,
       });
       const { data } = await api.get(`/products/${currentProduct.id}`);
       setCurrentProduct(data);
-      setMsg({ ok: true, text: `${fmtQty(qty)} ${currentProduct.unit} — ${type === 'income' ? (lang === 'uz' ? 'qabul qilindi' : 'принято') : (lang === 'uz' ? 'chiqarildi' : 'продано')}` });
-      setQty(1);
+      setMsg({ ok: true, text: `${fmtQty(qtyNum)} ${currentProduct.unit} — ${type === 'income' ? (lang === 'uz' ? 'qabul qilindi' : 'принято') : (lang === 'uz' ? 'chiqarildi' : 'продано')}` });
+      setQty('1');
     } catch (e) {
       setMsg({ ok: false, text: e.response?.data?.error || t('error') });
     }
@@ -884,10 +1232,11 @@ function FoundProduct({ product, role, lang, onReset }) {
       <div style={{ ...S.card, marginTop: '10px' }}>
         <label style={S.label}>{t('quantity')}</label>
         <div style={S.qtyRow}>
-          <button type="button" onClick={() => setQty(q => Math.max(0.001, q - 1))} style={{ ...S.qtyBtn, background: '#F4F5FA', color: '#5B4FE8' }}>−</button>
-          <input style={S.qtyInput} type="number" min="0.001" step="any" value={qty}
-            onChange={e => setQty(parseFloat(e.target.value) || 1)} />
-          <button type="button" onClick={() => setQty(q => q + 1)} style={{ ...S.qtyBtn, background: '#5B4FE8', color: '#fff' }}>+</button>
+          <button type="button" onClick={() => setQty(q => String(Math.max(1, (parseFloat(q) || 0) - 1)))} style={{ ...S.qtyBtn, background: '#F4F5FA', color: '#0A84FF' }}>−</button>
+          <input style={S.qtyInput} type="text" inputMode="decimal" value={qty}
+            onChange={e => setQty(numClean(e.target.value))}
+            onBlur={e => setQty(numClamp(e.target.value, 0.001))} />
+          <button type="button" onClick={() => setQty(q => String((parseFloat(q) || 0) + 1))} style={{ ...S.qtyBtn, background: '#0A84FF', color: '#fff' }}>+</button>
         </div>
 
         {msg && (
@@ -922,7 +1271,9 @@ function FoundProduct({ product, role, lang, onReset }) {
 
 // ─── Compact product result (shown below search) ──────────────────────────────
 function CompactProductResult({ product, role, lang, onClear }) {
-  const [qty, setQty] = useState(1);
+  // Количество — СТРОКА: можно стереть поле в пустоту и ввести заново
+  // (числовой стейт с «|| 1» мгновенно возвращал единицу — жалоба клиента).
+  const [qty, setQty] = useState('1');
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
@@ -931,17 +1282,22 @@ function CompactProductResult({ product, role, lang, onClear }) {
   const uz = lang === 'uz';
   const fmtQty = (v) => parseFloat(parseFloat(v).toFixed(3)).toString();
 
-  useEffect(() => { setCurrentProduct(product); setQty(1); setMsg(null); }, [product]);
+  useEffect(() => { setCurrentProduct(product); setQty('1'); setMsg(null); }, [product]);
 
   const doAction = async (type) => {
+    const qtyNum = numVal(qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      setMsg({ ok: false, text: uz ? 'Miqdorni kiriting' : 'Введите количество' });
+      return;
+    }
     setLoading(true); setMsg(null);
     try {
       const price = type === 'income' ? currentProduct.price_buy : currentProduct.price_sell;
-      await api.post(`/stock/${type}`, { product_id: currentProduct.id, quantity: qty, price: price || 0 });
+      await api.post(`/stock/${type}`, { product_id: currentProduct.id, quantity: qtyNum, price: price || 0 });
       const { data } = await api.get(`/products/${currentProduct.id}`);
       setCurrentProduct(data);
-      setMsg({ ok: true, text: `${fmtQty(qty)} ${currentProduct.unit} ${type === 'income' ? (uz ? 'kirim' : 'приход') : (uz ? 'chiqim' : 'расход')}` });
-      setQty(1);
+      setMsg({ ok: true, text: `${fmtQty(qtyNum)} ${currentProduct.unit} ${type === 'income' ? (uz ? 'kirim' : 'приход') : (uz ? 'chiqim' : 'расход')}` });
+      setQty('1');
     } catch (e) {
       setMsg({ ok: false, text: e.response?.data?.error || 'Ошибка' });
     }
@@ -953,9 +1309,9 @@ function CompactProductResult({ product, role, lang, onClear }) {
   const stock = parseFloat(currentProduct.stock);
 
   return (
-    <div style={{ margin: '6px 16px 0', background: '#fff', borderRadius: '14px', boxShadow: '0 4px 20px rgba(67,56,202,.12)', border: '2px solid rgba(67,56,202,.15)', overflow: 'hidden' }}>
+    <div style={{ margin: '6px 16px 0', background: '#fff', borderRadius: '14px', boxShadow: '0 4px 20px rgba(10,132,255,.12)', border: '2px solid rgba(10,132,255,.15)', overflow: 'hidden' }}>
       {/* Product header */}
-      <div style={{ background: 'linear-gradient(135deg, #1e1b4b, #3730a3)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div style={{ background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
         {currentProduct.photo_url
           ? <img src={currentProduct.photo_url} alt="" style={{ width: '44px', height: '44px', borderRadius: '8px', objectFit: 'cover', border: '2px solid rgba(255,255,255,.3)', flexShrink: 0 }} />
           : <div style={{ width: '44px', height: '44px', borderRadius: '8px', background: 'rgba(255,255,255,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -978,7 +1334,7 @@ function CompactProductResult({ product, role, lang, onClear }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', borderBottom: '1px solid #F4F5FA' }}>
         {[
           { label: uz ? 'Qoldiq' : 'Остаток', value: `${fmtQty(stock)} ${currentProduct.unit}`, color: stock > 0 ? '#16a34a' : '#dc2626' },
-          { label: uz ? 'Narxi' : 'Цена', value: fmtMoney(currentProduct.price_sell || 0), color: '#4338ca' },
+          { label: uz ? 'Narxi' : 'Цена', value: fmtMoney(currentProduct.price_sell || 0), color: '#0A84FF' },
           { label: uz ? 'Shtrix-kod' : 'Штрих-код', value: currentProduct.barcode || '—', mono: true, small: true },
         ].map(s => (
           <div key={s.label} style={{ padding: '10px 12px', borderRight: '1px solid #F4F5FA' }}>
@@ -998,9 +1354,9 @@ function CompactProductResult({ product, role, lang, onClear }) {
             <button onClick={handlePrint} style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px',
               background: '#F4F5FA', border: 'none', borderRadius: '8px', padding: '10px 12px',
-              cursor: 'pointer', color: '#4338ca', flexShrink: 0,
+              cursor: 'pointer', color: '#0A84FF', flexShrink: 0,
             }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 20, height: 20 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#0A84FF" strokeWidth="2" style={{ width: 20, height: 20 }}>
                 <polyline points="6 9 6 2 18 2 18 9"/>
                 <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
                 <rect x="6" y="14" width="12" height="8"/>
@@ -1020,10 +1376,11 @@ function CompactProductResult({ product, role, lang, onClear }) {
           </div>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-          <button onClick={() => setQty(q => Math.max(0.001, q - 1))} style={{ ...S.qtyBtn, background: '#F4F5FA', color: '#4338ca', width: '36px', height: '36px' }}>−</button>
-          <input style={{ ...S.qtyInput, fontSize: '18px' }} type="number" min="0.001" step="any" value={qty}
-            onChange={e => setQty(parseFloat(e.target.value) || 1)} />
-          <button onClick={() => setQty(q => q + 1)} style={{ ...S.qtyBtn, background: '#4338ca', color: '#fff', width: '36px', height: '36px' }}>+</button>
+          <button onClick={() => setQty(q => String(Math.max(1, (parseFloat(q) || 0) - 1)))} style={{ ...S.qtyBtn, background: '#F4F5FA', color: '#0A84FF', width: '36px', height: '36px' }}>−</button>
+          <input style={{ ...S.qtyInput, fontSize: '18px' }} type="text" inputMode="decimal" value={qty}
+            onChange={e => setQty(numClean(e.target.value))}
+            onBlur={e => setQty(numClamp(e.target.value, 0.001))} />
+          <button onClick={() => setQty(q => String((parseFloat(q) || 0) + 1))} style={{ ...S.qtyBtn, background: '#0A84FF', color: '#fff', width: '36px', height: '36px' }}>+</button>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           {role === 'seller' ? (
@@ -1071,6 +1428,15 @@ export default function Mobile() {
   const canAdd = ['admin', 'cashier', 'warehouse'].includes(user?.role);
   const uz = lang === 'uz';
 
+  // Задачи с телефона: тот же список исполнителя, что и на /desktop, но
+  // полноэкранной шторкой — в шапке для отдельного раздела места нет.
+  // Админу не показываем: серверная граница данных админа отдаёт ему 403.
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const canSeeTasks = !!user?.role && user.role !== 'admin';
+  // На кнопке — непрочитанные события, а не активные задачи (активные висят
+  // постоянно, и кружок горел бы всегда). Гасит его сам MyTasks при открытии.
+  const { unread: tasksUnread } = useTaskInbox();
+
   const roleLabel = () => ({
     admin: uz ? 'Administrator' : 'Администратор',
     cashier: uz ? 'Kassir · Ombor' : 'Кассир · Склад',
@@ -1083,7 +1449,14 @@ export default function Mobile() {
     setSearching(true); setFoundProduct(null); setNotFound(false); setShowSugg(false);
     try {
       const params = isBarcode ? { barcode: query } : { search: query };
-      const { data } = await api.get('/products', { params });
+      let { data } = await api.get('/products', { params });
+      // Точный поиск по штрих-коду ничего не дал — пробуем обычный поиск
+      // (серверный `search` покрывает и barcode ILIKE), чтобы ручной ввод
+      // кода не упирался в «не найден» из-за формата записи.
+      if (isBarcode && data.length === 0) {
+        const r = await api.get('/products', { params: { search: query } });
+        data = r.data;
+      }
       if (data.length > 0) {
         setFoundProduct(data[0]);
         setNotFound(false);
@@ -1127,6 +1500,10 @@ export default function Mobile() {
     doSearch(barcode, true);
   };
 
+  // Чисто цифровой ввод 6+ знаков — это штрих-код, набранный руками:
+  // ищем точным совпадением, а не ILIKE по названию.
+  const runSearch = () => doSearch(searchText, /^\d{6,}$/.test(searchText.trim()));
+
   const clearSearch = () => {
     setFoundProduct(null); setNotFound(false); setSearchText(''); setScannedBarcode('');
     setShowAddForm(false);
@@ -1144,13 +1521,23 @@ export default function Mobile() {
             {user?.branch_name ? `${user.branch_name} · ` : ''}{roleLabel()} · @{user?.username}
           </span>
         </div>
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '0 1 auto' }}>
+          {canSeeTasks && (
+            <button onClick={() => setTasksOpen(true)}
+              title={uz ? 'Vazifalarim' : 'Мои задачи'}
+              style={{ ...S.backBtn, position: 'relative', fontSize: '11px', padding: '5px 10px' }}>
+              {uz ? 'Vazifa' : 'Задачи'}
+              {tasksUnread > 0 && (
+                <span style={{ position: 'absolute', top: -6, right: -6, background: '#DC2626', color: '#fff', borderRadius: 10, minWidth: 17, height: 17, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, padding: '0 4px', boxShadow: '0 1px 4px rgba(0,0,0,.25)' }}>{tasksUnread > 99 ? '99+' : tasksUnread}</span>
+              )}
+            </button>
+          )}
           {['uz', 'ru'].map(l => (
             <button key={l} onClick={() => changeLang(l)} style={{
               padding: '4px 9px', borderRadius: '12px', border: 'none', cursor: 'pointer',
               fontWeight: 800, fontSize: '11px',
               background: lang === l ? 'rgba(255,255,255,.9)' : 'rgba(255,255,255,.15)',
-              color: lang === l ? '#4338ca' : '#fff',
+              color: lang === l ? '#0A84FF' : '#fff',
             }}>{l.toUpperCase()}</button>
           ))}
           {user?.role !== 'seller' && (
@@ -1164,18 +1551,32 @@ export default function Mobile() {
         </div>
       </div>
 
+      {/* ── Мои задачи — полноэкранная шторка поверх экрана ── */}
+      {tasksOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 500, maxWidth: '480px', margin: '0 auto', background: '#F7F8FA', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ color: '#fff', fontWeight: 900, fontSize: 15 }}>{uz ? 'Mening vazifalarim' : 'Мои задачи'}</div>
+            <button onClick={() => setTasksOpen(false)}
+              style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 13, fontFamily: "'Nunito', sans-serif" }}>✕</button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '12px 14px' }}>
+            <MyTasks />
+          </div>
+        </div>
+      )}
+
       {/* ── Scanner zone ── */}
       <div style={{ margin: '12px 16px 0' }}>
         {scanning ? (
-          <CameraScanner onScan={handleScan} onClose={() => setScanning(false)} />
+          <CameraScanner onScan={handleScan} onClose={() => setScanning(false)} lang={lang} />
         ) : (
           <div style={S.scanZone} onClick={() => setScanning(true)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="1.5" style={{ width: 40, height: 40, marginBottom: 8 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#0A84FF" strokeWidth="1.5" style={{ width: 40, height: 40, marginBottom: 8 }}>
               <path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>
               <path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
               <line x1="8" y1="12" x2="16" y2="12" strokeWidth="2.5"/>
             </svg>
-            <div style={{ color: '#4338ca', fontWeight: 800, fontSize: '14px' }}>
+            <div style={{ color: '#0A84FF', fontWeight: 800, fontSize: '14px' }}>
               {uz ? 'Shtrix-kodni skanerlash' : 'Сканировать штрих-код'}
             </div>
             <div style={{ color: '#9EA3BF', fontSize: '12px', marginTop: '3px' }}>
@@ -1195,13 +1596,13 @@ export default function Mobile() {
           value={searchText}
           onChange={e => onSearchChange(e.target.value)}
           onFocus={() => { if (searchText.trim() && suggestions.length > 0) setShowSugg(true); }}
-          onKeyDown={e => e.key === 'Enter' && doSearch(searchText)}
-          placeholder={uz ? 'Nomi bo\'yicha qidirish...' : 'Поиск по наименованию...'}
+          onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+          placeholder={t('searchByNameOrBarcode', lang)}
         />
         {searchText ? (
           <div style={{ display: 'flex', gap: '4px' }}>
-            <button onClick={() => doSearch(searchText)} style={{
-              background: '#4338ca', color: '#fff', border: 'none',
+            <button onClick={runSearch} style={{
+              background: '#0A84FF', color: '#fff', border: 'none',
               padding: '7px 14px', borderRadius: '7px', cursor: 'pointer',
               fontWeight: 700, fontSize: '12px', fontFamily: "'Nunito', sans-serif",
             }}>{uz ? 'Topish' : 'Найти'}</button>
@@ -1290,8 +1691,8 @@ export default function Mobile() {
             <div style={S.dividerLine} />
           </div>
           <div style={S.card}>
-            <div style={{ fontWeight: 800, fontSize: '15px', color: '#4338ca', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="#4338ca" strokeWidth="2" style={{ width: 18, height: 18 }}>
+            <div style={{ fontWeight: 800, fontSize: '15px', color: '#0A84FF', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#0A84FF" strokeWidth="2" style={{ width: 18, height: 18 }}>
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
               {uz ? 'Yangi tovar qo\'shish' : 'Добавить новый товар'}
@@ -1321,11 +1722,11 @@ export default function Mobile() {
         <div style={{ margin: '14px 16px 0' }}>
           <button onClick={() => setShowAddForm(true)} style={{
             width: '100%', padding: '14px',
-            background: 'linear-gradient(135deg, #5B4FE8, #3D33C4)',
+            background: 'linear-gradient(135deg, #0A84FF, #5E5CE6)',
             border: 'none', borderRadius: '12px', color: '#fff',
             fontWeight: 800, fontSize: '15px', cursor: 'pointer',
             fontFamily: "'Nunito', sans-serif",
-            boxShadow: '0 4px 15px rgba(91,79,232,.3)',
+            boxShadow: '0 4px 15px rgba(10,132,255,.3)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
           }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" style={{ width: 18, height: 18 }}>
