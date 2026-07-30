@@ -9,29 +9,43 @@ export const DEMO_PRODUCTS = [
   { id: 'quiet-morning', name: 'Тихое утро', artist: 'Малика Рахимова', category: 'Принты', price: 560000, stock: 8, size: '60 × 80 см', medium: 'Архивная печать', image: 'https://images.unsplash.com/photo-1579783928621-7a13d66a62d1?auto=format&fit=crop&w=1200&q=88' },
 ];
 
-export function normalizeErpProducts(products, fallback = DEMO_PRODUCTS) {
-  if (!Array.isArray(products) || products.length === 0) return fallback;
+// Реальные товары ERP → карточки витрины. ВАЖНО: НЕ подставляем чужие демо-фото
+// (unsplash-картины на эмалированные кружки вводили бы покупателя в заблуждение) —
+// товар без фото получает аккуратный плейсхолдер на витрине (image: null).
+export function normalizeErpProducts(products) {
+  if (!Array.isArray(products) || products.length === 0) return [];
 
   return products.map((product, index) => {
-    const visual = fallback[index % fallback.length];
     const price = Number(product.price_sell ?? product.sell ?? product.price ?? 0);
     const stock = Number(product.stock ?? product.quantity ?? 0);
 
     return {
-      id: `erp-${product.id ?? index}`,
+      id: product.id ?? index,                       // реальный id товара — уходит в заказ
+      erpId: product.id ?? null,
       name: product.name_ru || product.name_uz || product.name || 'Без названия',
-      artist: product.brand || visual.artist || 'ART Store Studio',
-      category: product.cat_name_ru || product.type_name_ru || product.category || visual.category,
+      artist: product.brand || 'ART Store',
+      category: product.cat_name_ru || product.type_name_ru || product.category || null,
       price: Number.isFinite(price) ? price : 0,
       stock: Number.isFinite(stock) ? stock : 0,
-      size: product.size || visual.size,
-      medium: product.type_name_ru || product.unit || visual.medium,
-      badge: product.badge || (stock > 0 && stock <= 2 ? 'Последний экземпляр' : ''),
-      image: product.photo_url || product.image_url || product.image || visual.image,
-      available: stock > 0,
+      size: product.color_size || product.size || null,
+      medium: product.type_name_ru || null,
+      // 'last' — семантический ключ (переводится на витрине: Последний экземпляр / Oxirgi nusxa / Last one)
+      badge: product.badge || (stock > 0 && stock <= 2 ? 'last' : ''),
+      image: product.photo_url || product.image_url || product.image || null,
+      // Заказ = заявка (куратор подтверждает наличие) — покупать можно и «под заказ».
+      available: true,
       source: 'erp',
     };
   });
+}
+
+// Уникальные категории каталога (для фильтра). Товары без категории не создают пункт.
+export function catalogCategories(products) {
+  const seen = [];
+  (Array.isArray(products) ? products : []).forEach((p) => {
+    if (p.category && !seen.includes(p.category)) seen.push(p.category);
+  });
+  return seen;
 }
 
 export function filterCatalog(products, { category = 'Все', query = '' } = {}) {
@@ -61,7 +75,7 @@ export function getCartSummary(items) {
   }, { quantity: 0, total: 0 });
 }
 
-export function formatStorePrice(value) {
+export function formatStorePrice(value, currency = 'сум') {
   const amount = Number(value) || 0;
-  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(amount)} сум`;
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(amount)} ${currency}`;
 }

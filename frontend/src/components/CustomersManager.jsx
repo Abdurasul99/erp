@@ -12,7 +12,7 @@ export default function CustomersManager() {
   const [edit, setEdit] = useState(null); // null | 'new' | {customer}
   const [debtorOnly, setDebtorOnly] = useState(false);
   const [debtsFor, setDebtsFor] = useState(null); // customer record
-  const [form, setForm] = useState({ name: '', phone: '', note: '', source: '' });
+  const [form, setForm] = useState({ name: '', phone: '', note: '', source: '', birth_date: '' });
   const [err, setErr] = useState('');
   const [msg, setMsg, clearMsg] = useMsg();
 
@@ -33,8 +33,8 @@ export default function CustomersManager() {
   const totalDebt = filtered.reduce((s, c) => s + parseFloat(c.debt_amount || 0), 0);
   const withDebt = filtered.filter(c => parseFloat(c.debt_amount) > 0).length;
 
-  const openNew = () => { setEdit('new'); setForm({ name: '', phone: '', note: '', source: '' }); setErr(''); };
-  const openEdit = (c) => { setEdit(c); setForm({ name: c.name, phone: c.phone || '', note: c.note || '', source: c.source || '' }); setErr(''); };
+  const openNew = () => { setEdit('new'); setForm({ name: '', phone: '', note: '', source: '', birth_date: '' }); setErr(''); };
+  const openEdit = (c) => { setEdit(c); setForm({ name: c.name, phone: c.phone || '', note: c.note || '', source: c.source || '', birth_date: c.birth_date ? String(c.birth_date).slice(0, 10) : '' }); setErr(''); };
 
   const save = async () => {
     if (!form.name.trim()) { setErr(t('enterName')); return; }
@@ -162,6 +162,15 @@ export default function CustomersManager() {
             </div>
             <div style={{ marginBottom: '12px' }}><label className="label">{t('name') || 'Имя'} *</label><input className="input" autoFocus value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
             <div style={{ marginBottom: '12px' }}><label className="label">{t('phone') || 'Телефон'}</label><input className="input" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+998..." /></div>
+            {/* Дата рождения — питает инструмент «Дни рождения» (поздравления, промокоды) */}
+            <div style={{ marginBottom: '12px' }}>
+              <label className="label">🎂 {t('birthDate') || 'Дата рождения'}</label>
+              <input className="input" type="date" value={form.birth_date} max={new Date().toISOString().slice(0, 10)}
+                onChange={e => setForm({ ...form, birth_date: e.target.value })} />
+              <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '4px' }}>
+                {t('birthDateHint') || 'Появится в инструменте «Дни рождения» — поздравления и промокоды'}
+              </div>
+            </div>
             <div style={{ marginBottom: '12px' }}>
               <label className="label">Откуда пришёл клиент</label>
               <select className="input" value={form.source} onChange={e => setForm({ ...form, source: e.target.value })}>

@@ -1,26 +1,13 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { makeStoreT } from './storeI18n.mjs';
 import './storeIntro.css';
 
+// Ключи словаря storeI18n — подписи переводятся по активному языку витрины.
 const INTRO_ARTIFACTS = [
-  {
-    src: '/images/store/intro-ceramic.webp',
-    alt: 'Лазурный керамический сосуд в традициях Узбекистана',
-    label: 'Лазурная керамика',
-    era: 'XII–XIV вв.',
-  },
-  {
-    src: '/images/store/intro-bronze-ewer.webp',
-    alt: 'Старинный бронзовый кумган Центральной Азии',
-    label: 'Бронзовый кумган',
-    era: 'Шёлковый путь',
-  },
-  {
-    src: '/images/store/intro-silver-amulet.webp',
-    alt: 'Серебряный амулет с сердоликом в узбекской традиции',
-    label: 'Серебро и сердолик',
-    era: 'XIX век',
-  },
+  { src: '/images/store/intro-ceramic.webp', labelKey: 'inArt1', eraKey: 'inEra1' },
+  { src: '/images/store/intro-bronze-ewer.webp', labelKey: 'inArt2', eraKey: 'inEra2' },
+  { src: '/images/store/intro-silver-amulet.webp', labelKey: 'inArt3', eraKey: 'inEra3' },
 ];
 
 const artifactMotion = {
@@ -47,7 +34,7 @@ const artifactMotion = {
   }),
 };
 
-export default function StoreIntro({ open, onComplete }) {
+export default function StoreIntro({ open, onComplete, t = makeStoreT('ru') }) {
   const reduceMotion = useReducedMotion();
   const completedRef = useRef(false);
   const skipButtonRef = useRef(null);
@@ -79,9 +66,9 @@ export default function StoreIntro({ open, onComplete }) {
         >
           <div className="store-intro-ambient" aria-hidden="true" />
           <div className="store-intro-topline">
-            <span>Ташкент · Узбекистан</span>
-            <button ref={skipButtonRef} type="button" onClick={finish} aria-label="Пропустить заставку">
-              Пропустить <i aria-hidden="true">↗</i>
+            <span>{t('inTop')}</span>
+            <button ref={skipButtonRef} type="button" onClick={finish} aria-label={t('inSkip')}>
+              {t('inSkip')} <i aria-hidden="true">↗</i>
             </button>
           </div>
 
@@ -95,14 +82,14 @@ export default function StoreIntro({ open, onComplete }) {
                 animate="visible"
                 key={artifact.src}
               >
-                <img src={artifact.src} alt={artifact.alt} />
+                <img src={artifact.src} alt={t(artifact.labelKey)} />
                 <motion.figcaption
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: reduceMotion ? 0 : 1.05 + index * 0.12, duration: 0.5 }}
                 >
-                  <span>{artifact.label}</span>
-                  <small>{artifact.era}</small>
+                  <span>{t(artifact.labelKey)}</span>
+                  <small>{t(artifact.eraKey)}</small>
                 </motion.figcaption>
               </motion.figure>
             ))}
@@ -113,7 +100,7 @@ export default function StoreIntro({ open, onComplete }) {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: reduceMotion ? 0 : 1.15, duration: 0.95, ease: [0.16, 1, 0.3, 1] }}
             >
-              <p>Артефакты · искусство · редкие истории</p>
+              <p>{t('inSign')}</p>
               <div className="store-intro-brand" aria-label="ART * Store">
                 <span>ART</span><i aria-hidden="true">*</i><em>Store</em>
               </div>

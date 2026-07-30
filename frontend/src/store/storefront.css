@@ -531,63 +531,73 @@ body.storefront-locked {
   line-height: 1.8;
 }
 
+/* Фильтр-бар рассчитан на МНОГО категорий (у клиента 15+ типов товаров):
+   поиск — своей строкой справа, категории — переносимыми пилюлями под ним. */
 .store-filterbar {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 40px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
   margin-bottom: 38px;
-  padding-bottom: 15px;
+  padding-bottom: 22px;
   border-bottom: 1px solid var(--store-line);
 }
 
 .store-categories {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: clamp(18px, 2.6vw, 48px);
+  gap: 8px 10px;
 }
 
 .store-categories button {
   display: inline-flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 7px;
-  padding: 10px 0;
-  color: #8a847c;
+  padding: 9px 16px;
+  color: #6d675f;
   background: transparent;
-  border: 0;
-  font-size: 12px;
+  border: 1px solid var(--store-line);
+  border-radius: 999px;
+  font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  transition: color 180ms ease;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
 }
 
-.store-categories button.is-active,
 .store-categories button:hover {
   color: var(--store-ink);
+  border-color: var(--store-ink);
 }
 
-.store-categories button.is-active::before {
-  align-self: center;
-  width: 5px;
-  height: 5px;
-  margin-right: 1px;
-  background: var(--store-accent);
-  border-radius: 50%;
-  content: "";
+.store-categories button.is-active {
+  color: var(--store-paper);
+  background: var(--store-ink);
+  border-color: var(--store-ink);
 }
 
 .store-categories button span {
   color: #aaa39a;
-  font-size: 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.store-categories button.is-active span {
+  color: rgba(242, 239, 232, 0.65);
 }
 
 .store-inline-search {
   display: flex;
-  width: 230px;
+  order: -1;
+  width: min(340px, 100%);
+  align-self: flex-end;
   align-items: center;
   gap: 9px;
-  padding: 10px 0;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--store-line);
 }
 
 .store-inline-search input {
@@ -1854,10 +1864,12 @@ body.storefront-locked {
   }
 
   .store-categories {
-    width: calc(100vw - 18px);
-    gap: 22px;
+    width: 100%;
+    gap: 8px;
+    flex-wrap: nowrap;
     overflow-x: auto;
     scrollbar-width: none;
+    padding-bottom: 4px;
   }
 
   .store-categories::-webkit-scrollbar {
@@ -1867,11 +1879,12 @@ body.storefront-locked {
   .store-categories button {
     flex: 0 0 auto;
     font-size: 10px;
+    padding: 8px 13px;
   }
 
   .store-inline-search {
     width: 100%;
-    border-top: 1px solid rgba(23, 23, 19, 0.12);
+    align-self: stretch;
   }
 
   .store-product-grid {
@@ -2054,4 +2067,102 @@ body.storefront-locked {
     opacity: 1;
     transform: none;
   }
+}
+
+/* ── Плейсхолдер товара без фото (честная витрина: не подставляем чужие фото) ── */
+.store-ph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  background:
+    radial-gradient(120% 90% at 20% 0%, rgba(255, 91, 53, 0.14), transparent 55%),
+    linear-gradient(160deg, #e7e0d4, #d8d1c7);
+  color: rgba(23, 23, 19, 0.55);
+}
+
+.store-product-visual .store-ph { position: absolute; inset: 0; }
+
+.store-ph i {
+  font-style: normal;
+  font-family: 'Prata', 'Georgia', serif;
+  font-size: clamp(42px, 7vw, 84px);
+  line-height: 1;
+  color: rgba(23, 23, 19, 0.34);
+}
+
+.store-ph em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.store-ph.is-small {
+  width: 118px;
+  height: 142px;
+  flex: 0 0 118px;
+}
+
+.store-ph.is-small i { font-size: 34px; }
+
+.store-modal-image .store-ph { min-height: 320px; }
+
+/* Примечание об оплате на шаге оформления */
+.store-checkout-note {
+  font-size: 13px;
+  color: rgba(23, 23, 19, 0.6);
+  margin: -6px 0 4px;
+}
+
+.store-checkout-submit:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* ── Переключатель языка витрины (RU / UZ / EN) ── */
+.store-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.store-lang button {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.66);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 5px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.store-lang button.is-active {
+  background: #fff;
+  color: #171713;
+}
+
+.store-lang.is-mobile {
+  align-self: flex-start;
+  margin: 18px 0 6px;
+  border-color: rgba(23, 23, 19, 0.25);
+}
+
+.store-lang.is-mobile button { color: rgba(23, 23, 19, 0.6); }
+.store-lang.is-mobile button.is-active { background: #171713; color: #f2efe8; }
+
+@media (max-width: 760px) {
+  .store-header-actions .store-lang { display: none; } /* на мобиле — в меню */
 }
