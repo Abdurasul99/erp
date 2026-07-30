@@ -3,6 +3,22 @@ import api from '../../api.js';
 import { Card, Tile, Badge, Pills, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { BONUS_CATS, PENALTY_CATS, CAT_LABELS, disciplineLevel, pickLabel } from '../taskMeta.js';
+import { normalizeDecimal } from '../../utils/decimalInput.js';
+
+// Сумма — строковый стейт и type="text" (как в RoleBoardTool): у type="number"
+// Chrome отдаёт пустую строку на промежуточно-невалидном вводе («250 000»,
+// «1500,»), и контролируемое поле само себя очищает. Плюс step="1000" делал
+// колёсико мыши/стрелки редактором суммы — прокрутил страницу с фокусом в поле,
+// и премия молча уехала на 1000. У type="text" такого поведения нет.
+const cleanMoney = (s) => String(s).replace(/[^\d\s.,]/g, '');
+// Строка поля → целые сумы. Пустое/мусор → NaN, чтобы NaN не ушёл на сервер.
+const moneyNum = (s) => {
+  const v = normalizeDecimal(s);
+  if (v === '' || v === '.') return NaN;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? Math.round(n) : NaN;
+};
 
 const PERIODS = [
   { value: 'day', label: 'День' },
@@ -11,35 +27,9 @@ const PERIODS = [
   { value: 'year', label: 'Год' },
 ];
 
-const BONUS_CATS = [
-  { value: 'sales_target', label: 'Выполнение плана продаж' },
-  { value: 'kpi', label: 'Достижение KPI' },
-  { value: 'holiday', label: 'Праздничная премия' },
-  { value: 'manual', label: 'Прочее' },
-];
-const PENALTY_CATS = [
-  { value: 'late', label: 'Опоздание' },
-  { value: 'absent', label: 'Прогул' },
-  { value: 'rudeness', label: 'Грубость с клиентом' },
-  { value: 'damage', label: 'Порча имущества' },
-  { value: 'manual', label: 'Прочее' },
-];
-
-const CAT_RU = {
-  sales_target: 'Выполнение плана', kpi: 'KPI', holiday: 'Праздничная', manual: 'Прочее',
-  late: 'Опоздание', absent: 'Прогул', rudeness: 'Грубость с клиентом', damage: 'Порча имущества',
-};
-const CAT_ICON = { sales_target: '🎯', kpi: '📈', holiday: '🎁', manual: '✏️', late: '⏰', absent: '❌', rudeness: '😠', damage: '🔧' };
-
-function disciplineBadge(violations, net, tt) {
-  if (violations === 0 && net >= 0) return <Badge tone="green">{tt('✅ Образцовая')}</Badge>;
-  if (violations <= 1) return <Badge tone="green">{tt('✅ Хорошая')}</Badge>;
-  if (violations <= 3) return <Badge tone="orange">{tt('⚠ Норма')}</Badge>;
-  return <Badge tone="red">{tt('⚠ Плохая')}</Badge>;
-}
-
 export default function HrAdjustmentsTool() {
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
+  const uz = lang === 'uz';
   const { branchId } = useContext(BranchScope);
   const [period, setPeriod] = useState('month');
   const [data, setData] = useState(null);
@@ -76,8 +66,8 @@ export default function HrAdjustmentsTool() {
     e.preventDefault();
     setFormErr(null);
     if (!employeeId) { setFormErr(tt('Выберите сотрудника')); return; }
-    const amt = Math.round(parseFloat(amount) || 0);
-    if (amt <= 0) { setFormErr(tt('Введите сумму')); return; }
+    const amt = moneyNum(amount);
+    if (!Number.isFinite(amt) || amt <= 0) { setFormErr(tt('Введите сумму')); return; }
     setSaving(true);
     try {
       await api.post('/hr/adjustments', {
@@ -97,7 +87,7 @@ export default function HrAdjustmentsTool() {
 
   return (
     <>
-      <PageHeader title={tt('⚖️ Штрафы и Бонусы · Дисциплина')} sub={tt('🔒 Только учредитель')} />
+      <PageHeader title={tt('Штрафы и Бонусы · Дисциплина')} sub={tt('Премии, штрафы и дисциплина по сотрудникам')} />
 
       <div style={{ marginBottom: 16 }}>
         <Pills value={period} onChange={setPeriod} label="Период"
@@ -118,21 +108,28 @@ export default function HrAdjustmentsTool() {
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>{tt('Тип')}</div>
               <select value={type} onChange={e => setType(e.target.value)} style={{ width: '100%' }}>
-                <option value="bonus">{tt('💰 Премия')}</option>
-                <option value="penalty">{tt('❌ Штраф')}</option>
+                <option value="bonus">{tt('Премия')}</option>
+                <option value="penalty">{tt('Штраф')}</option>
               </select>
             </label>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>{tt('Категория')}</div>
               <select value={category} onChange={e => setCategory(e.target.value)} style={{ width: '100%' }}>
-                {cats.map(c => <option key={c.value} value={c.value}>{tt(c.label)}</option>)}
+                {cats.map(c => <option key={c.value} value={c.value}>{pickLabel(c, uz)}</option>)}
               </select>
             </label>
           </div>
           <div className="grid-3" style={{ gap: 12, alignItems: 'end' }}>
             <label style={{ display: 'block' }}>
               <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 4 }}>{tt('Сумма (сум)')}</div>
-              <input type="number" min="0" step="1000" value={amount} onChange={e => setAmount(e.target.value)}
+              {/* Округление только на blur: кламп в onChange не дал бы стереть
+                  последнюю цифру. */}
+              <input type="text" inputMode="numeric" value={amount}
+                onChange={e => setAmount(cleanMoney(e.target.value))}
+                onBlur={() => setAmount(v => {
+                  const n = moneyNum(v);
+                  return Number.isFinite(n) ? String(Math.max(0, n)) : '';
+                })}
                 placeholder="0" style={{ width: '100%' }} />
             </label>
             <label style={{ display: 'block', gridColumn: 'span 1' }}>
@@ -145,14 +142,14 @@ export default function HrAdjustmentsTool() {
               {saving ? tt('Сохранение…') : tt('Назначить')}
             </button>
           </div>
-          {formErr && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10, fontWeight: 600 }}>⚠️ {formErr}</div>}
+          {formErr && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10, fontWeight: 600 }}>{formErr}</div>}
         </form>
       </Card>
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={200} /></Card>
       ) : error ? (
-        <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ {error}</div></Card>
+        <Card><div style={{ color: 'var(--red)', fontWeight: 600 }}>{error}</div></Card>
       ) : (
         <>
           <div className="grid-4" style={{ marginBottom: 18 }}>
@@ -181,6 +178,7 @@ export default function HrAdjustmentsTool() {
                   <tbody>
                     {events.map(ev => {
                       const isBonus = ev.type === 'bonus';
+                      const catLabel = pickLabel(CAT_LABELS[ev.category], uz);
                       return (
                         <tr key={ev.id}>
                           <td className="mono" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -189,10 +187,10 @@ export default function HrAdjustmentsTool() {
                           <td style={{ fontWeight: 700 }}>{ev.employee_name || '—'}</td>
                           <td>
                             <Badge tone={isBonus ? 'green' : 'red'}>
-                              {CAT_ICON[ev.category] || (isBonus ? '💰' : '❌')} {tt(isBonus ? 'Премия' : (CAT_RU[ev.category] || 'Штраф'))}
+                              {isBonus ? tt('Премия') : (catLabel || tt('Штраф'))}
                             </Badge>
                           </td>
-                          <td style={{ color: 'var(--text2)', fontSize: 13 }}>{ev.note || tt(CAT_RU[ev.category] || '—')}</td>
+                          <td style={{ color: 'var(--text2)', fontSize: 13 }}>{ev.note || catLabel || '—'}</td>
                           <td className="mono" style={{ textAlign: 'right', fontWeight: 700, color: isBonus ? '#16A34A' : '#DC2626' }}>
                             {(isBonus ? '+' : '−') + fmtMoneyFull(ev.amount)}
                           </td>
@@ -223,22 +221,25 @@ export default function HrAdjustmentsTool() {
                     </tr>
                   </thead>
                   <tbody>
-                    {byEmployee.map(r => (
-                      <tr key={r.employee_id}>
-                        <td style={{ fontWeight: 700 }}>{r.employee_name || '—'}</td>
-                        <td className="mono" style={{ textAlign: 'right', color: '#16A34A' }}>{r.bonus_total > 0 ? fmtMoneyFull(r.bonus_total) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
-                        <td className="mono" style={{ textAlign: 'right', color: '#DC2626' }}>{r.penalty_total > 0 ? fmtMoneyFull(r.penalty_total) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
-                        <td className="mono" style={{ textAlign: 'right', fontWeight: 700, color: r.net >= 0 ? '#16A34A' : '#DC2626' }}>{(r.net >= 0 ? '+' : '') + fmtMoneyFull(r.net)}</td>
-                        <td className="mono" style={{ textAlign: 'right' }}>{r.violations > 0 ? fmtNum(r.violations) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
-                        <td>{disciplineBadge(r.violations, r.net, tt)}</td>
-                      </tr>
-                    ))}
+                    {byEmployee.map(r => {
+                      const lvl = disciplineLevel(r.violations, r.net);
+                      return (
+                        <tr key={r.employee_id}>
+                          <td style={{ fontWeight: 700 }}>{r.employee_name || '—'}</td>
+                          <td className="mono" style={{ textAlign: 'right', color: '#16A34A' }}>{r.bonus_total > 0 ? fmtMoneyFull(r.bonus_total) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                          <td className="mono" style={{ textAlign: 'right', color: '#DC2626' }}>{r.penalty_total > 0 ? fmtMoneyFull(r.penalty_total) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                          <td className="mono" style={{ textAlign: 'right', fontWeight: 700, color: r.net >= 0 ? '#16A34A' : '#DC2626' }}>{(r.net >= 0 ? '+' : '') + fmtMoneyFull(r.net)}</td>
+                          <td className="mono" style={{ textAlign: 'right' }}>{r.violations > 0 ? fmtNum(r.violations) : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
+                          <td><Badge tone={lvl.tone}>{pickLabel(lvl, uz)}</Badge></td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 10 }}>
-              {tt('ℹ️ Чистый эффект = премии − штрафы. Нарушение = любой штраф. Суммы в сумах полным числом.')}
+              {tt('Чистый эффект = премии − штрафы. Нарушение = любой штраф. Суммы в сумах полным числом.')}
             </div>
           </Card>
         </>

@@ -416,7 +416,10 @@ app.delete('/api/companies/:id', auth(['admin']), async (req, res) => {
       'customer_rfm', 'customer_rfm_history', 'notification_campaigns', 'leads', 'loyalty_accounts', 'discounts',
       'reviews', 'sales_scripts', 'bhi_daily', 'inventory_audits', 'tax_settings', 'tax_payments', 'balance_entries',
       'supplier_returns', 'purchase_orders', 'receivings', 'schedules', 'shift_templates', 'attendance', 'absences',
-      'salaries', 'employee_adjustments', 'penalty_rules', 'courses', 'stock_transfers', 'complaints', 'tasks',
+      'salaries', 'employee_adjustments', 'penalty_rules', 'courses', 'stock_transfers', 'complaints',
+      // task_events — раньше tasks (ссылается на неё по task_id). task_comments сюда НЕ
+      // добавлять: у неё нет company_id, DELETE ... WHERE company_id упал бы.
+      'task_events', 'tasks',
       'suppliers', 'customers', 'products', 'users', 'branches',
     ]) {
       await del(`DELETE FROM ${t} WHERE company_id = $1`, [cid]);
@@ -5544,6 +5547,45 @@ async function bscActiveStrategy(companyId) {
 
 // Грузит отделы + метрики + агрегаты по фактам для стратегии.
 // Возвращает { strategy, departments:[{...,completion,metrics:[{...,fact_y1..,pct_y1..}]}], curYear, monthsElapsed, totalScore }.
+// Взвешенное среднее «как в таблице»: если веса не проставлены (все 0) —
+// считаем равными долями, иначе Σ(значение×вес)/Σ(вес).
+function bscWeighted(items) {
+  const list = (items || []).filter(x => x && x.pct != null);
+  if (!list.length) return null;
+  const sumW = list.reduce((a, x) => a + (x.w > 0 ? x.w : 0), 0);
+  if (sumW <= 0) {
+    return Math.round(list.reduce((a, x) => a + x.pct, 0) / list.length * 10) / 10;
+  }
+  const acc = list.reduce((a, x) => a + x.pct * (x.w > 0 ? x.w : 0), 0);
+  return Math.round(acc / sumW * 10) / 10;
+}
+
+// Границы периода №no (1-based) от даты старта стратегии.
+// Типы — как в таблице клиента: год · полугодие · квартал · месяц · неделя.
+const BSC_PERIOD_MONTHS = { year: 12, half: 6, quarter: 3, month: 1 };
+function bscPeriodRange(startDate, type, no) {
+  const n = Math.max(1, parseInt(no, 10) || 1);
+  // ВАЖНО: pg отдаёт DATE как Date в ЛОКАЛЬНОЙ зоне (для UTC+5 это 19:00 предыдущих
+  // суток в UTC). Без нормализации toISOString сдвигал границы периода на день назад.
+  const base = (typeof startDate === 'string')
+    ? new Date(startDate.slice(0, 10) + 'T00:00:00Z')
+    : new Date(Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()));
+  const from = new Date(base);
+  const to = new Date(base);
+  // Арифметика тоже в UTC — иначе переход на летнее время смещал бы границы.
+  if (type === 'week') {
+    from.setUTCDate(from.getUTCDate() + (n - 1) * 7);
+    to.setUTCDate(to.getUTCDate() + n * 7);
+  } else {
+    const step = BSC_PERIOD_MONTHS[type] || 12;
+    from.setUTCMonth(from.getUTCMonth() + (n - 1) * step);
+    to.setUTCMonth(to.getUTCMonth() + n * step);
+  }
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+// Сколько периодов данного типа укладывается в 3 года стратегии.
+const BSC_PERIOD_COUNT = { year: 3, half: 6, quarter: 12, month: 36, week: 157 };
+
 async function bscLoadFull(strategy) {
   if (!strategy) return null;
   const sId = strategy.id;
@@ -5669,10 +5711,11 @@ async function bscLoadFull(strategy) {
 
   const depList = departments.map(d => {
     const dd = byDept[d.id];
-    // completion% отдела по текущему году = средняя по метрикам (план>0)
+    // completion% отдела по текущему году — ВЗВЕШЕННО по «важности» метрики
+    // («Muhimligi» из таблицы клиента). Если веса не заданы — равные доли.
     const yKey = curYear === 1 ? 'pct_y1' : curYear === 2 ? 'pct_y2' : 'pct_y3';
-    const valid = dd.metrics.map(m => m[yKey]).filter(v => v != null);
-    const completion = valid.length ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length * 10) / 10 : null;
+    const valid = dd.metrics.filter(m => m[yKey] != null);
+    const completion = valid.length ? bscWeighted(valid.map(m => ({ pct: m[yKey], w: parseFloat(m.weight_pct) || 0 }))) : null;
     return { ...dd, completion };
   });
 
@@ -5719,11 +5762,15 @@ app.post('/api/bsc/strategies', auth(['admin', 'founder']), async (req, res) => 
       for (const m of mets) {
         if (!m.name || !m.name.trim()) continue;
         const src = VALID_SRC.has(m.source_type) ? m.source_type : 'manual';
+        // weight_pct — «важность» метрики внутри отдела (как в таблице клиента);
+        // 0 у всех метрик отдела = равные веса.
+        const mw = parseFloat(m.weight_pct);
         await client.query(
-          `INSERT INTO bsc_metrics (department_id, name, unit, source_type, plan_year_1, plan_year_2, plan_year_3, display_order)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          `INSERT INTO bsc_metrics (department_id, name, unit, source_type, plan_year_1, plan_year_2, plan_year_3, weight_pct, display_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [dep.id, m.name.trim(), m.unit || null, src,
-           parseFloat(m.plan_year_1) || 0, parseFloat(m.plan_year_2) || 0, parseFloat(m.plan_year_3) || 0, mi++]
+           parseFloat(m.plan_year_1) || 0, parseFloat(m.plan_year_2) || 0, parseFloat(m.plan_year_3) || 0,
+           (Number.isFinite(mw) && mw >= 0 && mw <= 100) ? mw : 0, mi++]
         );
       }
     }
@@ -5814,6 +5861,143 @@ app.post('/api/bsc/fact', auth(['admin', 'director', 'founder', 'manager']), asy
 });
 
 // GET /api/bsc/forecast — линейный прогноз: при текущем темпе какой % будет к концу года 3. (view)
+// ═══ ССП по периодам — точная калька листа клиента ════════════════════════════
+// GET /api/bsc/period?type=month&no=1
+// Возвращает отделы → метрики с планом на период, фактом за окно периода,
+// «% выполнения», весами и взвешенными итогами (% отдела и общий «Natija»).
+app.get('/api/bsc/period', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
+  try {
+    const strat = await bscActiveStrategy(req.user.company_id);
+    if (!strat) return res.json({ strategy: null, departments: [], period: null });
+    const type = ['year', 'half', 'quarter', 'month', 'week'].includes(req.query.type) ? req.query.type : 'month';
+    const no = Math.max(1, Math.min(BSC_PERIOD_COUNT[type], parseInt(req.query.no, 10) || 1));
+    const { from, to } = bscPeriodRange(strat.start_date, type, no);
+
+    const deps = (await pool.query(
+      'SELECT * FROM bsc_departments WHERE strategy_id=$1 ORDER BY display_order, id', [strat.id])).rows;
+    const mets = (await pool.query(
+      `SELECT m.* FROM bsc_metrics m JOIN bsc_departments d ON d.id=m.department_id
+        WHERE d.strategy_id=$1 ORDER BY m.department_id, m.display_order, m.id`, [strat.id])).rows;
+    const ids = mets.map(m => m.id);
+
+    // План на период: явный из bsc_period_plans, иначе — доля годового плана
+    // (год делится на количество таких периодов внутри года).
+    const planRows = ids.length ? (await pool.query(
+      'SELECT metric_id, plan_value FROM bsc_period_plans WHERE metric_id=ANY($1::int[]) AND period_type=$2 AND period_no=$3',
+      [ids, type, no])).rows : [];
+    const planMap = {}; planRows.forEach(r => { planMap[r.metric_id] = parseFloat(r.plan_value) || 0; });
+
+    // Факт за окно периода (ручные метрики).
+    const factRows = ids.length ? (await pool.query(
+      `SELECT metric_id, COALESCE(SUM(fact_value),0) AS f FROM bsc_fact_values
+        WHERE metric_id=ANY($1::int[]) AND fact_date >= $2 AND fact_date < $3 GROUP BY metric_id`,
+      [ids, from, to])).rows : [];
+    const factMap = {}; factRows.forEach(r => { factMap[r.metric_id] = parseFloat(r.f) || 0; });
+
+    // Какой год стратегии покрывает период — из него берём годовой план для дробления.
+    const yearOf = Math.min(3, Math.max(1, Math.floor(
+      (new Date(from) - new Date(strat.start_date)) / (1000 * 60 * 60 * 24 * 365.25)) + 1));
+    const perYear = type === 'week' ? 52 : (12 / (BSC_PERIOD_MONTHS[type] || 12));
+
+    const out = deps.map(d => {
+      const list = mets.filter(m => m.department_id === d.id).map(m => {
+        const yearPlan = parseFloat(m['plan_year_' + yearOf]) || 0;
+        const plan = planMap[m.id] != null ? planMap[m.id] : Math.round((yearPlan / perYear) * 100) / 100;
+        const fact = factMap[m.id] || 0;
+        const pct = plan > 0 ? Math.round((fact / plan) * 1000) / 10 : null;
+        return {
+          id: m.id, name: m.name, unit: m.unit, source_type: m.source_type,
+          weight_pct: parseFloat(m.weight_pct) || 0,
+          plan, fact, pct,
+          plan_explicit: planMap[m.id] != null,
+        };
+      });
+      return {
+        id: d.id, name: d.name, color: d.color,
+        weight_pct: parseFloat(d.weight_pct) || 0,
+        metrics: list,
+        completion: bscWeighted(list.map(x => ({ pct: x.pct, w: x.weight_pct }))),
+      };
+    });
+    // «Natija» — взвешенный итог по отделам.
+    const total = bscWeighted(out.map(d => ({ pct: d.completion, w: d.weight_pct })));
+    res.json({
+      strategy: { id: strat.id, name: strat.name, start_date: strat.start_date },
+      period: { type, no, from, to, count: BSC_PERIOD_COUNT[type] },
+      departments: out, total_score: total,
+    });
+  } catch (e) { console.error('bsc/period err', e); res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/bsc/metric/:id — вес метрики и/или годовые планы.
+app.put('/api/bsc/metric/:id', auth(['admin', 'founder', 'director']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const own = await pool.query(
+      `SELECT m.id FROM bsc_metrics m JOIN bsc_departments d ON d.id=m.department_id
+         JOIN bsc_strategies s ON s.id=d.strategy_id
+        WHERE m.id=$1 AND s.company_id=$2`, [id, req.user.company_id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'Метрика не найдена' });
+    const sets = [], vals = [];
+    const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
+    if (req.body.weight_pct !== undefined) {
+      const w = parseFloat(req.body.weight_pct);
+      if (!Number.isFinite(w) || w < 0 || w > 100) return res.status(400).json({ error: 'Вес: число от 0 до 100' });
+      put('weight_pct', w);
+    }
+    ['plan_year_1', 'plan_year_2', 'plan_year_3'].forEach(k => {
+      if (req.body[k] !== undefined) {
+        const v = parseFloat(req.body[k]);
+        if (Number.isFinite(v) && v >= 0) put(k, v);
+      }
+    });
+    if (req.body.name !== undefined && String(req.body.name).trim()) put('name', String(req.body.name).trim().slice(0, 200));
+    if (!sets.length) return res.json({ ok: true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE bsc_metrics SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING *`, vals);
+    res.json(rows[0]);
+  } catch (e) { console.error('bsc metric PUT', e); res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/bsc/department/:id — вес отдела («Bo'lim muhimligi»).
+app.put('/api/bsc/department/:id', auth(['admin', 'founder', 'director']), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const w = parseFloat(req.body?.weight_pct);
+    if (!Number.isFinite(w) || w < 0 || w > 100) return res.status(400).json({ error: 'Вес: число от 0 до 100' });
+    const { rows } = await pool.query(
+      `UPDATE bsc_departments d SET weight_pct=$1
+         FROM bsc_strategies s
+        WHERE d.id=$2 AND s.id=d.strategy_id AND s.company_id=$3 RETURNING d.*`,
+      [w, id, req.user.company_id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Отдел не найден' });
+    res.json(rows[0]);
+  } catch (e) { console.error('bsc dept PUT', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/bsc/period-plan — план метрики на конкретный период (Reja).
+app.post('/api/bsc/period-plan', auth(['admin', 'founder', 'director', 'manager']), async (req, res) => {
+  try {
+    const metricId = parseInt(req.body?.metric_id, 10);
+    const type = ['year', 'half', 'quarter', 'month', 'week'].includes(req.body?.period_type) ? req.body.period_type : null;
+    const no = parseInt(req.body?.period_no, 10);
+    const val = parseFloat(req.body?.plan_value);
+    if (!metricId || !type || !Number.isFinite(no) || no < 1) return res.status(400).json({ error: 'metric_id, period_type, period_no обязательны' });
+    if (!Number.isFinite(val) || val < 0) return res.status(400).json({ error: 'План: неотрицательное число' });
+    const own = await pool.query(
+      `SELECT m.id FROM bsc_metrics m JOIN bsc_departments d ON d.id=m.department_id
+         JOIN bsc_strategies s ON s.id=d.strategy_id
+        WHERE m.id=$1 AND s.company_id=$2`, [metricId, req.user.company_id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'Метрика не найдена' });
+    const { rows } = await pool.query(
+      `INSERT INTO bsc_period_plans (metric_id, period_type, period_no, plan_value)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (metric_id, period_type, period_no) DO UPDATE SET plan_value = EXCLUDED.plan_value
+       RETURNING *`, [metricId, type, no, val]);
+    res.json(rows[0]);
+  } catch (e) { console.error('bsc period-plan', e); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/bsc/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const strat = await bscActiveStrategy(req.user.company_id);
@@ -5931,6 +6115,75 @@ const TASK_SELECT = `
   LEFT JOIN users uc ON uc.id = t.created_by
 `;
 
+// Матрица «кто кому вправе поставить задачу». Порядок проверок важен: сначала компания
+// (кросс-тенантность), потом ранг, потом филиал. Менеджер без филиала — fail-closed
+// (не назначает никому), иначе он бы дотянулся до сотрудников всех филиалов.
+// Следствие: учредитель → директору/менеджерам/операционным; директор → менеджерам и ниже;
+// менеджер → операционным своего филиала; себе — любая роль.
+function taskCanAssign(actor, target) {
+  if (!actor || !target) return false;
+  if (target.company_id !== actor.company_id) return false;
+  if (target.id === actor.id) return true;                        // задача себе
+  const ra = ROLE_RANK[actor.role] || 0, rt = ROLE_RANK[target.role] || 0;
+  if (!(rt < ra)) return false;                                   // только строго ниже рангом
+  if (actor.role === 'manager') {
+    if (!actor.branch_id) return false;
+    if (target.branch_id !== actor.branch_id) return false;
+  }
+  return true;
+}
+
+// Видимость конкретной задачи (карточка + лента истории).
+function taskVisible(user, row) {
+  if (!user || !row) return false;
+  if (row.company_id !== user.company_id) return false;
+  if (user.role === 'founder' || user.role === 'director') return true;
+  if (user.role === 'manager') {
+    // branch_id != null обязательно: у менеджера без филиала null === null дал бы
+    // доступ ко всем company-level задачам.
+    return (row.branch_id != null && row.branch_id === user.branch_id)
+      || row.assignee_id === user.id || row.created_by === user.id;
+  }
+  return row.assignee_id === user.id;                             // операционные роли
+}
+
+// Право редактировать/удалять задачу. creatorRole нужен директору: задачу, поставленную
+// учредителем, он не трогает. Менеджер — только своя задача и только свой филиал.
+function taskCanEdit(user, row, creatorRole) {
+  if (!user || !row) return false;
+  if (row.company_id !== user.company_id) return false;
+  if (user.role === 'manager') {
+    if (!user.branch_id) return false;                            // fail-closed
+    return row.created_by === user.id && row.branch_id === user.branch_id;
+  }
+  if (row.created_by === user.id) return true;
+  if (user.role === 'founder') return true;
+  if (user.role === 'director') return creatorRole !== 'founder';
+  return false;
+}
+
+// Событие задачи = строка истории + адресованное уведомление. Не async: fire-and-forget
+// с логом ошибки (образец — audit()). Уведомления самому себе не создаём — recipient_id
+// схлопывается в NULL, при этом запись истории остаётся.
+function taskNotify(req, { task, kind, recipient_id = null, from_status = null, to_status = null, payload = null }) {
+  if (!task) return;
+  const actorId = req.user?.id || null;
+  const rid = (recipient_id && recipient_id !== actorId) ? recipient_id : null;
+  pool.query(
+    `INSERT INTO task_events
+       (company_id, branch_id, task_id, actor_id, recipient_id, kind, from_status, to_status, payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [task.company_id || req.user?.company_id || null, task.branch_id ?? null, task.id, actorId, rid,
+     kind, from_status, to_status, payload ? JSON.stringify(payload) : null]
+  ).catch(e => console.error('task event insert error', e.message));
+}
+
+// Перечитать задачу тем же SELECT, что и список — форма ответа одна на всех роутах.
+async function taskReload(id) {
+  const { rows } = await pool.query(`${TASK_SELECT} WHERE t.id = $1`, [id]);
+  return rows[0] || null;
+}
+
 // GET /api/tasks?branch_id&view=kanban|list&status&period
 // kanban → { columns:{todo:[],in_progress:[],done:[]}, metrics }
 // list   → { items:[], metrics }
@@ -5944,9 +6197,17 @@ app.get('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async (
     const period = TASK_PERIODS[req.query.period] ? req.query.period : 'week';
     const windowDays = TASK_PERIODS[period];
 
+    // include_company_level=1 — брать и задачи без филиала. Без него задачи директору
+    // (у него branch_id IS NULL) пропадают с доски учредителя, как только тот выбрал филиал.
+    const withCompanyLevel = req.query.include_company_level === '1' || req.query.include_company_level === 'true';
     const baseParams = [companyId];
     let where = ' WHERE t.company_id = $1';
-    if (branchId) { baseParams.push(branchId); where += ` AND t.branch_id = $${baseParams.length}`; }
+    if (branchId) {
+      baseParams.push(branchId);
+      where += withCompanyLevel
+        ? ` AND (t.branch_id = $${baseParams.length} OR t.branch_id IS NULL)`
+        : ` AND t.branch_id = $${baseParams.length}`;
+    }
 
     // --- метрики (всегда по полному скоупу, без statusFilter) ---
     const mParams = baseParams.slice();
@@ -5977,6 +6238,15 @@ app.get('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async (
     const itemParams = baseParams.slice();
     let itemWhere = where;
     if (statusFilter) { itemParams.push(statusFilter); itemWhere += ` AND t.status = $${itemParams.length}`; }
+    // Необязательные фильтры доски. Метрик выше они НЕ касаются — те всегда по полному скоупу.
+    const scope = ['by_me', 'to_me'].includes(req.query.scope) ? req.query.scope : 'all';
+    if (scope === 'by_me') { itemParams.push(req.user.id); itemWhere += ` AND t.created_by = $${itemParams.length}`; }
+    else if (scope === 'to_me') { itemParams.push(req.user.id); itemWhere += ` AND t.assignee_id = $${itemParams.length}`; }
+    const fAssignee = parseInt(req.query.assignee_id, 10);
+    if (Number.isFinite(fAssignee)) { itemParams.push(fAssignee); itemWhere += ` AND t.assignee_id = $${itemParams.length}`; }
+    const fCreatedBy = parseInt(req.query.created_by, 10);
+    if (Number.isFinite(fCreatedBy)) { itemParams.push(fCreatedBy); itemWhere += ` AND t.created_by = $${itemParams.length}`; }
+    if (TASK_PRIORITIES.includes(req.query.priority)) { itemParams.push(req.query.priority); itemWhere += ` AND t.priority = $${itemParams.length}`; }
     const itemsQ = await pool.query(`
       ${TASK_SELECT} ${itemWhere}
       ORDER BY
@@ -6014,14 +6284,19 @@ app.post('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async 
     const prio = TASK_PRIORITIES.includes(priority) ? priority : 'medium';
     const tagsArr = Array.isArray(tags) ? tags.filter(x => typeof x === 'string' && x.trim()).slice(0, 20) : null;
 
-    // assignee должен принадлежать той же компании (и филиалу — у менеджера)
-    let assigneeId = assignee_id ? parseInt(assignee_id, 10) : null;
+    // assignee — по общей матрице прав (компания → ранг → филиал у менеджера)
+    const assigneeId = assignee_id ? parseInt(assignee_id, 10) : null;
+    let assigneeBranch = null;
     if (assigneeId) {
-      const u = await pool.query('SELECT id, company_id, branch_id FROM users WHERE id = $1', [assigneeId]);
-      const row = u.rows[0];
-      if (!row || row.company_id !== companyId) return res.status(400).json({ error: 'Исполнитель не из вашей компании' });
-      if (isManager && row.branch_id !== req.user.branch_id) return res.status(403).json({ error: 'Исполнитель вне вашего филиала' });
+      const u = await pool.query('SELECT id, company_id, branch_id, role FROM users WHERE id = $1', [assigneeId]);
+      const target = u.rows[0];
+      if (!target) return res.status(400).json({ error: 'Исполнитель не найден' });
+      if (!taskCanAssign(req.user, target)) return res.status(403).json({ error: 'Вы не можете ставить задачи этому сотруднику' });
+      assigneeBranch = target.branch_id || null;
     }
+    // Филиал задачи определяет исполнитель: фронт всегда шлёт текущий выбранный филиал,
+    // и при несовпадении задача уехала бы в чужой филиал (исполнитель её не увидел бы на доске).
+    if (assigneeBranch) branchId = assigneeBranch;
 
     const ins = await pool.query(`
       INSERT INTO tasks (company_id, branch_id, title, description, assignee_id, created_by, priority, due_date, due_time, status, source, tags)
@@ -6030,7 +6305,11 @@ app.post('/api/tasks', auth(['admin', 'director', 'founder', 'manager']), async 
     `, [companyId, branchId, String(title).trim(), description || null, assigneeId, req.user.id, prio,
         due_date || null, due_time || null, tagsArr]);
     audit(req, 'create', 'task', ins.rows[0].id, null, { title: ins.rows[0].title, source: 'manual' });
-    res.json({ ok: true, task: ins.rows[0] });
+    const task = (await taskReload(ins.rows[0].id)) || ins.rows[0];
+    if (assigneeId) {
+      taskNotify(req, { task, kind: 'assigned', recipient_id: assigneeId, to_status: task.status, payload: { title: task.title } });
+    }
+    res.json({ ok: true, task });
   } catch (e) {
     if (e.statusCode === 403) return res.status(403).json({ error: e.message });
     console.error('task create err', e);
@@ -6053,9 +6332,13 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manage
     const cur = await pool.query('SELECT * FROM tasks WHERE id=$1 AND company_id=$2', [id, companyId]);
     const row = cur.rows[0];
     if (!row) return res.status(404).json({ error: 'Задача не найдена' });
-    // менеджер — только задачи своего филиала
-    if (req.user.role === 'manager' && row.branch_id && row.branch_id !== req.user.branch_id) {
-      return res.status(403).json({ error: 'Out of branch scope' });
+    // менеджер — своя задача, задача своего филиала либо им же поставленная;
+    // ветка created_by намеренно НЕ открывает чужой филиал.
+    if (req.user.role === 'manager') {
+      const allowed = row.assignee_id === req.user.id
+        || (row.branch_id != null && row.branch_id === req.user.branch_id)
+        || (row.created_by === req.user.id && (row.branch_id == null || row.branch_id === req.user.branch_id));
+      if (!allowed) return res.status(403).json({ error: 'Out of branch scope' });
     }
     // операционные роли — только свою задачу и без отмены
     if (['cashier', 'seller', 'warehouse'].includes(req.user.role)) {
@@ -6076,7 +6359,18 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manage
       WHERE id = $1 RETURNING *
     `, [id, next, setStarted, setCompleted, !!clearCompleted]);
     audit(req, 'status', 'task', id, { status: row.status }, { status: next });
-    res.json({ ok: true, task: upd.rows[0] });
+    const task = (await taskReload(id)) || upd.rows[0];
+    // Уведомляем ОБЕ стороны, кроме самого актора: иначе постановщик не узнаёт,
+    // что статус двинуло третье лицо. Если уведомлять некого — пишем только историю.
+    const recipients = [...new Set([row.assignee_id, row.created_by].filter(x => x && x !== req.user.id))];
+    if (recipients.length) {
+      for (const rid of recipients) {
+        taskNotify(req, { task, kind: 'status', recipient_id: rid, from_status: row.status, to_status: next });
+      }
+    } else {
+      taskNotify(req, { task, kind: 'status', from_status: row.status, to_status: next });
+    }
+    res.json({ ok: true, task });
   } catch (e) {
     console.error('task status err', e);
     res.status(500).json({ error: e.message });
@@ -6088,16 +6382,23 @@ app.patch('/api/tasks/:id/status', auth(['admin', 'director', 'founder', 'manage
 app.get('/api/tasks/my', auth(['admin', 'director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    if (!companyId) return res.json({ metrics: { active: 0, overdue: 0, done_today: 0 }, items: [] });
+    if (!companyId) return res.json({ metrics: { active: 0, overdue: 0, done_today: 0, unread: 0 }, items: [] });
     try { if (typeof generateTasksFromTemplates === 'function') await generateTasksFromTemplates(companyId); } catch {}
+    // Обёртка над TASK_SELECT нужна ради флага unread — непрочитанные события по задаче
+    // (это и есть бейдж «Новая» в окне сотрудника).
     const q = await pool.query(`
-      ${TASK_SELECT}
-      WHERE t.company_id = $1 AND t.assignee_id = $2 AND t.status != 'cancelled'
-        AND (t.status IN ('todo','in_progress') OR t.completed_at >= NOW() - INTERVAL '14 days')
+      SELECT q.*,
+             EXISTS(SELECT 1 FROM task_events te
+                     WHERE te.task_id = q.id AND te.recipient_id = $2 AND te.read_at IS NULL) AS unread
+      FROM (
+        ${TASK_SELECT}
+        WHERE t.company_id = $1 AND t.assignee_id = $2 AND t.status != 'cancelled'
+          AND (t.status IN ('todo','in_progress') OR t.completed_at >= NOW() - INTERVAL '14 days')
+      ) q
       ORDER BY
-        CASE t.status WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
-        CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-        t.due_date ASC NULLS LAST, t.created_at DESC
+        CASE q.status WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
+        CASE q.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+        q.due_date ASC NULLS LAST, q.created_at DESC
       LIMIT 200
     `, [companyId, req.user.id]);
     const items = q.rows;
@@ -6105,6 +6406,7 @@ app.get('/api/tasks/my', auth(['admin', 'director', 'founder', 'manager', 'cashi
       active: items.filter(t => t.status === 'todo' || t.status === 'in_progress').length,
       overdue: items.filter(t => t.overdue).length,
       done_today: items.filter(t => t.status === 'done' && t.completed_at && new Date(t.completed_at).toDateString() === new Date().toDateString()).length,
+      unread: items.filter(t => t.unread).length,
     };
     res.json({ metrics, items });
   } catch (e) {
@@ -6135,11 +6437,15 @@ app.post('/api/tasks/from-alert', auth(['admin', 'director', 'founder', 'manager
     if (dup.rows[0]) return res.status(409).json({ error: 'Задача по этому алерту уже создана', task_id: dup.rows[0].id });
 
     const prio = alert.severity === 'critical' ? 'critical' : (alert.severity === 'warning' ? 'high' : 'medium');
-    const branchId = req.user.role === 'manager' ? req.user.branch_id : (alert.branch_id || null);
-    let assigneeId = req.body.assignee_id ? parseInt(req.body.assignee_id, 10) : null;
+    let branchId = req.user.role === 'manager' ? req.user.branch_id : (alert.branch_id || null);
+    // Тот же контроль, что и в POST /api/tasks — иначе это обходной путь мимо матрицы прав.
+    const assigneeId = req.body.assignee_id ? parseInt(req.body.assignee_id, 10) : null;
     if (assigneeId) {
-      const u = await pool.query('SELECT id, company_id FROM users WHERE id=$1', [assigneeId]);
-      if (!u.rows[0] || u.rows[0].company_id !== companyId) assigneeId = null;
+      const u = await pool.query('SELECT id, company_id, branch_id, role FROM users WHERE id=$1', [assigneeId]);
+      const target = u.rows[0];
+      if (!target) return res.status(400).json({ error: 'Исполнитель не найден' });
+      if (!taskCanAssign(req.user, target)) return res.status(403).json({ error: 'Вы не можете ставить задачи этому сотруднику' });
+      if (target.branch_id) branchId = target.branch_id;   // филиал задачи следует за исполнителем
     }
 
     // Срок по серьёзности: critical — сегодня, warning(high) — +1 день, иначе +3 дня.
@@ -6151,7 +6457,11 @@ app.post('/api/tasks/from-alert', auth(['admin', 'director', 'founder', 'manager
       RETURNING *
     `, [companyId, branchId, alert.title, alert.description || null, assigneeId, req.user.id, prio, alertId, dueDays]);
     audit(req, 'create', 'task', ins.rows[0].id, null, { source: 'system', source_alert_id: alertId });
-    res.json({ ok: true, task: ins.rows[0] });
+    const task = (await taskReload(ins.rows[0].id)) || ins.rows[0];
+    if (assigneeId) {
+      taskNotify(req, { task, kind: 'assigned', recipient_id: assigneeId, to_status: task.status, payload: { title: task.title, source: 'system' } });
+    }
+    res.json({ ok: true, task });
   } catch (e) {
     console.error('task from-alert err', e);
     res.status(500).json({ error: e.message });
@@ -6707,6 +7017,300 @@ app.get('/api/tasks/analytics', auth(['admin', 'director', 'founder', 'manager']
   }
 });
 
+// =====================================================================
+// === Ролевые дашборды: исполнители, карточка задачи, история, уведомления ===
+// =====================================================================
+// ⚠ ПОРЯДОК ОБЪЯВЛЕНИЯ: числовые :id-роуты идут ПОСЛЕ литеральных /api/tasks/my,
+// /api/tasks/analytics, /api/tasks/assignees и каждый начинается с guard'а на \d+ —
+// иначе ':id' перехватил бы эти пути и вернул «Задача не найдена».
+// Роль admin в auth() новых роутов НЕ добавляем: глобальный middleware всё равно
+// отдаёт ей 403 на всё вне ADMIN_ALLOWED_PREFIXES (граница данных SaaS-оператора).
+
+// GET /api/tasks/assignees — кому текущий пользователь вправе поставить задачу.
+app.get('/api/tasks/assignees', auth(['director', 'founder', 'manager']), async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.company_id, u.branch_id,
+             b.name AS branch_name
+      FROM users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+      WHERE u.company_id = $1 AND u.role <> 'admin' AND COALESCE(u.is_blocked, false) = false
+      ORDER BY u.id
+    `, [req.user.company_id]);
+    // Постфильтр по той же матрице, что и запись — список не может обещать больше, чем POST примет.
+    const items = rows.filter(u => taskCanAssign(req.user, u)).map(u => ({
+      id: u.id,
+      username: u.username,
+      first_name: u.first_name,
+      last_name: u.last_name,
+      role: u.role,
+      branch_id: u.branch_id,
+      branch_name: u.branch_name || null,
+      is_self: u.id === req.user.id,
+    }));
+    res.json(items);
+  } catch (e) {
+    console.error('tasks assignees err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tasks/:id — карточка задачи (все роли, доступ через taskVisible)
+app.get('/api/tasks/:id', auth(['director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res, next) => {
+  if (!/^\d+$/.test(req.params.id)) return next();
+  try {
+    const task = await taskReload(parseInt(req.params.id, 10));
+    if (!task) return res.status(404).json({ error: 'Задача не найдена' });
+    if (!taskVisible(req.user, task)) return res.status(403).json({ error: 'Нет доступа к задаче' });
+    res.json({ task });
+  } catch (e) {
+    console.error('task get err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/tasks/:id — частичное обновление (только переданные ключи).
+app.patch('/api/tasks/:id', auth(['director', 'founder', 'manager']), async (req, res, next) => {
+  if (!/^\d+$/.test(req.params.id)) return next();
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cur = await pool.query(`
+      SELECT t.*, uc.role AS creator_role
+      FROM tasks t LEFT JOIN users uc ON uc.id = t.created_by
+      WHERE t.id = $1 AND t.company_id = $2`, [id, req.user.company_id]);
+    const row = cur.rows[0];
+    if (!row) return res.status(404).json({ error: 'Задача не найдена' });
+    if (!taskCanEdit(req.user, row, row.creator_role)) return res.status(403).json({ error: 'Нет прав на изменение этой задачи' });
+
+    const body = req.body || {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+    const sets = [], params = [id];
+    const add = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+
+    if (has('title')) {
+      const t = String(body.title || '').trim();
+      if (!t) return res.status(400).json({ error: 'Укажите название задачи' });
+      add('title', t);
+    }
+    if (has('description')) add('description', body.description || null);
+    if (has('priority')) {
+      if (!TASK_PRIORITIES.includes(body.priority)) return res.status(400).json({ error: 'Недопустимый приоритет' });
+      add('priority', body.priority);
+    }
+    if (has('due_date')) add('due_date', body.due_date || null);
+    if (has('due_time')) add('due_time', body.due_time || null);
+    if (has('tags')) {
+      add('tags', Array.isArray(body.tags) ? body.tags.filter(x => typeof x === 'string' && x.trim()).slice(0, 20) : null);
+    }
+
+    let assigneeChanged = false;
+    if (has('assignee_id')) {
+      const newAssignee = body.assignee_id ? parseInt(body.assignee_id, 10) : null;
+      if (newAssignee) {
+        const u = await pool.query('SELECT id, company_id, branch_id, role FROM users WHERE id = $1', [newAssignee]);
+        const target = u.rows[0];
+        if (!target) return res.status(400).json({ error: 'Исполнитель не найден' });
+        if (!taskCanAssign(req.user, target)) return res.status(403).json({ error: 'Вы не можете ставить задачи этому сотруднику' });
+        if (target.branch_id) add('branch_id', target.branch_id);  // филиал следует за исполнителем
+      }
+      assigneeChanged = (newAssignee || null) !== (row.assignee_id || null);
+      add('assignee_id', newAssignee);
+    }
+
+    let statusChanged = false;
+    if (has('status')) {
+      const nextStatus = body.status;
+      if (!TASK_STATUSES.includes(nextStatus)) return res.status(400).json({ error: 'Недопустимый статус' });
+      statusChanged = nextStatus !== row.status;
+      add('status', nextStatus);
+      params.push(nextStatus === 'in_progress' && !row.started_at);
+      sets.push(`started_at = CASE WHEN $${params.length} THEN NOW() ELSE started_at END`);
+      params.push(nextStatus === 'done');
+      const pDone = params.length;
+      params.push(nextStatus !== 'done' && !!row.completed_at);
+      sets.push(`completed_at = CASE WHEN $${pDone} THEN NOW() WHEN $${params.length} THEN NULL ELSE completed_at END`);
+    }
+
+    if (!sets.length) return res.json({ ok: true, task: await taskReload(id) });
+    sets.push('updated_at = NOW()');
+    await pool.query(`UPDATE tasks SET ${sets.join(', ')} WHERE id = $1`, params);
+
+    const task = await taskReload(id);
+    audit(req, 'update', 'task', id,
+      { status: row.status, assignee_id: row.assignee_id, title: row.title },
+      { status: task.status, assignee_id: task.assignee_id, title: task.title });
+
+    if (assigneeChanged) {
+      if (row.assignee_id) taskNotify(req, { task, kind: 'unassigned', recipient_id: row.assignee_id, payload: { title: task.title } });
+      if (task.assignee_id) taskNotify(req, { task, kind: 'assigned', recipient_id: task.assignee_id, payload: { title: task.title } });
+    }
+    // Общее событие. Получатели — обе стороны, кроме актора (тот же случай, что и в
+    // /:id/status: статус двинуло третье лицо, а постановщик не узнал). При смене
+    // исполнителя адресатов не дублируем — им уже ушли assigned/unassigned,
+    // остаётся только запись истории (recipient_id = NULL).
+    const updRecipients = assigneeChanged ? []
+      : [...new Set([task.assignee_id, row.created_by].filter(x => x && x !== req.user.id))];
+    const updEvent = {
+      task,
+      kind: statusChanged ? 'status' : 'updated',
+      from_status: statusChanged ? row.status : null,
+      to_status: statusChanged ? task.status : null,
+    };
+    if (updRecipients.length) {
+      for (const rid of updRecipients) taskNotify(req, { ...updEvent, recipient_id: rid });
+    } else {
+      taskNotify(req, updEvent);
+    }
+    res.json({ ok: true, task });
+  } catch (e) {
+    console.error('task patch err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/tasks/:id — физическое удаление задачи вместе с её историей.
+app.delete('/api/tasks/:id', auth(['director', 'founder', 'manager']), async (req, res, next) => {
+  if (!/^\d+$/.test(req.params.id)) return next();
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cur = await pool.query(`
+      SELECT t.*, uc.role AS creator_role
+      FROM tasks t LEFT JOIN users uc ON uc.id = t.created_by
+      WHERE t.id = $1 AND t.company_id = $2`, [id, req.user.company_id]);
+    const row = cur.rows[0];
+    if (!row) return res.status(404).json({ error: 'Задача не найдена' });
+    if (!taskCanEdit(req.user, row, row.creator_role)) return res.status(403).json({ error: 'Нет прав на удаление этой задачи' });
+
+    const recipients = [...new Set([row.assignee_id, row.created_by].filter(x => x && x !== req.user.id))];
+    // ПОРЯДОК: сначала чистим историю задачи, потом пишем «удалена». Обратный порядок
+    // (как fire-and-forget taskNotify) смыл бы само уведомление этой же чисткой.
+    // Название кладём в payload — самой задачи после DELETE уже не будет.
+    await pool.query('DELETE FROM task_events WHERE task_id = $1', [id]);
+    for (const rid of recipients) {
+      await pool.query(`
+        INSERT INTO task_events (company_id, branch_id, task_id, actor_id, recipient_id, kind, payload)
+        VALUES ($1,$2,$3,$4,$5,'deleted',$6)`,
+        [row.company_id, row.branch_id, id, req.user.id, rid, JSON.stringify({ title: row.title })]);
+    }
+    await pool.query('DELETE FROM tasks WHERE id = $1 AND company_id = $2', [id, req.user.company_id]);
+    audit(req, 'delete', 'task', id, { title: row.title, status: row.status }, null);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('task delete err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tasks/:id/events — лента истории задачи (кто и когда что менял).
+app.get('/api/tasks/:id/events', auth(['director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res, next) => {
+  if (!/^\d+$/.test(req.params.id)) return next();
+  try {
+    const id = parseInt(req.params.id, 10);
+    const task = await taskReload(id);
+    if (!task) return res.status(404).json({ error: 'Задача не найдена' });
+    if (!taskVisible(req.user, task)) return res.status(403).json({ error: 'Нет доступа к задаче' });
+    const { rows } = await pool.query(`
+      SELECT e.id, e.kind, e.from_status, e.to_status, e.actor_id, e.payload, e.created_at,
+             COALESCE(NULLIF(TRIM(COALESCE(ua.first_name,'') || ' ' || COALESCE(ua.last_name,'')), ''), ua.username) AS actor_name
+      FROM task_events e
+      LEFT JOIN users ua ON ua.id = e.actor_id
+      WHERE e.task_id = $1
+      ORDER BY e.created_at ASC
+      LIMIT 100
+    `, [id]);
+    res.json(rows);
+  } catch (e) {
+    console.error('task events err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/notifications/count — лёгкий счётчик для поллинга колокольчика.
+// ⚠ generateTasksFromTemplates здесь НЕ вызываем: это единственный роут, который
+// дёргается по таймеру, генерация задач на каждый тик разогнала бы БД.
+app.get('/api/notifications/count', auth(['director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
+  try {
+    const uid = req.user.id;
+    const companyId = req.user.company_id || null;
+    const { rows } = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM task_events te
+          WHERE te.recipient_id = $1 AND te.read_at IS NULL
+            AND ($2::int IS NULL OR te.company_id = $2))::int AS unread,
+        (SELECT COUNT(*) FROM tasks t
+          WHERE t.assignee_id = $1 AND t.status IN ('todo','in_progress')
+            AND ($2::int IS NULL OR t.company_id = $2))::int AS active,
+        (SELECT COUNT(*) FROM tasks t
+          WHERE t.assignee_id = $1 AND t.status IN ('todo','in_progress')
+            AND t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE
+            AND ($2::int IS NULL OR t.company_id = $2))::int AS overdue
+    `, [uid, companyId]);
+    const r = rows[0] || {};
+    res.json({ unread: r.unread || 0, active: r.active || 0, overdue: r.overdue || 0 });
+  } catch (e) {
+    console.error('notifications count err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/notifications?limit&only_unread — лента уведомлений текущего пользователя.
+app.get('/api/notifications', auth(['director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
+  try {
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit <= 0) limit = 30;
+    limit = Math.min(limit, 100);
+    const onlyUnread = req.query.only_unread === '1' || req.query.only_unread === 'true';
+    const { rows } = await pool.query(`
+      SELECT e.id, e.kind, e.task_id, e.from_status, e.to_status, e.created_at, e.read_at,
+             COALESCE(t.title, e.payload->>'title') AS task_title,
+             t.status AS task_status,
+             COALESCE(NULLIF(TRIM(COALESCE(ua.first_name,'') || ' ' || COALESCE(ua.last_name,'')), ''), ua.username) AS actor_name
+      FROM task_events e
+      LEFT JOIN tasks t ON t.id = e.task_id
+      LEFT JOIN users ua ON ua.id = e.actor_id
+      WHERE e.recipient_id = $1 ${onlyUnread ? 'AND e.read_at IS NULL' : ''}
+      ORDER BY e.created_at DESC
+      LIMIT $2
+    `, [req.user.id, limit]);
+    res.json(rows);
+  } catch (e) {
+    console.error('notifications list err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/notifications/read { ids:[] } | { task_id } | { all:true }
+app.post('/api/notifications/read', auth(['director', 'founder', 'manager', 'cashier', 'seller', 'warehouse']), async (req, res) => {
+  try {
+    const uid = req.user.id;
+    const body = req.body || {};
+    let q;
+    if (body.all === true || body.all === 'true') {
+      q = await pool.query('UPDATE task_events SET read_at = NOW() WHERE recipient_id = $1 AND read_at IS NULL', [uid]);
+    } else if (Array.isArray(body.ids)) {
+      const ids = body.ids.map(x => parseInt(x, 10)).filter(x => Number.isFinite(x)).slice(0, 500);
+      if (!ids.length) return res.json({ ok: true, updated: 0 });
+      q = await pool.query(
+        'UPDATE task_events SET read_at = NOW() WHERE recipient_id = $1 AND read_at IS NULL AND id = ANY($2::int[])',
+        [uid, ids]);
+    } else if (body.task_id != null) {
+      // допускаем и массив: окно «Мои дела» гасит бейджи сразу по всем видимым задачам
+      const tids = (Array.isArray(body.task_id) ? body.task_id : [body.task_id])
+        .map(x => parseInt(x, 10)).filter(x => Number.isFinite(x)).slice(0, 500);
+      if (!tids.length) return res.json({ ok: true, updated: 0 });
+      q = await pool.query(
+        'UPDATE task_events SET read_at = NOW() WHERE recipient_id = $1 AND read_at IS NULL AND task_id = ANY($2::int[])',
+        [uid, tids]);
+    } else {
+      return res.status(400).json({ error: 'Укажите ids, task_id или all' });
+    }
+    res.json({ ok: true, updated: q.rowCount || 0 });
+  } catch (e) {
+    console.error('notifications read err', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============================================================================
 // ШАБЛОНЫ ПРОЦЕССОВ (task-templates) — авто-генерация повторяющихся задач
 // Префикс хелперов/констант: tt*/TT_* . Менеджер скоупится филиалом.
@@ -6770,16 +7374,27 @@ async function generateTasksFromTemplates(companyId) {
   for (const tpl of tpls) {
     if (!ttMatchesRecurrence(tpl.recurrence, today)) continue;
     const assigneeId = await ttResolveAssignee(tpl, companyId);
-    await pool.query(
+    const ins = await pool.query(
       `INSERT INTO tasks
          (company_id, branch_id, title, description, assignee_id, created_by,
           priority, due_date, due_time, status, source, source_template_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,'todo','template',$10,NOW(),NOW())
-       ON CONFLICT (source_template_id, due_date) WHERE source_template_id IS NOT NULL DO NOTHING`,
+       ON CONFLICT (source_template_id, due_date) WHERE source_template_id IS NOT NULL DO NOTHING
+       RETURNING id, company_id, branch_id, assignee_id, title`,
       [companyId, tpl.branch_id, tpl.title, tpl.description, assigneeId, tpl.created_by,
        TT_PRIORITIES.includes(tpl.priority) ? tpl.priority : 'medium',
        dueDate, tpl.recurrence_time || null, tpl.id]
     );
+    // При ON CONFLICT строк нет — уведомление создаётся ровно один раз на реально
+    // вставленную задачу (функция вызывается compute-on-read на каждый GET).
+    const created = ins.rows[0];
+    if (created && created.assignee_id) {
+      // actor = система (id null), поэтому получатель уведомление увидит.
+      taskNotify({ user: { id: null, company_id: companyId } }, {
+        task: created, kind: 'assigned', recipient_id: created.assignee_id,
+        to_status: 'todo', payload: { title: created.title, source: 'template' },
+      });
+    }
   }
 }
 
@@ -13646,6 +14261,21 @@ async function ensureSchema() {
         display_order INT DEFAULT 0
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_metric_dept ON bsc_metrics(department_id, display_order)`);
+    // ССП по образцу таблицы клиента: у КАЖДОЙ метрики свой вес («Muhimligi»)
+    // внутри отдела. 0 у всех метрик отдела = равные веса (обратная совместимость).
+    await pool.query(`ALTER TABLE bsc_metrics ADD COLUMN IF NOT EXISTS weight_pct NUMERIC(5,2) NOT NULL DEFAULT 0`);
+    // Планы мельче года: 3 года → год → полугодие → квартал → месяц → неделя.
+    // period_no — порядковый номер периода от даты старта стратегии (1-based).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bsc_period_plans (
+        id          SERIAL PRIMARY KEY,
+        metric_id   INT  NOT NULL REFERENCES bsc_metrics(id) ON DELETE CASCADE,
+        period_type TEXT NOT NULL,
+        period_no   INT  NOT NULL,
+        plan_value  NUMERIC(15,2) NOT NULL DEFAULT 0,
+        UNIQUE (metric_id, period_type, period_no)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bsc_pplan ON bsc_period_plans(metric_id, period_type, period_no)`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bsc_fact_values (
@@ -14230,6 +14860,32 @@ CREATE INDEX IF NOT EXISTS idx_course_progress_lesson ON course_progress(lesson_
       `);
       console.log('wow_bep schema OK');
     } catch (wb) { console.error('wow_bep schema err', wb.message); }
+
+    // События задач: строка = одновременно запись истории задачи и адресованное
+    // уведомление (recipient_id NULL → только история, без уведомления).
+    // TIMESTAMP без tz — как в соседней tasks. Свой try: падение не должно оборвать
+    // последующие миграции (общий try на всю ensureSchema один).
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS task_events (
+          id           SERIAL PRIMARY KEY,
+          company_id   INTEGER NOT NULL,
+          branch_id    INTEGER,
+          task_id      INTEGER NOT NULL,
+          actor_id     INTEGER,
+          recipient_id INTEGER,
+          kind         VARCHAR(20) NOT NULL,
+          from_status  VARCHAR(20),
+          to_status    VARCHAR(20),
+          payload      JSONB,
+          read_at      TIMESTAMP,
+          created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_events_inbox ON task_events (recipient_id, read_at, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_task_events_task  ON task_events (task_id, created_at);
+      `);
+      console.log('task_events schema OK');
+    } catch (te) { console.error('task_events schema err', te.message); }
 
     console.log('schema OK');
   } catch (e) {
@@ -19054,7 +19710,10 @@ app.patch('/api/hr/absences/:id/approve', auth(['admin', 'director', 'founder', 
 
 // ===== salaries =====
 // ===== Зарплата (ФОТ) — свод + таблица по сотрудникам =====
-app.get('/api/hr/salaries', auth(['admin', 'director', 'founder']), async (req, res) => {
+// Менеджер допущен (2026-07-29, просьба клиента) — но ТОЛЬКО по своему филиалу:
+// getBranchFilter для роли manager жёстко возвращает его branch_id (подменить
+// через ?branch_id нельзя), поэтому чужие филиалы недостижимы.
+app.get('/api/hr/salaries', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19064,7 +19723,14 @@ app.get('/api/hr/salaries', auth(['admin', 'director', 'founder']), async (req, 
     // Сотрудники компании (без admin), опц. скоуп по филиалу
     const params = [companyId];
     let branchCond = '';
-    if (branchId) { params.push(branchId); branchCond = `AND (u.branch_id = $${params.length} OR u.branch_id IS NULL)`; }
+    if (branchId) {
+      params.push(branchId);
+      // Менеджеру НЕ подмешиваем безфилиальных (учредитель/директор) — иначе их оклады
+      // попадали и в rows, и в summary его ведомости.
+      branchCond = req.user.role === 'manager'
+        ? `AND u.branch_id = $${params.length}`
+        : `AND (u.branch_id = $${params.length} OR u.branch_id IS NULL)`;
+    }
 
     const { rows: users } = await pool.query(`
       SELECT u.id, u.username, u.first_name, u.last_name, u.role, u.branch_id
@@ -19114,12 +19780,16 @@ app.get('/api/hr/salaries', auth(['admin', 'director', 'founder']), async (req, 
       bonus: a.bonus + r.bonus, penalty: a.penalty + r.penalty, total: a.total + r.total,
     }), { base: 0, commission: 0, bonus: 0, penalty: 0, total: 0 });
 
-    // История выплаченных периодов
+    // История выплаченных периодов — в том же скоупе филиала, что и остальная выдача,
+    // иначе менеджер видел выплаченный ФОТ ВСЕЙ компании за 12 периодов.
+    const histParams = [companyId];
+    let histBranch = '';
+    if (branchId) { histParams.push(branchId); histBranch = `AND branch_id = $${histParams.length}`; }
     const { rows: history } = await pool.query(`
       SELECT period, COUNT(*)::int AS employees, COALESCE(SUM(total), 0) AS total
       FROM salaries
-      WHERE company_id = $1 AND status = 'paid'
-      GROUP BY period ORDER BY period DESC LIMIT 12`, [companyId]);
+      WHERE company_id = $1 AND status = 'paid' ${histBranch}
+      GROUP BY period ORDER BY period DESC LIMIT 12`, histParams);
 
     res.json({
       period, summary, rows,
@@ -19313,7 +19983,8 @@ app.get('/api/hr/productivity', auth(['admin', 'director', 'founder', 'manager']
 
 // ===== hr-adjustments =====
 // ===== HR: Штрафы и бонусы (employee_adjustments) =====
-app.get('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (req, res) => {
+// Менеджер видит штрафы/премии своего филиала (скоуп — getBranchFilter).
+app.get('/api/hr/adjustments', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
@@ -19328,7 +19999,14 @@ app.get('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (re
     // Список сотрудников компании (для формы) с учётом филиала
     const empParams = [companyId];
     let empBranch = '';
-    if (branchId) { empParams.push(branchId); empBranch = `AND (u.branch_id = $${empParams.length} OR u.branch_id IS NULL)`; }
+    if (branchId) {
+      empParams.push(branchId);
+      // Менеджеру — строго свой филиал: мягкое условие отдавало ему имена руководителей
+      // компании (у них branch_id IS NULL).
+      empBranch = req.user.role === 'manager'
+        ? `AND u.branch_id = $${empParams.length}`
+        : `AND (u.branch_id = $${empParams.length} OR u.branch_id IS NULL)`;
+    }
     const { rows: empRows } = await pool.query(`
       SELECT u.id,
              COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username) AS name
@@ -19385,7 +20063,9 @@ app.get('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (re
   } catch (e) { console.error('hr/adjustments GET err', e); res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (req, res) => {
+// Менеджер может ставить штрафы/премии — но ТОЛЬКО сотрудникам своего филиала
+// (проверка ниже; без неё роль с пином к филиалу смогла бы оштрафовать чужого).
+app.post('/api/hr/adjustments', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const { employee_id, type, category, amount, note } = req.body;
@@ -19399,6 +20079,15 @@ app.post('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (r
       `SELECT id, branch_id FROM users WHERE id = $1 AND company_id = $2 AND role <> 'admin'`,
       [employee_id, companyId]);
     if (!emp[0]) return res.status(404).json({ error: 'Сотрудник не найден' });
+    // Роли с пином к филиалу (manager) — только «свои» сотрудники. Fail-closed: сотрудник
+    // без филиала (учредитель/директор) менеджеру недоступен — иначе штраф проходил,
+    // но пропадал из его же выдачи, отфильтрованной по branch_id.
+    const myBranch = getBranchFilter(req.user, {});
+    if (req.user.role === 'manager') {
+      if (!myBranch || myBranch < 0 || !emp[0].branch_id || emp[0].branch_id !== myBranch) {
+        return res.status(403).json({ error: 'Сотрудник другого филиала' });
+      }
+    }
 
     const { rows } = await pool.query(`
       INSERT INTO employee_adjustments
@@ -19412,7 +20101,8 @@ app.post('/api/hr/adjustments', auth(['admin', 'director', 'founder']), async (r
 });
 
 // ===== hr-forecast =====
-app.get('/api/hr/forecast', auth(['admin', 'director', 'founder']), async (req, res) => {
+// Прогноз по персоналу — менеджеру по его филиалу (getBranchFilter).
+app.get('/api/hr/forecast', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);

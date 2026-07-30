@@ -22,7 +22,10 @@ function curPeriod() {
 
 export default function SalariesTool() {
   const { tt } = useTt();
-  const { branchId } = useContext(BranchScope);
+  const { branchId, role } = useContext(BranchScope);
+  // PATCH /hr/salaries/:id/approve|pay сервер отдаёт только director/founder —
+  // менеджеру кнопки не показываем, иначе каждый клик гарантированный 403.
+  const canSettle = role === 'founder' || role === 'director';
   const [period, setPeriod] = useState(curPeriod());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -55,10 +58,15 @@ export default function SalariesTool() {
 
   useEffect(() => load(), [load]);
 
-  const act = async (id, action) => {
-    setBusy(id + action);
+  // Тело обязано нести начисления строки: approve делает UPSERT и берёт
+  // base/bonus/penalty из запроса (комиссию пересчитывает сам). Пустое тело
+  // записывало нули поверх сохранённых сумм — ФОТ схлопывался в одну комиссию.
+  const act = async (row, action) => {
+    setBusy(row.employee_id + action);
     try {
-      await api.patch(`/hr/salaries/${id}/${action}`, { period });
+      await api.patch(`/hr/salaries/${row.employee_id}/${action}`, {
+        period, base: row.base, bonus: row.bonus, penalty: row.penalty,
+      });
       load();
     } catch (e) {
       setError(e.response?.data?.error || e.message);
@@ -107,7 +115,7 @@ export default function SalariesTool() {
                     <th style={{ textAlign: 'right' }}>{tt('Штраф')}</th>
                     <th style={{ textAlign: 'right' }}>{tt('К выплате')}</th>
                     <th>{tt('Статус')}</th>
-                    <th style={{ textAlign: 'right' }}>{tt('Действия')}</th>
+                    {canSettle && <th style={{ textAlign: 'right' }}>{tt('Действия')}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -132,23 +140,24 @@ export default function SalariesTool() {
                         <td className="mono" style={{ textAlign: 'right', color: e.penalty > 0 ? 'var(--red)' : undefined }}>{e.penalty > 0 ? `−${fmtMoneyFull(e.penalty)}` : <span style={{ color: 'var(--text3)' }}>—</span>}</td>
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(e.total)}</td>
                         <td><Badge tone={STATUS_TONE[e.status] || 'gray'}>{tt(STATUS_RU[e.status] || e.status)}</Badge></td>
-                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          {e.status === 'draft' && (
-                            <button type="button" className="btn-sm" disabled={!!busy}
-                              onClick={() => act(e.employee_id, 'approve')}
-                              style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                              {busy === e.employee_id + 'approve' ? '…' : tt('Утвердить')}
-                            </button>
-                          )}
-                          {e.status === 'approved' && (
-                            <button type="button" className="btn-sm" disabled={!!busy}
-                              onClick={() => act(e.employee_id, 'pay')}
-                              style={{ background: '#16A34A', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                              {busy === e.employee_id + 'pay' ? '…' : tt('Выплатить')}
-                            </button>
-                          )}
-                          {e.status === 'paid' && <span style={{ color: 'var(--text3)', fontSize: 12 }}>✅</span>}
-                        </td>
+                        {canSettle && (
+                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            {e.status === 'draft' && (
+                              <button type="button" className="btn-sm" disabled={!!busy}
+                                onClick={() => act(e, 'approve')}
+                                style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                                {busy === e.employee_id + 'approve' ? '…' : tt('Утвердить')}
+                              </button>
+                            )}
+                            {e.status === 'approved' && (
+                              <button type="button" className="btn-sm" disabled={!!busy}
+                                onClick={() => act(e, 'pay')}
+                                style={{ background: '#16A34A', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                                {busy === e.employee_id + 'pay' ? '…' : tt('Выплатить')}
+                              </button>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
