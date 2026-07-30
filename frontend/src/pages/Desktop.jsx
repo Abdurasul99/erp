@@ -1,9 +1,9 @@
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useMotionValue } from 'framer-motion';
 import { AuthContext } from '../App.jsx';
-import api from '../api.js';
 import { useTranslation } from '../useTranslation.js';
+import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 import Navbar from '../components/Navbar.jsx';
 import { DockItem } from '../owner/Dock.jsx';
 import '../owner/styles.css';
@@ -66,12 +66,11 @@ export default function Desktop() {
   const canSeeSuppliers = ['warehouse', 'cashier', 'manager', 'director', 'founder'].includes(user?.role);
   const canSeeTasks = ['cashier', 'warehouse', 'manager'].includes(user?.role);
 
-  // Счётчик активных «моих задач» — для подписи в доке (обновляется при открытии раздела)
-  const [taskCount, setTaskCount] = useState(null);
-  useEffect(() => {
-    if (!canSeeTasks) return;
-    api.get('/tasks/my').then(r => setTaskCount(r.data?.metrics?.active ?? 0)).catch(() => {});
-  }, [canSeeTasks]);
+  // Счётчик задач берём из общего инбокса: один поллинг /notifications/count на
+  // всё приложение вместо своего запроса на каждой оболочке. unread (новые
+  // события) — красным бейджем на иконке дока; гасит его сам MyTasks при
+  // открытии, ровно по видимым задачам.
+  const { unread: tasksUnread } = useTaskInbox();
 
   // Default section based on role
   const { t, lang } = useTranslation();
@@ -114,7 +113,9 @@ export default function Desktop() {
         ...(canSeeCash      ? [{ key: 'cash',            label: t('cash') }] : []),
         // Заказы с интернет-магазина — кассир обрабатывает заявки на месте.
         ...(canSeeCash      ? [{ key: 'orders',          label: uz ? 'Saytdan buyurtmalar' : 'Заказы с сайта' }] : []),
-        ...(canSeeTasks     ? [{ key: 'tasks',           label: (uz ? 'Vazifalar' : 'Задачи') + (taskCount ? ` (${taskCount})` : '') }] : []),
+        // Число в подписи не дублируем: на иконке уже есть бейдж непрочитанных.
+        // Рядом стояли два разных числа (активные и новые) — это только путало.
+        ...(canSeeTasks     ? [{ key: 'tasks',           label: uz ? 'Vazifalar' : 'Задачи', badge: tasksUnread }] : []),
         ...(canSeeProfit    ? [{ key: 'profit-section',  label: t('profit') }] : []),
         ...(canSeeCustomers ? [{ key: 'customers',       label: t('customers') || 'Клиенты' }] : []),
         ...(canSeeSuppliers ? [{ key: 'suppliers',       label: t('suppliers') || 'Поставщики' }] : []),
@@ -157,7 +158,7 @@ export default function Desktop() {
       case 'customers': return <CustomersManager />;
       case 'suppliers': return <SuppliersManager />;
       case 'orders': return <OnlineOrders />;
-      case 'tasks': return <MyTasks onCount={setTaskCount} />;
+      case 'tasks': return <MyTasks />;
       default: return null;
     }
   };
@@ -170,6 +171,7 @@ export default function Desktop() {
       currentTabs={currentTabs}
       tab={tab}
       setTab={setTab}
+      onOpenTasks={canSeeTasks ? () => handleSectionChange('tasks') : undefined}
     >
       {renderContent()}
     </StaffShell>
@@ -178,11 +180,11 @@ export default function Desktop() {
 
 // Оболочка: Navbar сверху, вкладки раздела сегмент-контролом, контент (со своим
 // внутренним скроллом), macOS-док с разделами снизу.
-function StaffShell({ sections, section, onSection, currentTabs, tab, setTab, children }) {
+function StaffShell({ sections, section, onSection, currentTabs, tab, setTab, onOpenTasks, children }) {
   const mouseX = useMotionValue(Infinity);
   return (
     <div className="owner-shell dock-shell" style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <Navbar activeView="desktop" onViewChange={() => {}} />
+      <Navbar activeView="desktop" onViewChange={() => {}} onOpenTasks={onOpenTasks} />
 
       <div style={{ width: '100%', padding: '16px clamp(14px, 2vw, 32px) 0', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, boxSizing: 'border-box' }}>
         {/* Вкладки текущего раздела — сегмент-контрол */}
@@ -222,6 +224,7 @@ function StaffShell({ sections, section, onSection, currentTabs, tab, setTab, ch
               showLabel
               icon={(SECTION_META[s.key] || SECTION_META.overview).icon}
               bg={gradOf(s.key)}
+              badge={s.badge}
               active={section === s.key}
               mouseX={mouseX}
               onClick={() => onSection(s.key)}

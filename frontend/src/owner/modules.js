@@ -11,6 +11,8 @@
 // Per-role tool visibility is centralized in HIDDEN_TOOLS + getSectionsForRole below.
 // A section-level `roles` (e.g. settings) hides the whole section from other roles.
 
+import { boardTitle } from './taskMeta.js';
+
 // Виджеты Главной (Asosiy). Общий источник для Dashboard (что рисовать) и
 // PanelManagerTool (учредитель вкл/выкл для всей компании → companies.disabled_widgets).
 export const DASH_WIDGETS = [
@@ -47,13 +49,19 @@ export const SECTIONS = [
 
   {
     id: 'analytics',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['founder-board', 'control-center', 'reports'],
     title: 'Аналитика',
     group: 'analysis',
     color: '#1D4ED8',
-    desc: 'Дашборд учредителя · контроль · отчёты · когорты · юнит-экономика · симулятор',
-    metrics: ['revenue', 'profit', 'cash'],
+    desc: 'Сводка по компании · контроль · отчёты · когорты · юнит-экономика · симулятор',
+    // Деньги (выручка/прибыль/касса) убраны из баннера «Аналитика» по просьбе клиента —
+    // они дублируют Главную; баннер показывает только счётчики (инструменты · вкладки).
+    metrics: [],
     tools: [
-      { id: 'founder-board',   title: 'Дашборд учредителя', desc: 'Сводка компании · филиалы · алерты', wired: true },
+      // Переименован из «Дашборд учредителя»: так теперь называется ролевой дашборд
+      // (раздел myboard), и два экрана с одним именем путали учредителя. id не менялся.
+      { id: 'founder-board',   title: 'Сводка по компании', desc: 'Сводка компании · филиалы · алерты', wired: true },
       { id: 'control-center',  title: 'Центр контроля',      desc: 'Алерты · аномалии · полиция магазина · риски · дефицит', wired: true, hub: 5 },
       { id: 'simulator',       title: 'Симулятор «Что если»', desc: 'Все сценарии: бизнес · продажи · склад · закупки · персонал · клиенты', wired: true, hub: 8 },
       { id: 'branch-compare',  title: 'Сравнение филиалов',  desc: 'Выручка · маржа · BHI по филиалам', wired: true },
@@ -66,8 +74,26 @@ export const SECTIONS = [
     ],
   },
 
+  // Ролевой дашборд — отдельный раздел, а не инструмент внутри «Главной»: секция
+  // dashboard намеренно выброшена из лаунчпада, поиска Ctrl+K и дока, и экран,
+  // положенный туда, было бы не найти. Ровно один инструмент; title раздела и
+  // инструмента переписывает getSectionsForRole по роли.
+  {
+    id: 'myboard',
+    title: 'Мой дашборд',
+    group: 'work',
+    color: '#1D4ED8',
+    desc: 'Мои дела · поручения · зарплата · нарушения',
+    metrics: [],
+    tools: [
+      { id: 'my-board', title: 'Мой дашборд', desc: 'Мои дела · поручения сотрудникам · зарплата · нарушения', wired: true },
+    ],
+  },
+
   {
     id: 'finance',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['cash', 'pnl', 'expenses-report'],
     title: 'Финансы',
     group: 'work',
     color: '#16A34A',
@@ -90,6 +116,8 @@ export const SECTIONS = [
 
   {
     id: 'marketing',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['funnel', 'channels', 'customer-campaigns'],
     title: 'Маркетинг',
     group: 'analysis',
     color: '#EC4899',
@@ -109,6 +137,8 @@ export const SECTIONS = [
 
   {
     id: 'procurement',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['income', 'procurement-orders', 'suppliers'],
     title: 'Закупки',
     group: 'work',
     color: '#D97706',
@@ -129,6 +159,8 @@ export const SECTIONS = [
 
   {
     id: 'warehouse',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['stock', 'audit', 'defects'],
     title: 'Склад',
     group: 'work',
     color: '#0EA5E9',
@@ -149,6 +181,8 @@ export const SECTIONS = [
 
   {
     id: 'operations',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['pos', 'sales-history', 'tasks'],
     title: 'Продажи',
     group: 'work',
     color: '#16A34A',
@@ -169,6 +203,8 @@ export const SECTIONS = [
 
   {
     id: 'hr',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['users', 'salaries', 'hr-adjustments'],
     title: 'Персонал',
     group: 'work',
     color: '#9333EA',
@@ -191,6 +227,8 @@ export const SECTIONS = [
 
   {
     id: 'support',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['crm', 'feedback', 'debts-clients'],
     title: 'Клиенты',
     group: 'work',
     color: '#1D4ED8',
@@ -209,6 +247,8 @@ export const SECTIONS = [
 
   {
     id: 'settings',
+    // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
+    quick: ['panel-manager', 'company-profile', 'security'],
     title: 'Настройки',
     group: 'system',
     color: '#6B7280',
@@ -244,16 +284,35 @@ const HIDDEN_TOOLS = {
     'ab-point', 'pnl', 'cashflow', 'fin-model', 'break-even',
     'fin-health', 'cash-forecast', 'currency-ops', 'taxes',
     'branch-compare', 'pricing', 'expenses-report',
+    // Ниже — инструменты, которые сервер менеджеру НЕ отдаёт (403): раньше они
+    // висели в меню и открывались с «Нет доступа». Сверено прогоном всех 163
+    // GET-эндпоинтов под ролью manager (2026-07-29).
+    'founder-board',    // /analytics/founder-dashboard — сводка по ВСЕЙ компании
+    'unit-economics',   // /finance/profitability — стратегические финансы
+    'simulator',        // /finance|procurement|hr/whatif-base — моделирование
+    'event-journal',    // /audit-log — журнал действий всей компании
+    'integrations',     // /integrations — настройки компании
+    // ВОЗВРАЩЕНЫ менеджеру (2026-07-29, просьба клиента): зарплаты, штрафы/премии
+    // и HR-прогноз — но сервер отдаёт ТОЛЬКО его филиал (getBranchFilter пинит
+    // manager к своему branch_id, подмена через ?branch_id невозможна):
+    //   'salaries', 'hr-adjustments', 'hr-forecast'
   ]),
 };
 
 export function getSectionsForRole(role) {
   const hidden = HIDDEN_TOOLS[role];
+  // «Дашборд учредителя/директора/менеджера» — имя зависит от роли. Подставляем его
+  // здесь, а не внутри самого инструмента: PageHeader в окне инструмента ничего не
+  // рисует (InsideSheetContext), видимый заголовок окна берётся из tool.title.
+  const board = boardTitle(role);
   return SECTIONS
     .filter(s => !s.roles || s.roles.includes(role))
     .map(s => ({
       ...s,
-      tools: (s.tools || []).filter(t => !hidden || !hidden.has(t.id)),
+      title: s.id === 'myboard' ? board : s.title,
+      tools: (s.tools || [])
+        .filter(t => !hidden || !hidden.has(t.id))
+        .map(t => (t.id === 'my-board' ? { ...t, title: board } : t)),
     }))
     .filter(s => s.id === 'dashboard' || s.tools.length > 0);
 }
@@ -264,6 +323,9 @@ export function getSectionsForRole(role) {
 export function getUserSections(user) {
   const off = new Set([...(user?.blocked_tools || []), ...(user?.company_disabled_tools || [])]);
   off.delete('panel-manager');
+  // Ролевой дашборд отключать нельзя: вместе с ним сотрудник потерял бы и свои
+  // задачи, и уведомления о них — единственное место, где он их видит.
+  off.delete('my-board');
   return getSectionsForRole(user?.role)
     .map(s => ({ ...s, tools: (s.tools || []).filter(t => !off.has(t.id)) }))
     .filter(s => s.id === 'dashboard' || s.tools.length > 0);

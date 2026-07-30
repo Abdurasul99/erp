@@ -23,11 +23,18 @@ export default function PeriodFilter({ period, setPeriod, customRange, setCustom
 
   return (
     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-      <div style={{ display: 'flex', gap: '4px', background: '#F4F5FA', borderRadius: '10px', padding: '4px' }}>
+      {/* Сама группа кнопок не переносится (иначе «День|Неделя» разорвётся
+          посередине), поэтому на узком экране она прокручивается внутри себя —
+          набор из пяти кнопок не влезал в 360px и уносил экран вбок. */}
+      <div style={{
+        display: 'flex', gap: '4px', background: '#F4F5FA', borderRadius: '10px', padding: '4px',
+        maxWidth: '100%', overflowX: 'auto', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch',
+      }}>
         {buttons.map(([key, label]) => (
           <button key={key} type="button" onClick={() => setPeriod(key)} style={{
             padding: compact ? '5px 10px' : '6px 12px', borderRadius: '7px', border: 'none', cursor: 'pointer',
             fontWeight: 700, fontSize: '12px', fontFamily: "'Nunito', sans-serif",
+            whiteSpace: 'nowrap', flex: '0 0 auto',
             background: period === key ? '#fff' : 'transparent',
             color: period === key ? '#4338ca' : '#6B6F8A',
             boxShadow: period === key ? '0 1px 4px rgba(0,0,0,.08)' : 'none',

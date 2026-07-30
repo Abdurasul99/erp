@@ -259,11 +259,15 @@ thead th {
   letter-spacing: 0.7px;
   padding: clamp(12px, 0.8vw, 18px) clamp(12px, 0.8vw, 18px);
   text-align: left;
-  border-bottom: 1.5px solid var(--border);
+  /* Заголовок приклеен к верху прокрутки, поэтому обязан быть НЕПРОЗРАЧНЫМ:
+     иначе строки проезжают под ним и текст накладывается на текст.
+     Разделитель — inset-тенью, а не border-bottom: при border-collapse:collapse
+     граница принадлежит таблице и остаётся на месте, пока ячейка «едет». */
   background: var(--surface);
+  box-shadow: inset 0 -1.5px 0 var(--border);
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 3;
 }
 
 tbody td {
@@ -343,6 +347,11 @@ tbody tr:last-child td { border-bottom: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+/* Элемент сетки по умолчанию не сжимается меньше своего содержимого
+   (min-width: auto). Из-за этого на телефоне колонка, схлопнутая в одну,
+   всё равно растягивалась до ширины самой широкой таблицы внутри — и весь
+   экран уезжал вбок. min-width: 0 разрешает колонке сжиматься. */
+.grid-2 > *, .grid-3 > *, .grid-4 > *, .form-grid > * { min-width: 0; }
 
 @media (max-width: 900px) {
   .grid-4 { grid-template-columns: repeat(2,1fr); }
@@ -357,6 +366,20 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Не каждая таблица в проекте обёрнута в .table-wrap, а её минимальная ширина
+   (около 550px) больше телефонного экрана — карточка растягивалась и тянула
+   вбок весь интерфейс. На узких экранах даём горизонтальную прокрутку самой
+   карточке, но ТОЛЬКО если внутри есть таблица: у остальных карточек прокрутка
+   обрезала бы выпадающие списки. */
+@media (max-width: 900px) {
+  .card:has(table),
+  .owner-shell .o-card:has(table),
+  .owner-shell .card:has(table) {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
 
 @media (max-width: 768px) {
   .hide-mobile { display: none !important; }
@@ -554,3 +577,112 @@ a:focus-visible {
 
 /* ── Selection ───────────────────────────────────── */
 ::selection { background: rgba(91,79,232,.20); color: var(--text); }
+
+/* ── Колокольчик уведомлений (NotificationsBell) ──
+   Правила ГЛОБАЛЬНЫЕ, не scoped: колокольчик стоит и в топбаре панели
+   (.owner-shell), и в staff-навбаре. Токены --surface/--border/--text панель
+   переопределяет у себя, поэтому виджет сам подстраивается под оболочку.
+   Попап позиционируется от СВОЕЙ обёртки .nbell-wrap — родительским
+   контейнерам position:relative не добавляем (регрессия 22.07: позиционированный
+   .o-content перехватывал клики у дропдаунов топбара). */
+.nbell-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+
+.nbell {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0;
+  border-radius: 10px; cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  transition: background .14s var(--ease), color .14s var(--ease), border-color .14s var(--ease);
+}
+.nbell:hover, .nbell.open { background: var(--bg-2); color: var(--text); }
+/* staff-навбар: те же пропорции, что у соседних ghost-кнопок */
+.nbell.nbell-staff { width: 36px; height: 36px; border-radius: 9px; background: #fff; border-color: rgba(20,20,40,.1); }
+
+/* Красный задан явным hex: --red в :root (#EF4444) и внутри .owner-shell
+   (#E5484D) разный, а счётчик обязан читаться одинаково в обеих оболочках. */
+.nbell-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 17px; height: 17px; padding: 0 5px;
+  border-radius: 999px;
+  background: #DC2626; color: #fff;
+  font-size: 10px; font-weight: 800; line-height: 17px; text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--surface);
+  pointer-events: none;
+}
+
+.nbell-pop {
+  position: absolute; top: calc(100% + 8px); right: 0;
+  width: 340px; max-width: calc(100vw - 24px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  text-align: left;
+  z-index: 60;
+}
+.nbell-pop-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.nbell-pop-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; color: var(--text); }
+.nbell-readall {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: 11.5px; font-weight: 700; color: #0071E3;
+  white-space: nowrap;
+}
+.nbell-readall:disabled { color: var(--text3); cursor: default; }
+
+.nbell-load { padding: 14px; }
+.nbell-empty { padding: 24px 14px; text-align: center; font-size: 12.5px; color: var(--text3); }
+.nbell-list { max-height: 340px; overflow-y: auto; }
+
+.nbell-item {
+  display: flex; gap: 9px; width: 100%;
+  padding: 10px 14px; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--border);
+  cursor: pointer; font-family: inherit;
+}
+.nbell-item:last-child { border-bottom: none; }
+.nbell-item:hover { background: var(--bg-2); }
+.nbell-item.unread { background: rgba(220,38,38,.045); }
+.nbell-item.unread:hover { background: rgba(220,38,38,.08); }
+.nbell-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.nbell-body { flex: 1; min-width: 0; }
+.nbell-kind, .nbell-task, .nbell-meta { display: block; }
+.nbell-kind { font-size: 11px; font-weight: 700; }
+.nbell-task {
+  font-size: 12.5px; font-weight: 600; color: var(--text); margin-top: 1px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.nbell-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+.nbell-foot {
+  display: flex; gap: 12px; padding: 9px 14px;
+  border-top: 1px solid var(--border); background: var(--bg-2);
+  font-size: 11px; font-weight: 600; color: var(--text2);
+}
+.nbell-foot b { font-weight: 800; color: var(--text); }
+.nbell-foot .nbell-over { color: #DC2626; }
+
+/* Счётчик на иконке дока. Якорь — центр .dock-item, а не его правый край:
+   ширину обёртки задаёт подпись под иконкой (до 72px), и `right: 0` увело бы
+   бейдж в пустоту, тогда как иконка магнифицируется в пределах 42–64px. */
+.dock-badge {
+  position: absolute; top: -3px; left: 50%; transform: translateX(9px);
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px;
+  background: #DC2626; color: #fff;
+  font-size: 10px; font-weight: 800; line-height: 16px; text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.92);
+  pointer-events: none;
+}

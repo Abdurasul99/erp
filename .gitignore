@@ -68,6 +68,18 @@ _payload.json
 *.xlsx
 ~$*
 
+# Артефакты инструментов и прогонов — генерируются, в истории им не место
+output/
+.playwright-cli/
+.specs/
+
+# NUL/nul — файл-побочный эффект перенаправления вывода в Windows-оболочке
+# (получались 100-килобайтные копии owner/styles.css, которые никто не импортирует)
+NUL
+nul
+NUL.css
+nul.css
+
 # Personal access / credentials file — NEVER commit
 CREDENTIALS.md
 SECRETS.md

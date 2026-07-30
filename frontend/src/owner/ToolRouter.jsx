@@ -1,9 +1,14 @@
-import React, { useContext } from 'react';
+import React, { useContext, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Navigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { AuthContext } from '../App.jsx';
 import { getUserSections } from './modules.js';
+import { InsideSheetContext } from './PageHeaderContext.js';
 import { PageHeader, ComingSoon, Badge } from './ui.jsx';
 import { useTt } from './tt.js';
+import { Icon, SECTION_ICON, gradCss } from './icons.jsx';
+import { ScrollTicks } from './ScrollTicks.jsx';
+import { pushRecent } from './recentTools.js';
 import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 // ═══ Объединённые хабы (упрощение панели: вкладки вместо десятков кнопок) ═══
@@ -23,6 +28,7 @@ import SuppliersManager from '../components/SuppliersManager.jsx';
 import GenDirUsers from '../components/GenDirUsers.jsx';
 
 // Инструменты (по одному экрану на карточку)
+import RoleBoardTool from './tools/RoleBoardTool.jsx';
 import PanelManagerTool from './tools/PanelManagerTool.jsx';
 import CompanyProfileTool from './tools/CompanyProfileTool.jsx';
 import FounderBoardTool from './tools/FounderBoardTool.jsx';
@@ -114,6 +120,10 @@ const RESOLVE = {
     'unit-economics': { Comp: UnitEconomicsTool },
     'ab-point':       { Comp: AbPointTool },
     ssp:              { Comp: SspTool },
+  },
+  // Ролевой дашборд: один инструмент на три роли, разницу в данных режет сервер.
+  myboard: {
+    'my-board': { Comp: RoleBoardTool },
   },
   finance: {
     cash:        { Comp: () => <LiveWrapper title="Кассы" sub="Приход, расход и баланс по 10 валютам" Component={CashReport} /> },
@@ -211,64 +221,82 @@ export default function ToolRouter() {
   const sections = getUserSections(user);
   const section = sections.find(s => s.id === sectionId);
   const tool = section?.tools.find(t => t.id === toolId);
+  // Скролл тела окна — для Sora-штрихов внутри рамки (вместо нативной полосы).
+  const bodyRef = useRef(null);
+
+  // Esc закрывает окно инструмента → возврат в отдел
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') navigate('/owner/' + sectionId); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sectionId, navigate]);
+
+  // Запоминаем визит — из этого баннер раздела строит блок «Недавнее».
+  // Пишем только для реально существующего инструмента, чтобы битые адреса
+  // не попадали в историю.
+  useEffect(() => {
+    if (section && tool) pushRecent(user?.id, sectionId, toolId);
+  }, [user?.id, sectionId, toolId, section, tool]);
 
   if (!section || !tool) return <Navigate to="/owner" replace />;
   const entry = RESOLVE[sectionId]?.[toolId];
-
-  const header = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-      <button onClick={() => navigate('/owner/' + section.id)} className="btn btn-ghost btn-sm" title={tt('Назад')}>
-        {tt('← Назад')}
-      </button>
-      <div style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>
-        <span style={{ cursor: 'pointer', color: 'var(--text2)' }} onClick={() => navigate('/owner/' + section.id)}>
-          {tt(section.title)}
-        </span>
-        <span style={{ margin: '0 7px', color: 'var(--text3)' }}>/</span>
-        <span style={{ color: 'var(--text)' }}>{tt(tool.title)}</span>
-      </div>
-    </div>
-  );
-
-  if (!entry) {
-    return (
-      <>
-        {header}
-        <ComingSoon title={tt(tool.title)}>
-          <div>{tt(tool.desc)}</div>
-          <div style={{ marginTop: 14, fontSize: 12 }}>{tt('Этот инструмент будет реализован в следующих обновлениях. Если он критичен — напишите, поднимем приоритет.')}</div>
-        </ComingSoon>
-      </>
-    );
-  }
-
-  const Comp = entry.Comp;
+  const Comp = entry?.Comp;
   const isMockup = !tool.wired;
 
+  // Окно инструмента в стиле концепта: градиентная шапка отдела + белое тело.
+  // ВАЖНО: без scale-анимации — Chrome растрирует текст на промежуточном масштабе
+  // (0.98) и таблицы остаются «размазанными» после анимации. Только opacity+y.
   return (
-    <>
-      {header}
-      {isMockup && (
-        <div className="alert" style={{
-          background: '#FFFBEB',
-          borderColor: '#FDE68A',
-          color: '#92400E',
-          display: 'flex', alignItems: 'flex-start', gap: 10,
-          marginBottom: 14,
-        }}>
-          <div style={{ flex: 1, fontSize: 13, lineHeight: 1.5 }}>
-            <div style={{ fontWeight: 800, marginBottom: 2 }}>{tt('Дизайн-макет — данные ниже не настоящие')}</div>
-            <div style={{ fontWeight: 500 }}>
-              {tt('Это образец интерфейса для согласования. Реальные данные подключим в следующих обновлениях. Кнопки в макете не сохраняют ничего.')}
-            </div>
+    <motion.div
+      className="o-sheet" key={sectionId + '/' + toolId}
+      initial={{ opacity: 0, y: 22 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: 'spring', stiffness: 340, damping: 34 }}
+    >
+      <div className="o-sheet-head" style={{ background: gradCss(section.id, 120) }}>
+        <button type="button" className="o-sheet-x" onClick={() => navigate('/owner/' + section.id)} title={tt('Закрыть') + ' (Esc)'}>✕</button>
+        <div className="o-sheet-row">
+          <span className="o-sheet-chip"><Icon name={SECTION_ICON[section.id] || 'home'} size={20} /></span>
+          <div style={{ minWidth: 0 }}>
+            <h2>{tt(tool.title)}</h2>
+            <p>{tt(tool.desc)}</p>
           </div>
+          <span className="o-sheet-crumb">{tt(section.title)}</span>
         </div>
-      )}
-      {/* Каждый инструмент изолирован: его краш показывает карточку, а оболочка и
-          другие инструменты продолжают работать. key сбрасывает ошибку при смене инструмента. */}
-      <ErrorBoundary compact key={sectionId + '/' + toolId}>
-        <Comp />
-      </ErrorBoundary>
-    </>
+      </div>
+
+      <ScrollTicks targetRef={bodyRef} count={18} right={8} mode="absolute" />
+      <InsideSheetContext.Provider value={true}>
+      <div className="o-sheet-body" ref={bodyRef}>
+        {!entry ? (
+          <ComingSoon title={tt(tool.title)}>
+            <div>{tt(tool.desc)}</div>
+            <div style={{ marginTop: 14, fontSize: 12 }}>{tt('Этот инструмент будет реализован в следующих обновлениях. Если он критичен — напишите, поднимем приоритет.')}</div>
+          </ComingSoon>
+        ) : (
+          <>
+            {isMockup && (
+              <div className="alert" style={{
+                background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E',
+                display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14,
+              }}>
+                <div style={{ flex: 1, fontSize: 13, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 2 }}>{tt('Дизайн-макет — данные ниже не настоящие')}</div>
+                  <div style={{ fontWeight: 500 }}>
+                    {tt('Это образец интерфейса для согласования. Реальные данные подключим в следующих обновлениях. Кнопки в макете не сохраняют ничего.')}
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Каждый инструмент изолирован: его краш показывает карточку, а оболочка и
+                другие инструменты продолжают работать. key сбрасывает ошибку при смене инструмента. */}
+            <ErrorBoundary compact key={sectionId + '/' + toolId}>
+              <Comp />
+            </ErrorBoundary>
+          </>
+        )}
+      </div>
+      </InsideSheetContext.Provider>
+    </motion.div>
   );
 }

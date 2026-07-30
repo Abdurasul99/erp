@@ -15,6 +15,14 @@ const PERIODS = [
 // Цвет ступени по индексу (градиент сверху воронки вниз).
 const STAGE_COLORS = ['#1D4ED8', '#3B82F6', '#0EA5E9', '#16A34A', '#D97706', '#F97316'];
 
+// Показы и посетители — счётные целые, стейт СТРОКА. type="number" возвращал ''
+// на промежуточно-невалидном вводе («120 000» с пробелом из буфера, запятая),
+// из-за чего контролируемое поле само себя очищало. Поэтому type="text" + чистка
+// цифр в onChange; 9 цифр — предел INTEGER в funnel_inputs.
+const digitsOnly = (v) => String(v ?? '').replace(/[^\d]/g, '').slice(0, 9);
+// Нормализация на blur, а не в onChange (иначе не стереть первую цифру): «007» → «7».
+const normCount = (v) => (v === '' ? '' : String(parseInt(v, 10) || 0));
+
 // Тон конверсии для Badge: <15% красный, <40% жёлтый, иначе зелёный.
 function convTone(pct) {
   if (pct == null) return 'gray';
@@ -23,12 +31,14 @@ function convTone(pct) {
   return 'green';
 }
 
-// Цвет текста по тону (CSS-переменной --yellow нет → мапим жёлтый на --orange).
+// Цвет текста по тону. Жёлтый берём именно из --yellow: внутри .owner-shell
+// переменная --orange переопределена в СИНИЙ, и предупредительная зона
+// конверсии печаталась синим, то есть читалась как нейтральная.
 function convTextColor(pct) {
   const t = convTone(pct);
   if (t === 'green') return 'var(--green, var(--text2))';
   if (t === 'red') return 'var(--red, var(--text2))';
-  if (t === 'yellow') return 'var(--orange, var(--text2))';
+  if (t === 'yellow') return 'var(--yellow, var(--text2))';
   return 'var(--text3)';
 }
 
@@ -59,17 +69,26 @@ export default function BusinessFunnelTool() {
 
   function openEdit() {
     const s = data?.stages || [];
-    setAdViews(String(s[0]?.count ?? ''));
-    setVisitors(String(s[1]?.count ?? ''));
+    setAdViews(digitsOnly(s[0]?.count ?? ''));
+    setVisitors(digitsOnly(s[1]?.count ?? ''));
     setEditOpen(true);
   }
 
   async function saveInputs() {
+    // Сервер перезаписывает ОБА поля (upsert), поэтому пустое поле нельзя молча
+    // отправить нулём — так обнулялся верхний этап воронки. Просим ввести явно:
+    // ноль тоже вводится вручную («0»), а пустое = «не знаю» и не сохраняется.
+    const adNum = parseInt(adViews, 10);
+    const visNum = parseInt(visitors, 10);
+    if (!Number.isFinite(adNum) || !Number.isFinite(visNum)) {
+      toast(tt('Заполните оба поля — показы и посетители (если показов не было, введите 0)'), 'error');
+      return;
+    }
     setSaving(true);
     try {
       const body = {
-        ad_views: parseInt(adViews, 10) || 0,
-        visitors: parseInt(visitors, 10) || 0,
+        ad_views: Math.max(0, adNum),
+        visitors: Math.max(0, visNum),
       };
       if (branchId) body.branch_id = branchId;
       await api.post('/analytics/funnel/inputs', body);
@@ -93,9 +112,11 @@ export default function BusinessFunnelTool() {
         title={tt('🪜 Воронка бизнеса')}
         sub={tt('Показы → посетители → первая покупка → повторные → лояльные → VIP')}
         actions={
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          // flexWrap: на телефоне переключатель периода и кнопка ввода в одну
+          // строку не влезали и уносили экран вбок на 119px.
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
             <Pills value={period} onChange={setPeriod} options={PERIODS.map(p => ({ ...p, label: tt(p.label) }))} />
-            <button className="btn btn-sm" onClick={openEdit} disabled={loading}>{tt('✏️ Ввод показов/посетителей')}</button>
+            <button className="btn btn-sm" onClick={openEdit} disabled={loading}>{tt('Ввод показов/посетителей')}</button>
           </div>
         }
       />
@@ -242,12 +263,16 @@ export default function BusinessFunnelTool() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('📢 Просмотры рекламы')}</div>
-            <input type="number" min="0" value={adViews} onChange={e => setAdViews(e.target.value)}
+            <input type="text" inputMode="numeric" value={adViews}
+              onChange={e => setAdViews(digitsOnly(e.target.value))}
+              onBlur={() => setAdViews(v => normCount(v))}
               className="input" style={{ width: '100%' }} placeholder="0" />
           </label>
           <label style={{ display: 'block' }}>
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{tt('🚶 Посетители')}</div>
-            <input type="number" min="0" value={visitors} onChange={e => setVisitors(e.target.value)}
+            <input type="text" inputMode="numeric" value={visitors}
+              onChange={e => setVisitors(digitsOnly(e.target.value))}
+              onBlur={() => setVisitors(v => normCount(v))}
               className="input" style={{ width: '100%' }} placeholder="0" />
           </label>
           <div style={{ fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.4 }}>

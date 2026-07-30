@@ -11,39 +11,42 @@
      только внутри owner-shell. Все инструменты используют var(--bg)/--surface/--text… === */
   /* «Ink & Electric»: чернильный сайдбар + электрический индиго-акцент.
      Светлый контент, глубокий тёмный борт, градиент только в ключевых точках. */
-  --bg: #F8FAFD;
-  --bg-2: #EEF2F8;
+  /* === «Wave Bento» — перенос дизайна wave-erp-design.vercel.app:
+     светлый bento-фон с ambient-подсветкой, белые карточки с большими
+     радиусами, один лазурный акцент, macOS-док вместо сайдбара. === */
+  --bg: #F4F4F6;
+  --bg-2: #ECEDF1;
   --surface: #FFFFFF;
-  --border: #E3E9F2;
-  --border-strong: #C6D2E2;
-  --text: #14284B;
-  --text2: #4A5B76;
-  --text3: #8B99AF;
-  --primary: #173361;
-  --primary-dark: #0F2547;
-  --primary-50: #E9F1FB;
-  --accent-grad: linear-gradient(92deg, #21B0EA, #1E5AE8);
-  --orange: #1E5AE8;
+  --border: rgba(20, 20, 40, 0.09);
+  --border-strong: rgba(20, 20, 40, 0.2);
+  --text: #141419;
+  --text2: #55555E;
+  --text3: #8E8E96;
+  --primary: #0071E3;
+  --primary-dark: #005BB8;
+  --primary-50: rgba(0, 113, 227, 0.1);
+  --accent-grad: linear-gradient(92deg, #0A84FF, #5E5CE6);
+  --orange: #0071E3;
   --orange-light: #6FA8F5;
-  --green: #16A34A;
-  --red: #DC2626;
+  --green: #1D7A35;
+  --red: #E5484D;
   --yellow: #B45309;
-  --info: #1E5AE8;
-  --ink: #14284B;
-  --ink-2: #173361;
-  --shadow-sm: 0 1px 2px rgba(20, 40, 75, .06);
-  --shadow: 0 1px 3px rgba(20, 40, 75, .05), 0 8px 24px rgba(20, 40, 75, .06);
-  --shadow-lg: 0 4px 12px rgba(20, 40, 75, .07), 0 18px 44px rgba(20, 40, 75, .11);
-  --glow: 0 6px 18px rgba(30, 90, 232, .22);
-  --radius: 14px;
-  --radius-sm: 10px;
+  --info: #0071E3;
+  --ink: #141419;
+  --ink-2: #303038;
+  --shadow-sm: 0 1px 2px rgba(20, 20, 40, .05);
+  --shadow: 0 1px 2px rgba(20, 20, 40, .05), 0 12px 32px -16px rgba(20, 20, 40, .14);
+  --shadow-lg: 0 22px 60px -18px rgba(20, 20, 40, .3);
+  --glow: 0 6px 18px rgba(0, 113, 227, .2);
+  --radius: 18px;
+  --radius-sm: 12px;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-variant-numeric: tabular-nums;
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  display: block;
   height: 100vh;
   background:
-    radial-gradient(1000px 480px at 85% -14%, rgba(33, 176, 234, .07), transparent 60%),
+    radial-gradient(1000px 560px at 82% -8%, rgba(10, 132, 255, .08), transparent 60%),
+    radial-gradient(820px 540px at -6% 106%, rgba(175, 82, 222, .05), transparent 56%),
     var(--bg);
   color: var(--text);
   letter-spacing: -0.005em;
@@ -202,14 +205,25 @@
   min-height: var(--topbar-h); flex-shrink: 0;
   background: rgba(255, 255, 255, .86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; align-content: center; gap: 8px 14px;
-  flex-wrap: wrap;
+  /* NOWRAP: топбар — 3 зоны (бренд | середина | профиль). Бренд и профиль НЕ
+     переносятся; при нехватке места переносятся контролы ВНУТРИ .o-topbar-mid. */
+  display: flex; align-items: center; gap: 8px 14px;
+  flex-wrap: nowrap;
   padding: 8px 22px;
+}
+.owner-shell .o-brand-top, .owner-shell .o-user-wrap { flex: 0 0 auto; }
+/* Средняя зона: растягивается, контролы внутри переносятся по строкам. */
+.owner-shell .o-topbar-mid {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 8px 12px;
+}
+.owner-shell .o-topbar-controls {
+  display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap;
+  margin-left: auto; justify-content: flex-end;
 }
 .owner-shell .o-topbar-head {
   display: flex; align-items: center; gap: 12px;
-  min-width: min(360px, 100%);
-  flex: 1 1 360px;
+  flex: 0 1 auto; min-width: 0;
 }
 .owner-shell .o-topbar-copy { min-width: 0; }
 .owner-shell .o-topbar-actions {
@@ -253,7 +267,49 @@
 }
 .owner-shell .o-content {
   flex: 1; overflow-y: auto; padding: 22px;
+  /* ВАЖНО: НЕ давать .o-content position:relative — позиционированный контент
+     начинает перехватывать клики у выпадающих меню топбара (их z-index заперт
+     в stacking-context топбара из-за backdrop-filter). Штрихам .o-ticks оно и
+     не нужно — они position:fixed. Регрессия 22.07: «не работали» кнопки
+     Настройки/Выйти и выбор филиала. */
+  /* Нативный скроллбар скрыт — вместо него колонка штрихов .o-ticks (стиль OpenAI Sora). */
+  scrollbar-width: none;
 }
+/* Топбар всегда над контентом — его дропдауны (профиль, филиалы, период)
+   свисают над контентной областью и должны ловить клики. */
+.owner-shell .o-topbar { position: relative; z-index: 40; }
+.owner-shell .o-content::-webkit-scrollbar { display: none; }
+
+/* ── Колокольчик уведомлений в топбаре ──
+   Базовые правила — глобальные (.nbell в src/styles.css), здесь только посадка
+   в топбар: размер и радиус как у .o-branch-pick / .o-search-btn.
+   z-index попапа выше .o-topbar (40): backdrop-filter топбара создаёт свой
+   stacking-context, и без явного индекса лента ныряет под соседние контролы. */
+.owner-shell .nbell {
+  width: 36px; height: 36px; border-radius: 8px;
+  background: var(--surface); border-color: var(--border); color: var(--text2);
+}
+.owner-shell .nbell:hover, .owner-shell .nbell.open {
+  background: var(--bg); border-color: var(--border-strong); color: var(--text);
+}
+.owner-shell .nbell-pop {
+  z-index: 60;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Скролл-индикатор в стиле OpenAI Sora — колонка штрихов вместо полосы прокрутки. */
+.owner-shell .o-ticks {
+  position: fixed; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: flex-end; gap: 7px;
+  z-index: 15;
+}
+.owner-shell .o-tick {
+  height: 2.5px; border-radius: 980px; padding: 0; display: block; border: none;
+  transition: width .28s cubic-bezier(.22,1,.36,1), opacity .28s, background .28s;
+  cursor: pointer;
+}
+.owner-shell .o-tick:hover { opacity: 1 !important; width: 22px !important; }
 
 /* ── Вкладки хабов (объединённые инструменты) — сегмент-контрол в стиле Apple ── */
 .owner-shell .hub-tabs {
@@ -284,7 +340,7 @@
 }
 .owner-shell .o-tile:hover, .owner-shell .tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 .owner-shell .o-tile-label, .owner-shell .tile-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
-.owner-shell .o-tile-value, .owner-shell .tile-value { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; line-height: 1.1; letter-spacing: -0.3px; }
+.owner-shell .o-tile-value, .owner-shell .tile-value { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; line-height: 1.15; letter-spacing: -0.3px; white-space: nowrap; }
 .owner-shell .o-tile-sub, .owner-shell .tile-sub { font-size: 11px; color: var(--text3); margin-top: 6px; font-weight: 500; }
 .owner-shell .o-tile-delta, .owner-shell .tile-delta { font-size: 11px; font-weight: 700; margin-top: 4px; }
 .owner-shell .o-tile-delta.up, .owner-shell .tile-delta.up { color: var(--green); }
@@ -299,11 +355,18 @@
   border: 1px solid var(--border);
 }
 .owner-shell .o-card-h,
+/* Заголовок карточки с кнопками справа. Раньше строка не переносилась: на
+   телефоне набор фильтров («Все · Продажи · Приход …») уносил карточку за край
+   экрана. Теперь и заголовок, и группа кнопок переносятся на новую строку. */
 .owner-shell .card-header {
   display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
   font-weight: 600; font-size: 14px; color: var(--text);
+  flex-wrap: wrap; min-width: 0;
 }
-.owner-shell .o-card-h-actions, .owner-shell .card-header-actions { margin-left: auto; display: flex; gap: 6px; }
+.owner-shell .o-card-h-actions, .owner-shell .card-header-actions {
+  margin-left: auto; display: flex; gap: 6px;
+  flex-wrap: wrap; justify-content: flex-end; min-width: 0;
+}
 
 .owner-shell .o-pageh {
   display: flex; align-items: center; justify-content: space-between;
@@ -342,8 +405,21 @@
 .owner-shell .o-li-sub, .owner-shell .list-item-sub { font-size: 12px; color: var(--text3); margin-top: 2px; }
 
 /* Pills — сегмент-контрол как в macOS: активная белая с hairline */
-.owner-shell .o-pills, .owner-shell .pills { display: inline-flex; gap: 2px; background: var(--bg-2); padding: 3px; border-radius: 9px; }
-.owner-shell .o-pill, .owner-shell .pills .pill { padding: 6px 13px; border: 1px solid transparent; background: transparent; border-radius: 7px; cursor: pointer; font-weight: 500; font-size: 12.5px; color: var(--text2); font-family: inherit; }
+/* Набор пилюль (периоды, вкладки, режимы) есть почти в каждом инструменте.
+   Раньше это был inline-flex без ограничения ширины: на телефоне длинный набор
+   («2026-07 2026-06 2026-05 …») выезжал за край экрана и тянул вбок всю панель.
+   Теперь набор прокручивается сам, а страница остаётся на месте. */
+.owner-shell .o-pills, .owner-shell .pills {
+  display: inline-flex; gap: 2px; background: var(--bg-2); padding: 3px; border-radius: 9px;
+  max-width: 100%; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.owner-shell .o-pills::-webkit-scrollbar, .owner-shell .pills::-webkit-scrollbar { display: none; }
+.owner-shell .o-pill, .owner-shell .pills .pill {
+  padding: 6px 13px; border: 1px solid transparent; background: transparent; border-radius: 7px;
+  cursor: pointer; font-weight: 500; font-size: 12.5px; color: var(--text2); font-family: inherit;
+  white-space: nowrap; flex: 0 0 auto;
+}
 .owner-shell .o-pill.active, .owner-shell .pills .pill.active { background: var(--primary); color: #fff; font-weight: 600; box-shadow: 0 3px 10px rgba(23, 51, 97, .22); }
 
 .owner-shell .o-coming, .owner-shell .coming-soon {
@@ -372,12 +448,19 @@
 
 /* Таблицы: тихий заголовок без заливки, hairline-разделители */
 .owner-shell .o-card table, .owner-shell .card table { width: 100%; border-collapse: collapse; }
+/* Заливка обязательна, хотя заголовок и «тихий»: глобальное правило делает
+   thead th липким (position:sticky), и с прозрачным фоном строки при прокрутке
+   просвечивали сквозь шапку — текст заголовка накладывался на данные.
+   Белый = цвет карточки, поэтому визуально заголовок остался прежним.
+   Разделитель — inset-тенью: при border-collapse:collapse обычный border
+   принадлежит таблице и не едет вместе с приклеенной ячейкой. */
 .owner-shell .o-card thead th,
 .owner-shell .card thead th {
-  background: transparent; padding: 8px 13px; text-align: left;
+  background: var(--surface); padding: 8px 13px; text-align: left;
   font-size: 11px; font-weight: 600; color: var(--text3);
   text-transform: uppercase; letter-spacing: .4px;
-  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 -1px 0 var(--border);
+  position: sticky; top: 0; z-index: 3;
 }
 .owner-shell .o-card tbody td,
 .owner-shell .card tbody td { padding: 10px 13px; font-size: 13px; border-bottom: 1px solid var(--bg-2); vertical-align: middle; }
@@ -476,16 +559,809 @@
 @media (max-width: 1100px) {
   .owner-shell { grid-template-columns: 60px 1fr; }
   .owner-shell .o-topbar { padding: 8px 14px; gap: 8px; }
-  .owner-shell .o-topbar-head { min-width: min(300px, 100%); flex-basis: 300px; }
   .owner-shell .o-link span:not(.o-link-mono) { display: none; }
   .owner-shell .o-brand-name, .owner-shell .o-brand-sub { display: none; }
   .owner-shell .o-link { justify-content: center; padding: 10px; }
   .owner-shell .o-grid-4, .owner-shell .grid-4 { grid-template-columns: repeat(2, 1fr); }
   .owner-shell .o-grid-3, .owner-shell .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  /* Поиск — только иконка (текст и kbd прячем), экономим место в топбаре. */
+  .owner-shell .o-search-btn span, .owner-shell .o-search-btn kbd { display: none; }
+  .owner-shell .o-search-btn { padding: 8px; }
 }
 @media (max-width: 700px) {
   .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4,
   .owner-shell .grid-2, .owner-shell .grid-3, .owner-shell .grid-4 { grid-template-columns: 1fr; }
-  .owner-shell .o-topbar-head { flex-basis: 100%; }
   .owner-shell .o-content { padding: 14px; }
+  /* Профиль сжимается до аватара (имя/роль/стрелку прячем), но САМ профиль
+     ОСТАЁТСЯ наверху справа на любом экране (требование клиента). */
+  .owner-shell .o-user-text { display: none; }
+  .owner-shell .o-user > span { display: none; }
 }
+
+/* ═══ Wave Bento shell: док, стеклянный топбар, баннеры отделов ═══════════
+   Перенос дизайна wave-erp-design.vercel.app. Блок в конце файла —
+   переопределяет базовые правила каскадом. */
+
+/* Топбар — стеклянный, бренд слева */
+.owner-shell.dock-shell .o-topbar {
+  background: rgba(250, 250, 252, 0.78);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  border-bottom: 1px solid rgba(20, 20, 40, 0.06);
+}
+.owner-shell .o-brand-top {
+  border-bottom: none; margin-bottom: 0; padding: 0 6px 0 0;
+  flex-shrink: 0;
+}
+.owner-shell .o-brand-top .o-brand-copy { line-height: 1.15; }
+.owner-shell.dock-shell .o-brand-ico { box-shadow: 0 6px 16px -6px rgba(10, 132, 255, 0.7); }
+
+/* Контент: место под док снизу */
+.owner-shell.dock-shell .o-content { padding: 24px 24px 118px; }
+
+/* Кнопка быстрого AI-чата в топбаре */
+.owner-shell .o-ai-btn {
+  width: 34px; height: 34px; border-radius: 10px; border: none; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #0A84FF, #7C5CFF 60%, #C05CFF);
+  color: #fff; font-family: inherit;
+  box-shadow: 0 6px 16px -6px rgba(124, 92, 255, 0.65);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.owner-shell .o-ai-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 22px -8px rgba(124, 92, 255, 0.8); }
+
+/* ── macOS-док ── */
+.owner-shell .dock-wrap {
+  position: fixed; left: 0; right: 0; bottom: 14px; z-index: 120;
+  display: flex; justify-content: center; pointer-events: none;
+  padding: 0 12px;
+}
+/* В режиме «войти как» (WoW) снизу фиолетовая плашка возврата — поднимаем док,
+   чтобы она его не перекрывала (иначе раздел в доке «не найти»). */
+body:has(.wow-imp-bar) .owner-shell .dock-wrap { bottom: 56px; }
+.owner-shell .dock {
+  pointer-events: auto;
+  display: flex; align-items: flex-end; gap: 8px;
+  background: rgba(252, 252, 254, 0.74);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  outline: 1px solid rgba(20, 20, 40, 0.07);
+  border-radius: 22px;
+  padding: 9px 11px;
+  box-shadow: 0 22px 60px -18px rgba(20, 20, 40, 0.35);
+  max-width: calc(100vw - 24px);
+  overflow-x: auto; overflow-y: visible;
+}
+.owner-shell .dock::-webkit-scrollbar { display: none; }
+.owner-shell .dock-item { position: relative; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; }
+.owner-shell .dock-item > button { border: none; background: none; padding: 0; cursor: pointer; }
+.owner-shell .dock-icon {
+  border-radius: 30%; color: #fff; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 18px -7px rgba(20, 20, 40, 0.45);
+}
+.owner-shell .dock-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--text3); margin-top: 4px; opacity: 0; }
+.owner-shell .dock-item.active .dock-dot { opacity: 1; }
+.owner-shell .dock-tip {
+  position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+  background: rgba(30, 30, 40, 0.92); color: #fff;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  padding: 5px 10px; border-radius: 8px; pointer-events: none; z-index: 5;
+}
+.owner-shell .dock-label {
+  font-size: 9.5px; font-weight: 650; color: var(--text2);
+  max-width: 72px; text-align: center; line-height: 1.05;
+  margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  letter-spacing: -0.02em;
+}
+.owner-shell .dock-sep { width: 1px; align-self: stretch; margin: 6px 2px; background: rgba(20, 20, 40, 0.12); flex-shrink: 0; }
+
+/* ── Баннер отдела (вместо плоского заголовка) ── */
+.owner-shell .o-banner {
+  position: relative; overflow: hidden;
+  border-radius: 24px; padding: 26px 28px;
+  color: #fff; margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.owner-shell .o-banner .o-section-head-title { color: #fff; position: relative; }
+.owner-shell .o-banner .o-section-head-desc { color: rgba(255, 255, 255, 0.86); position: relative; }
+.owner-shell .o-banner .o-section-head-meta { color: rgba(255, 255, 255, 0.78); position: relative; }
+.owner-shell .o-banner-glyph {
+  position: absolute; right: -22px; bottom: -38px; opacity: 0.16;
+  transform: rotate(-8deg); pointer-events: none;
+}
+.owner-shell .o-banner-shine {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(500px 220px at 20% -30%, rgba(255, 255, 255, 0.35), transparent 60%);
+}
+
+/* ── Быстрые действия и «Недавнее» в баннере ──
+   Правая половина баннера пустовала: были только заголовок, описание и два
+   счётчика. Кнопки ведут прямо в самые частые инструменты раздела, а чипы
+   «Недавнее» возвращают к тому, с чем человек работал. Денежные плитки сюда
+   не возвращаем — их убирали намеренно, они дублировали Главную. */
+.owner-shell .o-banner-actions {
+  position: absolute; right: 26px; top: 24px; z-index: 2;
+  display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+  max-width: 42%;
+}
+.owner-shell .o-banner-act {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 13px; border-radius: 12px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #fff; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  backdrop-filter: blur(6px);
+  transition: background .15s var(--ease), transform .15s var(--ease);
+  text-align: left;
+}
+.owner-shell .o-banner-act:hover { background: rgba(255, 255, 255, 0.26); transform: translateX(-2px); }
+.owner-shell .o-banner-act-ico { display: flex; opacity: 0.85; flex-shrink: 0; }
+.owner-shell .o-banner-act-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.owner-shell .o-banner-act-arw { opacity: 0.7; flex-shrink: 0; }
+
+.owner-shell .o-banner-recent {
+  position: relative; z-index: 2;
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  margin-top: 14px; max-width: 56%;
+}
+.owner-shell .o-banner-recent-cap {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .5px;
+  text-transform: uppercase; color: rgba(255, 255, 255, 0.62);
+}
+.owner-shell .o-recent-chip {
+  padding: 5px 11px; border-radius: 980px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.94);
+  font-family: inherit; font-size: 11.5px; font-weight: 600;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .15s var(--ease);
+}
+.owner-shell .o-recent-chip:hover { background: rgba(255, 255, 255, 0.24); }
+
+/* На узком экране кнопки не могут висеть справа — они перекрыли бы заголовок.
+   Ставим их в общий поток под описанием и растягиваем в строку. */
+@media (max-width: 900px) {
+  .owner-shell .o-banner-actions {
+    position: static; right: auto; top: auto; max-width: 100%;
+    flex-direction: row; flex-wrap: wrap; margin-top: 14px;
+  }
+  .owner-shell .o-banner-recent { max-width: 100%; }
+  .owner-shell .o-banner-act-txt { max-width: 150px; }
+}
+
+/* Метрики внутри баннера (как в концепте) */
+/* Показатели растянуты на ВСЮ ширину баннера (space-between) — во всех разделах:
+   Склад/Маркетинг/Продажи и т.д. Правый паддинг — чтобы последний столбик не
+   сливался с декоративным глифом раздела. */
+.owner-shell .o-banner-stats {
+  display: flex; justify-content: space-between; gap: 24px 30px;
+  margin-top: 18px;
+  /* Справа теперь колонка быстрых действий — уводим последний счётчик из-под неё,
+     иначе «3 с вкладками» вплотную подпирало третью кнопку. */
+  padding-right: clamp(0px, 20vw, 270px);
+  position: relative; flex-wrap: wrap; align-items: flex-end;
+}
+/* На узком экране кнопки уже в общем потоке — отступ справа не нужен. */
+@media (max-width: 900px) {
+  .owner-shell .o-banner-stats { padding-right: 0; }
+}
+.owner-shell .o-banner-stats > div { min-width: 0; }
+.owner-shell .o-banner-stats b {
+  display: flex; align-items: baseline; gap: 5px;
+  font-size: 23px; font-weight: 750; letter-spacing: -0.02em; color: #fff;
+  font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.15;
+}
+/* Единица валюты — тонкий суффикс, чтобы число читалось как «полная» сумма, не голое. */
+.owner-shell .o-stat-unit { font-size: 12px; font-weight: 600; font-style: normal; opacity: .62; letter-spacing: 0; }
+.owner-shell .o-banner-stats span { display: block; margin-top: 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; opacity: .72; color: #fff; }
+
+/* Стрелка «Открыть» — только при наведении (как в концепте) */
+.owner-shell .o-tool-card { position: relative; }
+.owner-shell .o-tool-go {
+  position: absolute; top: 15px; right: 14px;
+  color: var(--text3); font-size: 15px; font-weight: 600;
+  opacity: 0; transform: translateX(-4px);
+  transition: opacity .2s ease, transform .2s ease;
+}
+.owner-shell .o-tool-card:hover .o-tool-go { opacity: 1; transform: translateX(0); color: var(--primary); }
+.owner-shell .o-tool-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Чип-иконка инструмента на карточке */
+.owner-shell .o-tool-chip {
+  width: 36px; height: 36px; border-radius: 11px; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-bottom: 10px;
+  box-shadow: 0 6px 14px -6px rgba(20, 20, 40, 0.4);
+}
+.owner-shell .o-tool-card { border-radius: 18px; }
+.owner-shell .o-tool-card:hover { border-color: rgba(20, 20, 40, 0.18); }
+
+/* Скроллбар контента — тонкий, в стиле OpenAI */
+.owner-shell .o-content { scrollbar-width: thin; scrollbar-color: transparent transparent; scroll-behavior: smooth; }
+.owner-shell .o-content:hover { scrollbar-color: rgba(20, 20, 40, 0.22) transparent; }
+.owner-shell .o-content::-webkit-scrollbar { width: 6px; }
+.owner-shell .o-content::-webkit-scrollbar-thumb { background: transparent; border-radius: 980px; }
+.owner-shell .o-content:hover::-webkit-scrollbar-thumb { background: rgba(20, 20, 40, 0.22); }
+.owner-shell .o-content::-webkit-scrollbar-track { background: transparent; }
+
+@media (max-width: 760px) {
+  .owner-shell .o-brand-top .o-brand-copy { display: none; }
+  .owner-shell.dock-shell .o-content { padding: 14px 14px 108px; }
+}
+
+/* ═══ Bento-Главная (DashboardBento) ═════════════════════════════════════ */
+.owner-shell .o-bento-page { max-width: 1220px; margin: 0 auto; }
+/* Страница раздела (баннер + сетка карточек) — та же ширина, что у Главной
+   и у окна инструмента, иначе на широких экранах раздел растягивается во весь
+   экран, а остальные страницы остаются по центру с полями по бокам. */
+.owner-shell .o-section-page { max-width: 1220px; margin: 0 auto; }
+.owner-shell .o-bento-greet { margin-bottom: 18px; }
+.owner-shell .o-bento-greet h1 { font-size: clamp(24px, 3vw, 31px); font-weight: 700; letter-spacing: -0.02em; }
+.owner-shell .o-bento-greet p { font-size: 13px; color: var(--text2); margin-top: 4px; }
+.owner-shell .o-live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #16A34A; margin-right: 7px; box-shadow: 0 0 0 3px rgba(22, 163, 74, .15); }
+
+.owner-shell .o-bento { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 84px; gap: 14px; grid-auto-flow: dense; }
+.owner-shell .o-bt {
+  position: relative; overflow: hidden; min-width: 0;
+  background: var(--surface); border: 1px solid rgba(20, 20, 40, 0.06);
+  border-radius: 24px; padding: 16px 18px;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column;
+  font-family: inherit; text-align: left; cursor: default;
+}
+.owner-shell button.o-bt { cursor: pointer; }
+.owner-shell .o-bt.c2 { grid-column: span 2; } .owner-shell .o-bt.c1 { grid-column: span 1; } .owner-shell .o-bt.c4 { grid-column: span 4; }
+.owner-shell .o-bt.r2 { grid-row: span 2; } .owner-shell .o-bt.r3 { grid-row: span 3; } .owner-shell .o-bt.r4 { grid-row: span 4; }
+.owner-shell .o-bt-label {
+  font-size: 10.5px; font-weight: 700; color: var(--text3);
+  letter-spacing: .07em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.owner-shell .o-bt-hero { font-size: clamp(26px, 3vw, 38px); font-weight: 700; letter-spacing: -0.03em; margin-top: 6px; line-height: 1.06; }
+.owner-shell .o-bt-hero .cur { font-size: 14px; font-weight: 600; color: var(--text3); }
+.owner-shell .o-bt-value { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin-top: 6px; }
+.owner-shell .o-bt-sub { font-size: 11px; color: var(--text3); margin-top: 3px; font-weight: 500; }
+.owner-shell .o-bt-delta { font-size: 11.5px; font-weight: 650; margin-top: 3px; }
+.owner-shell .o-bt-delta.up { color: var(--green); }
+.owner-shell .o-bt-delta.down { color: var(--red); }
+.owner-shell .o-bt-pill { display: inline-flex; font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 980px; }
+.owner-shell .o-bt-cnt { background: rgba(229, 72, 77, .12); color: var(--red); border-radius: 980px; padding: 1px 8px; font-size: 10px; }
+
+.owner-shell .o-bt-ai {
+  background: linear-gradient(115deg, #0b1220, #1b2440 55%, #2a1f4d);
+  color: #fff; border: none;
+}
+.owner-shell .o-bt-ai-text { font-size: 14px; line-height: 1.55; margin-top: 9px; font-weight: 450; }
+.owner-shell .o-bt-ai-orb {
+  position: absolute; right: -30px; top: -30px; width: 150px; height: 150px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(94, 92, 230, .5), transparent 70%);
+  filter: blur(6px); pointer-events: none;
+}
+.owner-shell .o-bt-weather {
+  background: linear-gradient(165deg, #2e7cd6 0%, #4a97e8 48%, #7ab8f2 100%);
+  color: #fff; border: none;
+}
+
+.owner-shell .o-bt-depts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+.owner-shell .o-bt-depts button {
+  height: 34px; border: none; border-radius: 10px; cursor: pointer; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 14px -6px rgba(20, 20, 40, .35);
+}
+.owner-shell .o-bt-bar { display: flex; align-items: center; gap: 10px; margin-top: 11px; }
+.owner-shell .o-bt-bar .n { font-size: 12px; color: var(--text2); width: 100px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.owner-shell .o-bt-bar .t { flex: 1; height: 12px; display: flex; align-items: center; }
+.owner-shell .o-bt-bar .f { display: block; height: 12px; border-radius: 0 4px 4px 0; min-width: 3px; }
+.owner-shell .o-bt-bar .v { font-size: 11.5px; font-weight: 650; width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
+.owner-shell .o-bt-alert { display: flex; gap: 9px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid rgba(20, 20, 40, .05); }
+.owner-shell .o-bt-alert:last-child { border-bottom: none; }
+.owner-shell .o-bt-alert .d { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.owner-shell .o-bt-alert .t1 { font-size: 12.5px; font-weight: 600; }
+.owner-shell .o-bt-alert .t2 { font-size: 11px; color: var(--text3); margin-top: 1px; }
+.owner-shell .o-bt-rank { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(20, 20, 40, .05); font-size: 12.5px; }
+.owner-shell .o-bt-rank:last-child { border-bottom: none; }
+.owner-shell .o-bt-rank .n { width: 18px; font-size: 11px; font-weight: 700; color: var(--text3); flex-shrink: 0; }
+.owner-shell .o-bt-rank .name { flex: 1; min-width: 0; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.owner-shell .o-bt-rank .name .sub { display: block; font-size: 10.5px; color: var(--text3); font-weight: 500; }
+.owner-shell .o-bt-rank .val { font-weight: 650; font-variant-numeric: tabular-nums; }
+.owner-shell .o-bt-tt {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: rgba(255, 255, 255, .96); border: 1px solid rgba(20, 20, 40, .12); border-radius: 10px;
+  padding: 6px 10px; font-size: 11px; white-space: nowrap;
+  transform: translate(-50%, -125%); box-shadow: var(--shadow-lg);
+}
+.owner-shell .o-bt-tt .l { color: var(--text3); font-size: 10px; }
+.owner-shell .o-bt-tt .v { font-weight: 700; font-size: 12.5px; }
+
+@media (max-width: 1020px) {
+  .owner-shell .o-bento { grid-template-columns: repeat(2, 1fr); }
+  .owner-shell .o-bt.c4 { grid-column: span 2; }
+}
+@media (max-width: 640px) {
+  .owner-shell .o-bento { grid-template-columns: 1fr; }
+  .owner-shell .o-bt.c2, .owner-shell .o-bt.c4 { grid-column: span 1; }
+}
+
+/* ═══ Launchpad (Start-меню, стиль Windows 11) ═══════════════════════════ */
+.owner-shell .ws-backdrop {
+  position: fixed; inset: 0; z-index: 140;
+  background: rgba(25, 28, 45, .3);
+  backdrop-filter: blur(12px) saturate(140%); -webkit-backdrop-filter: blur(12px) saturate(140%);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 3vh 16px 100px;
+}
+.owner-shell .ws-panel {
+  position: relative; overflow: hidden;
+  width: min(1100px, 96vw); height: min(82vh, 900px);
+  display: flex; flex-direction: column;
+  background: rgba(247, 248, 252, .92);
+  backdrop-filter: blur(48px) saturate(170%); -webkit-backdrop-filter: blur(48px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, .7);
+  outline: 1px solid rgba(20, 20, 40, .09);
+  border-radius: 18px;
+  box-shadow: 0 44px 130px -30px rgba(8, 10, 30, .6);
+}
+.owner-shell .ws-panel::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(560px 320px at 8% 4%, rgba(255, 150, 200, .13), transparent 60%),
+    radial-gradient(620px 360px at 95% 10%, rgba(120, 180, 255, .16), transparent 60%),
+    radial-gradient(600px 380px at 12% 98%, rgba(140, 235, 185, .12), transparent 60%);
+}
+.owner-shell .ws-search {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 10px;
+  margin: 16px 22px 4px;
+  background: #fff; border: 1px solid rgba(20, 20, 40, .1);
+  border-radius: 980px; padding: 10px 16px; color: var(--text3);
+  box-shadow: 0 2px 10px rgba(20, 20, 40, .07);
+}
+.owner-shell .ws-search input { flex: 1; border: none; outline: none; background: transparent; font-size: 14px; color: var(--text); font-family: inherit; }
+.owner-shell .ws-scroll { position: relative; z-index: 1; flex: 1; overflow-y: auto; padding: 4px 22px 14px; }
+.owner-shell .ws-sec-head { display: flex; align-items: center; justify-content: space-between; margin: 16px 6px 10px; }
+.owner-shell .ws-sec-head h3 { font-size: 14px; font-weight: 700; }
+.owner-shell .ws-link { border: none; background: none; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600; color: var(--text2); padding: 5px 11px; border-radius: 8px; }
+.owner-shell .ws-link:hover { background: rgba(255, 255, 255, .75); color: var(--text); }
+.owner-shell .ws-pinned-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 4px 2px; }
+.owner-shell .ws-app { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 11px 4px 9px; border-radius: 11px; border: none; background: none; cursor: pointer; font-family: inherit; }
+.owner-shell .ws-app:hover { background: rgba(255, 255, 255, .7); }
+.owner-shell .ws-app-label {
+  font-size: 11.5px; font-weight: 500; color: var(--text); text-align: center; line-height: 1.25;
+  max-width: 102px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.owner-shell .ws-gi {
+  width: 44px; height: 44px; border-radius: 12px; color: #fff; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 18px -8px rgba(10, 15, 50, .45), inset 0 1px 1px rgba(255, 255, 255, .45);
+}
+.owner-shell .ws-gi.big { width: 52px; height: 52px; border-radius: 14px; }
+.owner-shell .ws-cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-bottom: 6px; }
+.owner-shell .ws-cat {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  background: rgba(255, 255, 255, .62); border: 1px solid rgba(20, 20, 40, .07);
+  border-radius: 14px; padding: 16px 10px 13px; cursor: pointer; font-family: inherit;
+  box-shadow: 0 4px 14px -8px rgba(20, 20, 40, .15);
+}
+.owner-shell .ws-cat:hover { background: rgba(255, 255, 255, .88); }
+.owner-shell .ws-cat-name { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.owner-shell .ws-cat-cnt { font-size: 10.5px; color: var(--text3); }
+.owner-shell .ws-footer {
+  position: relative; z-index: 1; flex-shrink: 0;
+  display: flex; align-items: center;
+  border-top: 1px solid rgba(20, 20, 40, .08);
+  background: rgba(250, 250, 253, .55);
+  padding: 10px 22px;
+}
+.owner-shell .ws-user { display: flex; align-items: center; gap: 10px; }
+.owner-shell .ws-user b { display: block; font-size: 13px; font-weight: 650; color: var(--text); }
+.owner-shell .ws-user span { font-size: 11px; color: var(--text3); }
+.owner-shell .ws-power { margin-left: auto; width: 34px; height: 34px; border: none; background: none; border-radius: 10px; cursor: pointer; color: var(--text2); font-size: 14px; }
+.owner-shell .ws-power:hover { background: rgba(255, 255, 255, .8); }
+.owner-shell .ws-empty { grid-column: 1 / -1; padding: 30px; text-align: center; color: var(--text3); font-size: 13px; }
+@media (max-width: 900px) { .owner-shell .ws-cat-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) { .owner-shell .ws-cat-grid { grid-template-columns: repeat(2, 1fr); } }
+
+
+/* ═══ Окно инструмента (стиль концепта: градиентная шапка + белое тело) ═══ */
+.owner-shell .o-sheet {
+  /* Полноэкранный инструмент БЕЗ «рамки»: во всю ширину, без скругления/бордера/
+     тени/max-width. Скролл — ВНУТРИ тела (.o-sheet-body), внешняя страница не
+     скроллится (двойной скролл исключён). Заполнение флексом, а не calc(100vh-…):
+     топбар может переноситься на 2 строки, и жёсткий calc давал бы переполнение. */
+  width: 100%;
+  background: #FBFBFD;
+  overflow: hidden;
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  position: relative;
+  /* Отступ-«читаемая ширина»: на ноутбуках (≤~1550px) = 26px (full-bleed edge-to-edge),
+     на широких/ультравайд — центрирует контент на 1500px, чтобы было УДОБНО (не растянуто). */
+  --tool-pad: max(26px, calc((100% - 1500px) / 2));
+}
+/* Контейнер контента на странице инструмента: сам не скроллится, отдаёт высоту окну.
+   padding:0 — инструмент во весь экран без внешних отступов оболочки. */
+.owner-shell .o-content-tool { overflow: hidden; display: flex; flex-direction: column; padding: 0 !important; }
+.owner-shell .o-sheet-head { flex-shrink: 0; }
+.owner-shell .o-sheet-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  /* Нативный скроллбар скрыт — вместо него Sora-штрихи (.o-ticks) внутри окна. */
+  scrollbar-width: none;
+}
+.owner-shell .o-sheet-body::-webkit-scrollbar { display: none; }
+/* Инлайн-панель действий инструмента (бывшие topbar-actions) — первой строкой в окне. */
+.owner-shell .o-sheet-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.owner-shell .o-sheet-head {
+  position: relative; color: #fff; padding: 22px var(--tool-pad, 26px) 19px; overflow: hidden;
+}
+.owner-shell .o-sheet-head::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(480px 200px at 18% -30%, rgba(255, 255, 255, 0.32), transparent 60%);
+}
+.owner-shell .o-sheet-row { display: flex; align-items: center; gap: 13px; position: relative; z-index: 1; }
+.owner-shell .o-sheet-chip {
+  width: 44px; height: 44px; border-radius: 13px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  color: #fff;
+}
+.owner-shell .o-sheet-head h2 { font-size: 21px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.2; }
+.owner-shell .o-sheet-head p { font-size: 12.5px; opacity: 0.86; margin-top: 3px; }
+.owner-shell .o-sheet-crumb { margin-left: auto; align-self: flex-start; font-size: 11px; font-weight: 600; opacity: 0.75; padding-right: 34px; white-space: nowrap; }
+.owner-shell .o-sheet-x {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 30px; height: 30px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(255, 255, 255, 0.22); color: #fff; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s;
+  font-family: inherit;
+}
+.owner-shell .o-sheet-x:hover { background: rgba(255, 255, 255, 0.36); }
+/* Нижний отступ тела — клиренс под компактный плавающий док (не прячет контент).
+   Боковой отступ — читаемая ширина (var --tool-pad): full-bleed на ноутбуке,
+   центровка на ультравайде. */
+.owner-shell .o-sheet-body { padding: 18px var(--tool-pad, 26px) 96px; }
+@media (max-width: 760px) {
+  .owner-shell .o-sheet { --tool-pad: 14px; }
+  .owner-shell .o-sheet-body { padding-bottom: 92px; }
+  .owner-shell .o-sheet-crumb { display: none; }
+}
+
+
+/* ═══ AI-диагност «Где у меня проблемы?» (Где→Кто→Что→Почему→Как решить) ═══ */
+.owner-shell .aidiag { margin-bottom: 20px; }
+.owner-shell .aidiag-cta {
+  width: 100%; display: flex; align-items: center; gap: 14px; text-align: left;
+  padding: 18px 20px; cursor: pointer; font-family: inherit;
+  border: none; border-radius: 18px;
+  background: linear-gradient(115deg, #0b1220, #1b2440 55%, #2a1f4d);
+  color: #fff; box-shadow: 0 18px 44px -18px rgba(30, 30, 80, .5);
+}
+.owner-shell .aidiag-cta-orb {
+  width: 44px; height: 44px; border-radius: 13px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 20px;
+  background: linear-gradient(135deg, #0a84ff, #7c5cff 60%, #c05cff);
+  box-shadow: 0 8px 20px -6px rgba(124, 92, 255, .7);
+}
+.owner-shell .aidiag-cta-copy { flex: 1; min-width: 0; }
+.owner-shell .aidiag-cta-copy b { display: block; font-size: 16px; font-weight: 750; letter-spacing: -0.01em; }
+.owner-shell .aidiag-cta-copy span { display: block; font-size: 12.5px; opacity: 0.72; margin-top: 3px; line-height: 1.4; }
+.owner-shell .aidiag-cta-go { font-size: 13px; font-weight: 700; color: #9ec5ff; white-space: nowrap; flex-shrink: 0; }
+
+.owner-shell .aidiag-loading {
+  display: flex; align-items: center; gap: 11px;
+  padding: 18px 20px; border-radius: 18px;
+  background: linear-gradient(115deg, #0b1220, #1b2440 55%, #2a1f4d);
+  color: #fff; font-size: 14px; font-weight: 600;
+}
+.owner-shell .aidiag-spark { font-size: 18px; color: #b58cf7; display: inline-flex; filter: drop-shadow(0 0 8px rgba(181, 140, 247, .6)); }
+.owner-shell .aidiag-error { padding: 14px 18px; border-radius: 14px; background: rgba(229, 72, 77, .08); color: #b91c1c; font-size: 13px; font-weight: 600; }
+
+.owner-shell .aidiag-summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; margin-bottom: 14px;
+  border-radius: 14px; font-size: 13.5px; font-weight: 600; color: var(--text);
+  background: linear-gradient(100deg, rgba(10, 132, 255, .1), rgba(191, 90, 242, .1));
+  border: 1px solid rgba(140, 110, 250, .22);
+}
+.owner-shell .aidiag-summary-ico { color: #7c5cff; flex-shrink: 0; }
+.owner-shell .aidiag-refresh { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text2); font-size: 16px; padding: 2px 6px; border-radius: 8px; flex-shrink: 0; }
+.owner-shell .aidiag-refresh:hover { background: rgba(20, 20, 40, .06); color: var(--text); }
+.owner-shell .aidiag-empty { padding: 24px; text-align: center; color: var(--text3); font-size: 14px; background: var(--surface); border-radius: 14px; border: 1px solid var(--border); }
+
+.owner-shell .aidiag-list { display: flex; flex-direction: column; gap: 12px; }
+.owner-shell .aidiag-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 15px 17px; box-shadow: var(--shadow);
+}
+.owner-shell .aidiag-card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.owner-shell .aidiag-num {
+  width: 24px; height: 24px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-2); color: var(--text2); font-size: 12px; font-weight: 800;
+}
+.owner-shell .aidiag-sev { font-size: 10px; font-weight: 800; letter-spacing: .05em; padding: 3px 9px; border-radius: 980px; }
+.owner-shell .aidiag-open { margin-left: auto; background: none; border: none; cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 700; color: var(--primary); padding: 4px 8px; border-radius: 8px; }
+.owner-shell .aidiag-open:hover { background: var(--primary-50); }
+
+.owner-shell .aidiag-steps { display: flex; flex-direction: column; gap: 8px; }
+.owner-shell .aidiag-step { display: flex; gap: 12px; align-items: baseline; }
+.owner-shell .aidiag-step-label {
+  flex-shrink: 0; width: 84px; font-size: 10.5px; font-weight: 800;
+  letter-spacing: .05em; text-transform: uppercase; padding-top: 1px;
+}
+.owner-shell .aidiag-step-val { flex: 1; min-width: 0; font-size: 13.5px; line-height: 1.5; color: var(--text); font-weight: 500; }
+@media (max-width: 560px) {
+  .owner-shell .aidiag-step { flex-direction: column; gap: 1px; }
+  .owner-shell .aidiag-step-label { width: auto; }
+}
+
+
+/* ═══ Единая панель фильтров инструментов (usePeriod / ToolFilters) ═══════ */
+.owner-shell .tool-filters {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.owner-shell .tool-filters-label {
+  font-size: 10.5px; font-weight: 800; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.owner-shell .tool-filters-pills {
+  display: inline-flex; gap: 2px; background: var(--bg-2);
+  border-radius: 9px; padding: 3px;
+}
+.owner-shell .tool-filters-pill {
+  padding: 6px 13px; border: none; background: transparent; border-radius: 7px;
+  cursor: pointer; font-family: inherit; font-weight: 600; font-size: 12.5px;
+  color: var(--text2); transition: background .12s, color .12s;
+}
+.owner-shell .tool-filters-pill:hover { color: var(--text); }
+.owner-shell .tool-filters-pill.active {
+  background: var(--surface); color: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+.owner-shell .tool-filters-branch {
+  display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+  font-size: 12px; font-weight: 600; color: var(--text2);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 11px;
+}
+.owner-shell .tool-filters-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
+
+/* ═══ AI-воркспейс: чат + канвас-рисование (перенос из wave-erp-design) ═══
+   Реальный ИИ (/api/ai/chat), реальные графики (/api/ai/chart-data) — только
+   визуальная магия «перо рисует, пока думает» портирована из дизайн-концепта. */
+/* Обёртка AI-страницы: точная высота = вьюпорт минус топбар минус паддинги
+   .o-content (верх 24 + низ 118 — клиренс дока), БЕЗ негативных margin-хаков —
+   сидит внутри обычного паддинга контента, как все остальные страницы. */
+/* AI-страница full-bleed: контент без внешних паддингов, воркспейс тянется на
+   весь вьюпорт между топбаром и доком (клиренс снизу под плавающий док). */
+/* На странице AI док СКРЫТ — нижний клиренс минимальный (воркспейс во весь экран). */
+.owner-shell .o-content-ai {
+  padding: 10px 0 12px !important;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.owner-shell.dock-shell .o-content-ai { padding: 10px 0 12px !important; }
+@media (max-width: 860px) { .owner-shell .o-content-ai { padding: 8px 0 10px !important; } }
+.owner-shell .ai-page { flex: 1; min-height: 0; }
+
+/* AI-воркспейс встроен во вьюпорт (НЕ «окно в окне»), без бара-панели —
+   история и новый чат плавающими кнопками в углу (.aiw-float). */
+.owner-shell .aiw {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  background: transparent;
+  overflow: hidden;
+  position: relative;
+}
+/* Плавающие мини-кнопки (история + новый чат) поверх канваса, правый верх. */
+.owner-shell .aiw-float { position: absolute; top: 10px; right: 14px; z-index: 6; display: flex; gap: 8px; }
+.owner-shell .aiw-fbtn {
+  width: 34px; height: 34px; border-radius: 10px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border); color: var(--text2);
+  transition: background .15s, color .15s; font-family: inherit;
+}
+.owner-shell .aiw-fbtn:hover { background: #fff; color: var(--text); }
+.owner-shell .aiw-top {
+  display: flex; align-items: center; gap: 11px;
+  padding: 2px 20px; flex-shrink: 0;
+  background: transparent;
+}
+.owner-shell .aiw-top b { display: block; font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+.owner-shell .aiw-top > div > span { font-size: 11px; color: var(--text3); }
+.owner-shell .aiw-hist {
+  width: 30px; height: 30px; border-radius: 9px; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; color: var(--text2);
+  background: none; transition: background .15s;
+}
+.owner-shell .aiw-hist:hover { background: var(--bg-2); }
+.owner-shell .aic-spark {
+  width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, #0a84ff, #7c5cff 60%, #c05cff);
+  box-shadow: 0 6px 16px -6px rgba(100, 80, 255, .6);
+}
+.owner-shell .aiw-new {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 550; color: var(--text2);
+  border: 1px solid var(--border); border-radius: 980px;
+  padding: 6px 13px; transition: all .15s; background: var(--surface);
+  cursor: pointer; font-family: inherit;
+}
+.owner-shell .aiw-new:hover { color: var(--text); background: var(--bg-2); }
+.owner-shell .aic-x {
+  width: 30px; height: 30px; border-radius: 50%; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; color: var(--text2);
+  background: none; transition: background .15s;
+}
+.owner-shell .aic-x:hover { background: var(--bg-2); }
+
+.owner-shell .aiw-body {
+  flex: 1; display: flex; min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+.owner-shell .aiw-chat {
+  width: min(420px, 44vw); flex-shrink: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.owner-shell .aiw-canvas {
+  flex: 1; min-width: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 26px; overflow-y: auto;
+  background-image: radial-gradient(rgba(20, 20, 40, .07) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+/* Вертикальное центрирование короткого контента, но БЕЗ клипа высокой панели
+   (баг flex align-items:center + overflow — верх недостижим; auto-margins лечат). */
+.owner-shell .aiw-canvas > * { margin-top: auto; margin-bottom: auto; }
+.owner-shell .aiw-empty { text-align: center; max-width: 380px; }
+.owner-shell .aiw-orb {
+  width: 64px; height: 64px; border-radius: 20px; margin: 0 auto 18px;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, #0a84ff, #7c5cff 60%, #c05cff);
+  box-shadow: 0 18px 40px -14px rgba(100, 80, 255, .7);
+}
+.owner-shell .aiw-empty h3 { font-size: 19px; font-weight: 700; letter-spacing: -.015em; color: var(--text); }
+.owner-shell .aiw-empty p { font-size: 13px; color: var(--text2); margin-top: 7px; line-height: 1.5; }
+
+/* Эскиз пером: перо рисует каркас, пока идёт реальный запрос к ИИ */
+.owner-shell .aiw-sketch { width: min(720px, 100%); align-self: center; }
+.owner-shell .aiw-gen-pill {
+  display: flex; align-items: center; gap: 8px;
+  width: fit-content; margin: 0 auto 18px;
+  background: var(--surface); border: 1px solid rgba(124, 92, 255, .25);
+  border-radius: 980px; padding: 7px 15px;
+  font-size: 12px; font-weight: 600; color: var(--text2);
+  box-shadow: 0 8px 24px -10px rgba(124, 92, 255, .45);
+  overflow: hidden;
+}
+
+/* Материализованный экран: реальный AiChartBlock + кнопка «Открыть» */
+.owner-shell .aiw-drawn { width: min(720px, 100%); align-self: center; display: flex; flex-direction: column; gap: 12px; }
+.owner-shell .aiw-drawn-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 10.5px; color: var(--text3); padding: 0 4px;
+}
+.owner-shell .aiw-open {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; color: #fff;
+  background: var(--text); border: none; cursor: pointer; font-family: inherit;
+  border-radius: 980px; padding: 7px 14px; transition: opacity .15s;
+}
+.owner-shell .aiw-open:hover { opacity: .85; }
+
+/* Бизнес-панель: собранный под вопрос ответ (инсайт + KPI + чарт + действия) */
+.owner-shell .aiw-panel {
+  width: min(760px, 100%); align-self: center;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.owner-shell .aiw-panel-head { display: flex; align-items: flex-start; gap: 12px; }
+.owner-shell .aiw-panel-badge {
+  width: 34px; height: 34px; border-radius: 11px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, #0a84ff, #7c5cff 60%, #c05cff);
+  box-shadow: 0 8px 20px -8px rgba(100, 80, 255, .6);
+}
+.owner-shell .aiw-panel-head b { display: block; font-size: 16px; font-weight: 800; letter-spacing: -.015em; color: var(--text); }
+.owner-shell .aiw-panel-head p { font-size: 13px; color: var(--text2); margin-top: 3px; line-height: 1.5; }
+
+.owner-shell .aiw-panel-metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;
+}
+.owner-shell .aiw-metric {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 12px 14px; box-shadow: var(--shadow-sm);
+}
+.owner-shell .aiw-metric-label { font-size: 11.5px; font-weight: 600; color: var(--text3); }
+.owner-shell .aiw-metric-value { font-size: 21px; font-weight: 800; letter-spacing: -.02em; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.owner-shell .aiw-metric-hint { font-size: 11px; color: var(--text3); margin-top: 3px; }
+
+.owner-shell .aiw-panel-chart { }
+
+.owner-shell .aiw-panel-actions { display: flex; flex-direction: column; gap: 8px; }
+.owner-shell .aiw-panel-actions-t { font-size: 12px; font-weight: 800; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
+.owner-shell .aiw-action {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 11px 14px; cursor: pointer; font-family: inherit; text-align: left;
+  color: var(--text2); transition: border-color .15s, box-shadow .15s, transform .1s;
+}
+.owner-shell .aiw-action:hover { border-color: var(--primary); box-shadow: 0 6px 18px -10px rgba(10,132,255,.5); transform: translateY(-1px); }
+.owner-shell .aiw-action-label { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.owner-shell .aiw-action-why { font-size: 11.5px; color: var(--text3); margin-top: 2px; }
+.owner-shell .aiw-panel-foot { font-size: 10.5px; color: var(--text3); text-align: center; padding-top: 2px; }
+
+/* Чат-пузыри (левая колонка воркспейса) */
+.owner-shell .aic-list {
+  flex: 1; overflow-y: auto; padding: 18px 16px 8px;
+  display: flex; flex-direction: column; gap: 14px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin; scrollbar-color: transparent transparent;
+}
+.owner-shell .aic-list:hover { scrollbar-color: rgba(20, 20, 40, .2) transparent; }
+.owner-shell .aic-list::-webkit-scrollbar { width: 5px; }
+.owner-shell .aic-list::-webkit-scrollbar-thumb { background: transparent; border-radius: 980px; }
+.owner-shell .aic-list:hover::-webkit-scrollbar-thumb { background: rgba(20, 20, 40, .2); }
+
+.owner-shell .aic-msg { display: flex; gap: 10px; align-items: flex-start; }
+.owner-shell .aic-msg .aic-ava {
+  width: 24px; height: 24px; border-radius: 8px; flex-shrink: 0; margin-top: 1px;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, #0a84ff, #7c5cff 60%, #c05cff);
+}
+.owner-shell .aic-msg.ai .aic-text { font-size: 13.5px; line-height: 1.6; color: var(--text); padding-top: 2px; }
+.owner-shell .aic-msg.user { justify-content: flex-end; }
+.owner-shell .aic-msg.user .aic-text {
+  background: var(--bg-2); border-radius: 18px 18px 5px 18px;
+  padding: 10px 15px; font-size: 13.5px; line-height: 1.5; color: var(--text);
+  max-width: 82%; white-space: pre-wrap;
+}
+.owner-shell .aic-typing { display: inline-flex; gap: 4px; padding: 9px 2px; }
+.owner-shell .aic-typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); display: block; }
+
+.owner-shell .aic-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 8px 34px; }
+.owner-shell .aic-chip {
+  font-size: 12px; font-weight: 550; color: var(--text2);
+  border: 1px solid var(--border); border-radius: 980px;
+  padding: 7px 13px; transition: all .15s; background: var(--surface);
+  cursor: pointer; font-family: inherit;
+}
+.owner-shell .aic-chip:hover { background: var(--bg-2); color: var(--text); border-color: var(--border-strong); }
+
+.owner-shell .aic-inputwrap { padding: 10px 14px 12px; flex-shrink: 0; }
+.owner-shell .aic-input {
+  display: flex; align-items: center; gap: 8px;
+  border: 1.5px solid var(--border);
+  border-radius: 24px; padding: 8px 8px 8px 16px;
+  transition: border-color .2s, box-shadow .2s;
+  background: var(--surface);
+}
+.owner-shell .aic-input:focus-within { border-color: var(--primary); box-shadow: 0 0 0 4px var(--primary-50); }
+.owner-shell .aic-input input { flex: 1; border: none; outline: none; background: transparent; font-size: 13.5px; color: var(--text); min-width: 0; font-family: inherit; }
+.owner-shell .aic-input input::placeholder { color: var(--text3); }
+.owner-shell .aic-send {
+  width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--text); color: #fff; transition: opacity .2s; font-family: inherit;
+}
+.owner-shell .aic-send:disabled { opacity: .25; cursor: default; }
+.owner-shell .aic-note { font-size: 10px; color: var(--text3); text-align: center; margin-top: 8px; }
+
+@media (max-width: 900px) {
+  .owner-shell .aiw-body { flex-direction: column; }
+  .owner-shell .aiw-chat { width: 100%; flex: 1 1 50%; border-right: none; border-bottom: 1px solid var(--border); }
+  .owner-shell .aiw-canvas { flex: 1 1 50%; }
+}
+

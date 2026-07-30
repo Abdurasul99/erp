@@ -6,14 +6,17 @@ import { useTt } from './tt.js';
 import { PageHeaderContext } from './PageHeaderContext.js';
 import CommandPalette from './CommandPalette.jsx';
 import { Icon, SECTION_ICON } from './icons.jsx';
+import NotificationsBell from '../components/NotificationsBell.jsx';
 import api from '../api.js';
 import './styles.css';
 
-import Dashboard from './pages/Dashboard.jsx';
+import DashboardBento from './pages/DashboardBento.jsx';
 import SectionHome from './SectionHome.jsx';
 import ToolRouter from './ToolRouter.jsx';
-import AiChatDrawer from './AiChatDrawer.jsx';
 import AiChatPage from './pages/AiChatPage.jsx';
+import Dock from './Dock.jsx';
+import StartMenu from './StartMenu.jsx';
+import { ScrollTicks } from './ScrollTicks.jsx';
 
 // BranchScope — what slice of data the current view is showing.
 // Также несёт глобальный период (preset или произвольный диапазон дат) — он
@@ -85,18 +88,23 @@ export default function OwnerShell() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('owner_sidebar_collapsed') === '1');
   useEffect(() => { localStorage.setItem('owner_sidebar_collapsed', collapsed ? '1' : '0'); }, [collapsed]);
 
+  // Скролл контента — для колонки штрихов (.o-ticks, стиль OpenAI Sora) справа.
+  const contentRef = useRef(null);
+
   // AI chat drawer state
-  const [aiOpen, setAiOpen] = useState(false);
   // Меню профиля в топбаре (открывается по клику на аватар — раньше сразу был logout)
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   // Глобальный поиск по инструментам (Ctrl+K / Cmd+K)
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Launchpad всех инструментов (радужная кнопка в доке)
+  const [lpOpen, setLpOpen] = useState(false);
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K' || e.key === 'л' || e.key === 'Л')) {
         e.preventDefault();
         setPaletteOpen(o => !o);
       }
+      if (e.key === 'Escape') setLpOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -116,9 +124,18 @@ export default function OwnerShell() {
   const sections = getUserSections(user);
   const parts = pathname.split('/').filter(Boolean);
   const activeSection = parts[1] || 'dashboard';
+  // Страница инструмента (/owner/:section/:tool) — контент не скроллится сам,
+  // окно инструмента заполняет высоту и скроллится внутри (см. .o-content-tool).
+  const isToolPage = parts.length >= 3 && parts[1] !== 'ai';
+  // AI-воркспейс занимает весь вьюпорт оболочки (full-bleed, без внешних паддингов
+  // и рамок) — «увеличено на экран», удобно смотреть и писать.
+  const isAiPage = parts[1] === 'ai';
   // Кнопка периода нужна только там, где данные зависят от периода: Главная, Аналитика,
   // Финансы, Закупки, Склад, Продажи/Операции. На остальных (Маркетинг, Персонал,
   // Клиентский сервис, Настройки) её быть не должно.
+  // 'myboard' сюда НЕ добавлять: у ролевого дашборда свои локальные периоды —
+  // ведомость просит 'YYYY-MM', нарушения — day|week|month|year, глобальный
+  // пресет ('Всё', произвольный диапазон) в них не ложится.
   const showPeriod = ['dashboard', 'analytics', 'finance', 'procurement', 'warehouse', 'operations'].includes(activeSection);
 
   const initials = (user?.first_name || user?.username || 'U').slice(0, 2).toUpperCase();
@@ -134,147 +151,93 @@ export default function OwnerShell() {
   return (
     <BranchScope.Provider value={{ branchId, setBranchId, branches, role, isOwner, period, periodFrom: range.from, periodTo: range.to, periodLabel, setPeriod, customFrom, customTo, setCustomRange }}>
      <PageHeaderContext.Provider value={setPageHead}>
-      <div className={'owner-shell' + (collapsed ? ' collapsed' : '') + (aiOpen && isOwner ? ' ai-open' : '')}>
-        <aside className="o-sidebar">
-          <div className="o-brand" onClick={() => navigate('/owner')}>
-            {user?.company_logo_url
-              ? <img className="o-brand-logo" src={user.company_logo_url} alt="" />
-              : <div className="o-brand-ico">{(user?.company_name || 'W').slice(0, 1).toUpperCase()}</div>}
-            {!collapsed && (
-              <div>
+      <div className="owner-shell dock-shell">
+        <div className="o-main">
+          <header className="o-topbar">
+            {/* Бренд — переехал из сайдбара (сайдбар заменён доком) */}
+            <div className="o-brand o-brand-top" onClick={() => navigate('/owner')}>
+              {user?.company_logo_url
+                ? <img className="o-brand-logo" src={user.company_logo_url} alt="" />
+                : <div className="o-brand-ico">{(user?.company_name || 'W').slice(0, 1).toUpperCase()}</div>}
+              <div className="o-brand-copy">
                 <div className="o-brand-name">{user?.company_name || 'WareApp'}</div>
                 <div className="o-brand-sub">ERP · {roleLabel}</div>
               </div>
-            )}
-          </div>
+            </div>
 
-          <div style={{ marginTop: 4 }}>
-            {/* Главная — вне групп, сверху */}
-            {sections.filter(s => s.id === 'dashboard').map(s => (
-              <button key={s.id} onClick={() => navigate('/owner')}
-                className={'o-link' + (activeSection === 'dashboard' ? ' active' : '')}
-                title={collapsed ? tt(s.title) : undefined}>
-                <Icon name={SECTION_ICON[s.id] || 'home'} />
-                {!collapsed && <span>{tt(s.title)}</span>}
-              </button>
-            ))}
+            {/* Средняя зона: заголовок страницы + все контролы. Вынесена в отдельный
+                флекс-блок, чтобы БРЕНД (слева) и ПРОФИЛЬ (справа) НИКОГДА не переносились
+                на вторую строку — при нехватке места переносятся ТОЛЬКО контролы внутри
+                этой зоны. Профиль учредителя всегда наверху справа, на любом экране. */}
+            <div className="o-topbar-mid">
+              {pageHead.title && (
+                <div className="o-topbar-head">
+                  <div className="o-topbar-copy">
+                    <div className="o-topbar-title">{pageHead.title}</div>
+                    {pageHead.sub && <div className="o-topbar-sub" title={typeof pageHead.sub === 'string' ? pageHead.sub : undefined}>{pageHead.sub}</div>}
+                  </div>
+                </div>
+              )}
 
-            {/* Трёхслойная навигация: Работа / Анализ / Система */}
-            {NAV_GROUPS.map(g => {
-              const groupSections = sections.filter(s => s.group === g.id);
-              if (groupSections.length === 0) return null;
-              return (
-                <div key={g.id}>
-                  {!collapsed && <div className="o-nav-group">{tt(g.label)}</div>}
-                  {collapsed && <div className="o-nav-sep" />}
-                  {groupSections.map(s => (
-                    <button
-                      key={s.id}
-                      onClick={() => navigate('/owner/' + s.id)}
-                      className={'o-link' + (activeSection === s.id ? ' active' : '')}
-                      title={collapsed ? tt(s.title) : undefined}
-                    >
-                      <Icon name={SECTION_ICON[s.id] || 'home'} />
-                      {!collapsed && <span>{tt(s.title)}</span>}
+              <div className="o-topbar-controls">
+                {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
+
+                {/* Глобальный поиск — Ctrl+K или клик */}
+                <button type="button" className="o-search-btn" onClick={() => setPaletteOpen(true)} title={tt('Найти инструмент…')}>
+                  <Icon name='search' size={15} />
+                  <span>{tt('Поиск')}</span>
+                  <kbd>Ctrl K</kbd>
+                </button>
+
+                {/* Фильтр периода — только в разделах, где данные зависят от периода. */}
+                {showPeriod && (
+                  <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
+                    setCustomRange={setCustomRange} periodLabel={periodLabel} tt={tt} />
+                )}
+
+                {/* Переключатель языка RU / UZ */}
+                <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
+                  {['ru', 'uz'].map(l => (
+                    <button key={l} type="button" onClick={() => changeLang && changeLang(l)}
+                      style={{
+                        border: 'none', cursor: 'pointer', padding: '5px 10px', borderRadius: 6,
+                        fontWeight: 800, fontSize: 11, fontFamily: 'inherit',
+                        background: lang === l ? 'var(--surface, #fff)' : 'transparent',
+                        color: lang === l ? 'var(--primary)' : 'var(--text3)',
+                        boxShadow: lang === l ? 'var(--shadow-sm)' : 'none',
+                      }}>
+                      {l === 'ru' ? 'RU' : 'UZ'}
                     </button>
                   ))}
                 </div>
-              );
-            })}
 
-            {isOwner && aiEnabled && (
-              <button
-                onClick={() => navigate('/owner/ai')}
-                className={'o-link o-link-ai' + (activeSection === 'ai' ? ' active' : '')}
-                title={collapsed ? tt('AI-помощник') : undefined}
-                style={{ marginTop: 8 }}
-              >
-                <Icon name='sparkles' />
-                {!collapsed && <span>{tt('AI-помощник')}</span>}
-              </button>
-            )}
-          </div>
+                {/* Кнопка AI в топбаре — открывает воркспейс Wave Intelligence. */}
+                {isOwner && aiEnabled && (
+                  <button type="button" className="o-ai-btn" onClick={() => navigate('/owner/ai')} title={tt('Wave Intelligence')}>
+                    <Icon name='sparkles' size={16} />
+                  </button>
+                )}
 
-          <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {/* Quick AI popup — only for founder/director с включённым AI. Manager has no AI access. */}
-            {isOwner && aiEnabled && (
-              <button onClick={() => setAiOpen(true)} className="o-link" title={collapsed ? tt('Быстрый чат') : undefined}>
-                <Icon name='message' />
-                {!collapsed && <span>{tt('Быстрый чат')}</span>}
-              </button>
-            )}
+                {/* Колокольчик задач. Для учредителя/директора/менеджера это
+                    единственный вход в уведомления: своего окна задач в панели
+                    нет, поэтому клик по событию ведёт на ролевой дашборд. */}
+                <NotificationsBell variant="owner" onOpenTask={() => navigate('/owner/myboard/my-board')} />
 
-            {/* Collapse toggle */}
-            <button onClick={() => setCollapsed(c => !c)} className="o-link" style={{ fontSize: 12 }} title={collapsed ? tt('Развернуть') : tt('Свернуть')}>
-              <span className="o-link-mono">{collapsed ? '»' : '«'}</span>
-              {!collapsed && <span>{tt('Свернуть панель')}</span>}
-            </button>
-
-            {!collapsed && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text3)', fontSize: 11, padding: '4px 12px' }}>
-                <span className="o-dot" />
-                {tt('Все системы в норме')}
+                {/* Выбор филиала — прячем на странице AI (по просьбе клиента). */}
+                {!isAiPage && (isOwner ? (
+                  <BranchPicker branches={branches} value={branchId} onChange={setBranchId} tt={tt} />
+                ) : (
+                  <div className="o-branch-pick" title={tt('Менеджер видит только свой филиал')}>
+                    {currentBranchName}
+                  </div>
+                ))}
               </div>
-            )}
-          </div>
-        </aside>
-
-        <div className="o-main">
-          <header className="o-topbar">
-            {/* Заголовок текущей страницы — вынесен сюда из контента (PageHeader → топбар).
-                Эмодзи вычищаются в PageHeader (ui.jsx) — здесь чистый текст. */}
-            {pageHead.title ? (
-              <div className="o-topbar-head">
-                <div className="o-topbar-copy">
-                  <div className="o-topbar-title">{pageHead.title}</div>
-                  {pageHead.sub && <div className="o-topbar-sub" title={typeof pageHead.sub === 'string' ? pageHead.sub : undefined}>{pageHead.sub}</div>}
-                </div>
-              </div>
-            ) : <div style={{ minWidth: 0, flex: 1 }} />}
-
-            {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
-
-            {/* Глобальный поиск — Ctrl+K или клик */}
-            <button type="button" className="o-search-btn" onClick={() => setPaletteOpen(true)} title={tt('Найти инструмент…')}>
-              <Icon name='search' size={15} />
-              <span>{tt('Поиск')}</span>
-              <kbd>Ctrl K</kbd>
-            </button>
-
-            {/* Фильтр периода — только в разделах, где данные зависят от периода. */}
-            {showPeriod && (
-              <PeriodFilter period={period} setPeriod={setPeriod} customFrom={customFrom} customTo={customTo}
-                setCustomRange={setCustomRange} periodLabel={periodLabel} tt={tt} />
-            )}
-
-            {/* Переключатель языка RU / UZ */}
-            <div style={{ display: 'flex', gap: 2, background: 'var(--bg-2)', borderRadius: 8, padding: 3 }}>
-              {['ru', 'uz'].map(l => (
-                <button key={l} type="button" onClick={() => changeLang && changeLang(l)}
-                  style={{
-                    border: 'none', cursor: 'pointer', padding: '5px 10px', borderRadius: 6,
-                    fontWeight: 800, fontSize: 11, fontFamily: 'inherit',
-                    background: lang === l ? 'var(--surface, #fff)' : 'transparent',
-                    color: lang === l ? 'var(--primary)' : 'var(--text3)',
-                    boxShadow: lang === l ? 'var(--shadow-sm)' : 'none',
-                  }}>
-                  {l === 'ru' ? 'RU' : 'UZ'}
-                </button>
-              ))}
             </div>
 
-            {isOwner ? (
-              <BranchPicker branches={branches} value={branchId} onChange={setBranchId} tt={tt} />
-            ) : (
-              <div className="o-branch-pick" title={tt('Менеджер видит только свой филиал')}>
-                {currentBranchName}
-              </div>
-            )}
-
-            <div style={{ position: 'relative' }}>
+            <div className="o-user-wrap" style={{ position: 'relative' }}>
               <div className="o-user" onClick={() => setUserMenuOpen(v => !v)} title={tt('Профиль')} style={{ cursor: 'pointer' }}>
                 <div className="o-avatar">{initials}</div>
-                <div style={{ lineHeight: 1.2, fontSize: 12 }}>
+                <div className="o-user-text" style={{ lineHeight: 1.2, fontSize: 12 }}>
                   <div style={{ fontWeight: 800, fontSize: 13 }}>
                     {user?.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user?.username}
                   </div>
@@ -315,21 +278,31 @@ export default function OwnerShell() {
             </div>
           </header>
 
-          <main className="o-content">
+          <main className={'o-content' + (isToolPage ? ' o-content-tool' : '') + (isAiPage ? ' o-content-ai' : '')} ref={contentRef}>
             <Routes>
-              <Route index element={<Dashboard />} />
-              <Route path="dashboard" element={<Dashboard />} />
+              <Route index element={<DashboardBento />} />
+              <Route path="dashboard" element={<DashboardBento />} />
               <Route path="ai" element={isOwner && aiEnabled ? <AiChatPage /> : <Navigate to="/owner" replace />} />
               <Route path=":sectionId" element={<SectionHome />} />
               <Route path=":sectionId/:toolId" element={<ToolRouter />} />
               <Route path="*" element={<Navigate to="/owner" replace />} />
             </Routes>
           </main>
+          {/* Sora-штрихи для скролла Главной/разделов (окна инструментов скроллятся
+              внутри себя и рисуют собственные штрихи в ToolRouter). */}
+          <ScrollTicks targetRef={contentRef} count={24} right={10} />
 
           {/* AI drawer guarded — manager can never trigger it because the button is hidden, but extra-safe block here too */}
         </div>
 
-        {isOwner && aiEnabled && <AiChatDrawer open={aiOpen} onClose={() => setAiOpen(false)} />}
+        {/* Док (нижняя панель) скрыт на странице AI — иммерсивный воркспейс без «панели». */}
+        {!isAiPage && (
+          <Dock sections={sections} activeSection={activeSection} navigate={navigate} aiEnabled={aiEnabled} isOwner={isOwner} tt={tt}
+            lpOpen={lpOpen} onLaunchpad={() => setLpOpen(v => !v)} compact={isToolPage} />
+        )}
+
+        {lpOpen && <StartMenu sections={sections} navigate={navigate} onClose={() => setLpOpen(false)} tt={tt} />}
+
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} sections={sections} />
       </div>
      </PageHeaderContext.Provider>

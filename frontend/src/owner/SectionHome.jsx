@@ -5,7 +5,8 @@ import { BranchScope } from './OwnerShell.jsx';
 import { Badge, Tooltip, Skeleton, fmtMoney, fmtNum } from './ui.jsx';
 import { getUserSections } from './modules.js';
 import { useTt } from './tt.js';
-import { Icon, SECTION_ICON } from './icons.jsx';
+import { Icon, SECTION_ICON, gradCss } from './icons.jsx';
+import { recentInSection } from './recentTools.js';
 import api from '../api.js';
 
 const METRIC_DEFS = {
@@ -77,52 +78,89 @@ export default function SectionHome() {
   const tools = section.tools;
   const hubs = tools.filter(t => t.hub).length;
 
-  return (
-    <>
-      {/* Плоский заголовок раздела — минимализм вместо градиентного hero */}
-      <div className="o-section-head">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="o-section-ico"><Icon name={SECTION_ICON[section.id] || 'home'} size={20} /></span>
-          <div className="o-section-head-title">{tt(section.title)}</div>
-        </div>
-        <div className="o-section-head-desc">{tt(section.desc)}</div>
-        <div className="o-section-head-meta">
-          <span><strong>{tools.length}</strong> {tt('инструментов')}</span>
-          {hubs > 0 && <span><strong>{hubs}</strong> {tt('с вкладками')}</span>}
-        </div>
-      </div>
+  // Правая часть баннера пустовала. Заполняем делом: кнопки самых частых задач
+  // раздела ведут прямо в инструмент, минуя сетку карточек. Берём только те, что
+  // реально доступны пользователю — отключённый инструмент кнопкой не покажем.
+  const byId = new Map(tools.map(t => [t.id, t]));
+  const quick = (section.quick || []).map(id => byId.get(id)).filter(Boolean).slice(0, 3);
 
-      {section.metrics && section.metrics.length > 0 && (
-        <div className={`grid-${Math.min(section.metrics.length, 4)}`} style={{ marginBottom: 22 }}>
-          {section.metrics.map(mKey => {
+  // «Недавнее» — личная история визитов в этом разделе: возврат к работе одним
+  // кликом. Список локальный (см. recentTools.js), кнопки быстрых действий не
+  // дублируем, иначе строка выглядела бы повтором.
+  const quickIds = new Set(quick.map(t => t.id));
+  const recent = recentInSection(user?.id, section.id, tools.map(t => t.id), 5)
+    .map(r => byId.get(r.tool))
+    .filter(t => t && !quickIds.has(t.id))
+    .slice(0, 3);
+
+  const openTool = (id) => navigate('/owner/' + section.id + '/' + id);
+
+  return (
+    // Единая максимальная ширина 1220px, как на Главной (.o-bento-page) и в окнах
+    // инструментов (.o-sheet) — раньше у раздела её не было, и баннер+сетка карточек
+    // растягивались во всю ширину экрана на широких мониторах, «выпадая» из общего
+    // визуального ритма (на других страницах — по центру, с полями по бокам).
+    <div className="o-section-page">
+      {/* Градиентный баннер отдела — как в концепте: метрики ВНУТРИ баннера */}
+      <div className="o-banner" style={{ background: gradCss(section.id, 120) }}>
+        <span className="o-banner-shine" />
+        <span className="o-banner-glyph"><Icon name={SECTION_ICON[section.id] || 'home'} size={190} strokeWidth={1.1} /></span>
+        <div className="o-section-head-title">{tt(section.title)}</div>
+        <div className="o-section-head-desc">{tt(section.desc)}</div>
+
+        {recent.length > 0 && (
+          <div className="o-banner-recent">
+            <span className="o-banner-recent-cap">{tt('Недавнее')}</span>
+            {recent.map(t => (
+              <button key={t.id} type="button" className="o-recent-chip"
+                onClick={() => openTool(t.id)} title={tt(t.desc)}>
+                {tt(t.title)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {quick.length > 0 && (
+          <div className="o-banner-actions">
+            {quick.map(t => (
+              <button key={t.id} type="button" className="o-banner-act"
+                onClick={() => openTool(t.id)} title={tt(t.desc)}>
+                <span className="o-banner-act-ico"><Icon name={SECTION_ICON[section.id] || 'home'} size={16} /></span>
+                <span className="o-banner-act-txt">{tt(t.title)}</span>
+                <span className="o-banner-act-arw" aria-hidden="true">→</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="o-banner-stats">
+          <div><b>{tools.length}</b><span>{tt('инструментов')}</span></div>
+          {(section.metrics || []).slice(0, 3).map(mKey => {
             const def = METRIC_DEFS[mKey];
             if (!def) return null;
             const val = dashLoading ? null : (def.source ? getByPath(dash, def.source) : null);
+            const isMoney = def.format === 'money';
+            const shown = dashLoading || val == null || (typeof val === 'number' && isNaN(val));
             return (
-              <div key={mKey} className="card" style={{ padding: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: .5 }}>
-                  {tt(def.label)}
-                </div>
-                {dashLoading ? (
-                  <Skeleton height={22} style={{ width: '60%', marginTop: 8 }} />
-                ) : (
-                  <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', lineHeight: 1.1, marginTop: 6 }}>
-                    {formatValue(val, def.format, def.placeholder)}
-                  </div>
-                )}
-                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, fontWeight: 500 }}>{tt(def.sub)}</div>
+              <div key={mKey}>
+                <b>
+                  {dashLoading ? '…' : formatValue(val, def.format, def.placeholder)}
+                  {!shown && isMoney && <em className="o-stat-unit">{tt('сум')}</em>}
+                </b>
+                <span>{tt(def.label)}</span>
               </div>
             );
           })}
+          {hubs > 0 && <div><b>{hubs}</b><span>{tt('с вкладками')}</span></div>}
         </div>
-      )}
+      </div>
 
       <div className="o-grid-3">
         {tools.map(t => (
           <ToolCard key={t.id} tool={t} section={section} tt={tt} onOpen={() => navigate(`/owner/${section.id}/${t.id}`)} />
         ))}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -136,16 +174,16 @@ function ToolCard({ tool, section, onOpen, tt }) {
       aria-label={tt(tool.title)}
       className="o-tool-card"
     >
-      <div className="o-tool-title">{tt(tool.title)}</div>
-      <div className="o-tool-desc">{tt(tool.desc)}</div>
-      <div className="o-tool-cta" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ color: 'var(--primary)' }}>{tt('Открыть')} →</span>
-        {tool.hub
-          ? <Badge tone="blue">{tool.hub} {tt('вкладок')}</Badge>
-          : (tool.wired
-            ? null
-            : <Tooltip text={tt('Дизайн-макет. Реальные данные ещё не подключены — отображаются примеры.')}><Badge tone="yellow">{tt('Скоро')}</Badge></Tooltip>)}
+      <span className="o-tool-go">→</span>
+      <span className="o-tool-chip" style={{ background: gradCss(section.id) }}>
+        <Icon name={SECTION_ICON[section.id] || 'home'} size={17} />
+      </span>
+      <div className="o-tool-title">
+        {tt(tool.title)}
+        {tool.hub ? <Badge tone="blue">{tool.hub} {tt('вкладок')}</Badge>
+          : (!tool.wired && <Tooltip text={tt('Дизайн-макет. Реальные данные ещё не подключены — отображаются примеры.')}><Badge tone="yellow">{tt('Скоро')}</Badge></Tooltip>)}
       </div>
+      <div className="o-tool-desc">{tt(tool.desc)}</div>
     </div>
   );
 }

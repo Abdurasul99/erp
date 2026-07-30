@@ -22,8 +22,11 @@ export default function InterfaceSelect() {
   return (
     <div style={{ minHeight: '100vh', background: '#F4F5FA', fontFamily: "'Nunito', sans-serif", display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
-      <div style={{ background: '#fff', borderBottom: '1px solid #E2E4F0', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      {/* flexWrap: на 360px логотип с названием компании плюс языки, имя
+          пользователя и «Выйти» в одну строку не влезали — шапка уносила
+          экран вбок на 113px. */}
+      <div style={{ background: '#fff', borderBottom: '1px solid #E2E4F0', padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 auto' }}>
           <div style={{
             width: '36px', height: '36px', borderRadius: '10px',
             background: 'linear-gradient(135deg, #1E40AF, #2563EB)',
@@ -40,8 +43,10 @@ export default function InterfaceSelect() {
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ display: 'flex', background: '#F4F5FA', borderRadius: '8px', padding: '3px' }}>
+        {/* Правая группа тоже должна переноситься: на 360px языки, имя с ролью
+            и «Выйти» в одну строку не встают, и кнопка выхода уезжала за край. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end', minWidth: 0 }}>
+          <div style={{ display: 'flex', background: '#F4F5FA', borderRadius: '8px', padding: '3px', flex: '0 0 auto' }}>
             {[{ key: 'uz', label: "UZ" }, { key: 'ru', label: 'RU' }].map(l => (
               <button key={l.key} onClick={() => changeLang(l.key)} style={{
                 padding: '5px 12px', border: 'none', cursor: 'pointer', borderRadius: '6px',
@@ -53,9 +58,9 @@ export default function InterfaceSelect() {
               }}>{l.label}</button>
             ))}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: '#F4F5FA', borderRadius: '20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: '#F4F5FA', borderRadius: '20px', minWidth: 0, flex: '0 1 auto' }}>
             <Icon name="user" size={14} color="#6B6F8A" />
-            <span style={{ fontSize: '13px', fontWeight: 700, color: '#1A1B2E' }}>{user?.username}</span>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#1A1B2E', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.username}</span>
             <span style={{ fontSize: '11px', background: 'rgba(30,64,175,.1)', color: '#1E40AF', padding: '2px 8px', borderRadius: '10px', fontWeight: 700 }}>{roleLabel[user?.role]}</span>
           </div>
           <button onClick={() => { logout(); navigate('/login'); }} style={{

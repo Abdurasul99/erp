@@ -6,6 +6,35 @@ import { TOOLS_UZ } from './tt_tools.js';
 // Если перевода нет — показываем русский (graceful fallback). Это позволяет
 // переводить постепенно по файлам без поломки ключей.
 export const OWNER_UZ = {
+  // ===== AI-воркспейс (бизнес-канвас) =====
+  "AI-воркспейс · чат слева, рисует справа": "AI-vorkspeys · chapda chat, o'ngda chizadi",
+  "Что сделать": "Nima qilish kerak",
+  "Спросите о вашем бизнесе…": "Biznesingiz haqida so'rang…",
+  "AI может ошибаться — проверяйте важные цифры в самой системе": "AI xato qilishi mumkin — muhim raqamlarni tizimning o'zida tekshiring",
+  "Новый чат": "Yangi chat",
+  "Собрано под ваш вопрос · реальные данные компании": "Savolingiz uchun yig'ildi · kompaniyaning real ma'lumotlari",
+  "Спросите — соберу бизнес-разбор": "So'rang — biznes-tahlil tayyorlayman",
+  "Отвечаю словами слева, а здесь собираю ответ под ваш вопрос: цифры, график и что сделать.": "Chapda so'z bilan javob beraman, bu yerda savolingizga mos javob yig'aman: raqamlar, grafik va nima qilish kerak.",
+  "Смотрю данные…": "Ma'lumotlarni ko'ryapman…",
+  "Считаю метрики…": "Metrikalarni hisoblayapman…",
+  "Ищу закономерности…": "Qonuniyatlarni izlayapman…",
+  "Готовлю ответ…": "Javob tayyorlayapman…",
+  "Привет! Я Wave Intelligence — аналитик вашего бизнеса. Задайте вопрос, а я отвечу и нарисую нужный экран справа.": "Salom! Men Wave Intelligence — biznesingiz tahlilchisiman. Savol bering, men javob beraman va o'ngda kerakli ekranni chizib beraman.",
+
+  // ===== AI-диагност «Где у меня проблемы?» =====
+  "Где у меня проблемы?": "Menda qayerda muammolar bor?",
+  "AI пройдётся по бизнесу и ответит: где · кто · что · почему · как решить": "AI biznesni ko'rib chiqadi va javob beradi: qayerda · kim · nima · nega · qanday hal qilish",
+  "Проверить": "Tekshirish",
+  "Проверить заново": "Qayta tekshirish",
+  "Собираю сигналы…": "Signallarni yig'yapman…",
+  "Ищу проблемы…": "Muammolarni izlayapman…",
+  "Определяю причины…": "Sabablarni aniqlayapman…",
+  "Готовлю решения…": "Yechimlarni tayyorlayapman…",
+  "Повторить": "Qayta urinish",
+  "Открыть": "Ochish",
+  "Острых проблем не найдено — по текущим сигналам всё в норме.": "Jiddiy muammolar topilmadi — joriy signallar bo'yicha hammasi me'yorida.",
+  "Не удалось выполнить диагностику. Попробуй ещё раз.": "Diagnostikani bajarib bo'lmadi. Yana urinib ko'ring.",
+
   // ===== Авто-перевод недостающих строк (596) =====
   "Все филиалы": "Barcha filiallar",
   "Выйти": "Chiqish",
@@ -2592,6 +2621,66 @@ export const OWNER_UZ = {
   'Расход': 'Chiqim',
   'История': 'Tarix',
   'Штрихкоды': 'Shtrix-kodlar',
+  // ===== Ролевой дашборд: разделы и инструменты (modules.js) =====
+  'Мой дашборд': 'Mening dashboardim',
+  'Мои дела · поручения · зарплата · нарушения': 'Mening ishlarim · topshiriqlar · oylik · buzilishlar',
+  'Мои дела · поручения сотрудникам · зарплата · нарушения': 'Mening ishlarim · xodimlarga topshiriqlar · oylik · buzilishlar',
+  // Заголовок раздела и инструмента подставляется по роли (boardTitle в taskMeta.js)
+  'Дашборд директора': 'Direktor dashboardi',
+  'Дашборд менеджера': 'Menejer dashboardi',
+  // «Дашборд учредителя» из раздела «Аналитика» переименован, чтобы не путался
+  // с ролевым дашбордом
+  'Сводка по компании': "Kompaniya bo'yicha xulosa",
+  'Сводка по компании · контроль · отчёты · когорты · юнит-экономика · симулятор': "Kompaniya bo'yicha xulosa · nazorat · hisobotlar · kogortalar · unit-iqtisod · simulyator",
+  // ===== Ролевой дашборд: «Мои дела» =====
+  'Ваши дела, поручения команде, ведомость и дисциплина — в одном окне.': 'Ishlaringiz, jamoaga topshiriqlar, oylik qaydnomasi va intizom — bitta oynada.',
+  'Мои дела': 'Mening ishlarim',
+  '+ Дело себе': "+ O'zimga ish",
+  'ещё не просмотрено': "hali ko'rilmagan",
+  'Например: свести кассу за неделю': 'Masalan: hafta kassasini yakunlash',
+  'Дел нет': "Ishlar yo'q",
+  'Задачи от руководителя появятся здесь сразу после назначения.': "Rahbardan kelgan vazifalar tayinlanishi bilanoq shu yerda paydo bo'ladi.",
+  'Новая': 'Yangi',
+  'Поручил': 'Topshirdi',
+  'Личное дело': 'Shaxsiy ish',
+  'Взять в работу': 'Ishga olish',
+  'Вернуть в работу': 'Ishga qaytarish',
+  'Событий пока нет': "Hozircha hodisalar yo'q",
+  // ===== Ролевой дашборд: «Поручения» + доска задач =====
+  'Поручения': 'Topshiriqlar',
+  'Задачи, которые вы поставили команде. Перетащите карточку между колонками, чтобы сменить статус — исполнитель увидит это у себя.': "Siz jamoaga qo'ygan vazifalar. Holatni o'zgartirish uchun kartani ustunlar orasida suring — ijrochi buni o'zida ko'radi.",
+  'Кому задача': 'Vazifa kimga',
+  'Я поставил': "Men qo'ydim",
+  'Мне поручено': 'Menga topshirilgan',
+  'я': 'men',
+  'Задача не найдена': 'Vazifa topilmadi',
+  'Подтвердить удаление': "O'chirishni tasdiqlash",
+  // ===== Ролевой дашборд: «Зарплаты» =====
+  'Открыть ФОТ': 'FOTni ochish',
+  'Всего к выплате': "Jami to'lovga",
+  'Оклады': 'Oyliklar',
+  // «Удержания в ведомости» ≠ «Штрафы за период»: разные источники, подписи
+  // намеренно различаются и в узбекском тоже
+  'Удержания в ведомости': 'Qaydnomadagi ushlab qolishlar',
+  'сум · вычтено': "so'm · ushlab qolindi",
+  'Нет данных по ведомости': "Qaydnoma bo'yicha ma'lumot yo'q",
+  'За выбранный месяц начислений не найдено.': 'Tanlangan oy uchun hisoblanmalar topilmadi.',
+  'Только просмотр. Утверждение и выплата — в разделе «Зарплата (ФОТ)».': "Faqat ko'rish. Tasdiqlash va to'lov — «Oylik (FOT)» bo'limida.",
+  // ===== Ролевой дашборд: «Нарушения» =====
+  'Нарушения': 'Buzilishlar',
+  'Открыть штрафы и бонусы': 'Jarima va bonuslarni ochish',
+  'Премии за период': 'Davr uchun mukofotlar',
+  'Штрафы за период': 'Davr uchun jarimalar',
+  'сум · начислено': "so'm · hisoblandi",
+  'премии − штрафы': 'mukofotlar − jarimalar',
+  'всего за период': 'davr uchun jami',
+  'Кому стоит уделить внимание': "Kimga e'tibor qaratish kerak",
+  'Нарушений за период нет.': "Davr uchun buzilishlar yo'q.",
+  'Выдать штраф': 'Jarima berish',
+  'Назначить штраф': 'Jarima tayinlash',
+  // ===== Штрафы и бонусы (без эмодзи — светлый канон) =====
+  'Премии, штрафы и дисциплина по сотрудникам': "Xodimlar bo'yicha mukofotlar, jarimalar va intizom",
+  'Чистый эффект = премии − штрафы. Нарушение = любой штраф. Суммы в сумах полным числом.': "Sof samara = mukofotlar − jarimalar. Buzilish = har qanday jarima. Summalar so'mda to'liq sonda.",
 };
 
 export function tt(ru, lang) {
