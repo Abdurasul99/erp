@@ -44,6 +44,22 @@ const empty = {
   fact_views: '', fact_likes: '', fact_comments: '', analysis: '',
 };
 
+// Счётные метрики (показы / лайки / комментарии) — только целые, стейт СТРОКА.
+// type="number" возвращал '' на промежуточно-невалидном вводе («12 500» с пробелом
+// из буфера, запятая), из-за чего контролируемое поле само себя очищало и клиент
+// «не мог ввести число». Поэтому type="text" + чистка цифр в onChange.
+// 9 цифр — предел INTEGER в БД (marketing_content.plan_views INT).
+const digitsOnly = (v) => String(v ?? '').replace(/[^\d]/g, '').slice(0, 9);
+// Нормализация на blur, а не в onChange: «007» → «7», пустое остаётся пустым
+// (пустое = «метрика не задана», в БД уходит NULL).
+const normCount = (v) => (v === '' ? '' : String(parseInt(v, 10) || 0));
+// Для отправки: строка → число или null (никогда NaN и никогда строка).
+const intOrNull = (v) => {
+  if (v === '' || v == null) return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+};
+
 const FILTERS = [
   { value: 'all',         label: 'Все' },
   { value: 'tofu',        label: 'TOFU' },
@@ -101,8 +117,13 @@ export default function ContentPlanTool() {
       status: c.status || 'planned', persona_id: c.persona_id || '',
       hook: c.hook || '', body: c.body || '', cta: c.cta || '', notes: c.notes || '',
       funnel_stage: c.funnel_stage || '', reference_link: c.reference_link || '',
-      plan_views: c.plan_views ?? '', plan_likes: c.plan_likes ?? '', plan_comments: c.plan_comments ?? '',
-      fact_views: c.fact_views ?? '', fact_likes: c.fact_likes ?? '', fact_comments: c.fact_comments ?? '',
+      // Метрики держим строками (стейт числового поля — строка), пустое = не задано.
+      plan_views: c.plan_views == null ? '' : String(c.plan_views),
+      plan_likes: c.plan_likes == null ? '' : String(c.plan_likes),
+      plan_comments: c.plan_comments == null ? '' : String(c.plan_comments),
+      fact_views: c.fact_views == null ? '' : String(c.fact_views),
+      fact_likes: c.fact_likes == null ? '' : String(c.fact_likes),
+      fact_comments: c.fact_comments == null ? '' : String(c.fact_comments),
       analysis: c.analysis || '',
     });
     setEditing(c.id);
@@ -117,6 +138,13 @@ export default function ContentPlanTool() {
         ...form,
         scheduled_for: form.scheduled_for || null,
         persona_id: form.persona_id || null,
+        // Явное приведение: на сервер уходит число или null, но не '' и не NaN.
+        plan_views: intOrNull(form.plan_views),
+        plan_likes: intOrNull(form.plan_likes),
+        plan_comments: intOrNull(form.plan_comments),
+        fact_views: intOrNull(form.fact_views),
+        fact_likes: intOrNull(form.fact_likes),
+        fact_comments: intOrNull(form.fact_comments),
       };
       if (editing === 'new') await api.post('/marketing/content', payload);
       else await api.put('/marketing/content/' + editing, payload);
@@ -135,6 +163,15 @@ export default function ContentPlanTool() {
     try { await api.put('/marketing/content/' + c.id, { status }); await reload(); }
     catch (e) { setError(e.response?.data?.error || e.message); }
   };
+
+  // Поле счётной метрики план/факт. Возвращает ЭЛЕМЕНТ (а не компонент) — тип узла
+  // остаётся 'input', поэтому React не перемонтирует поле и фокус не теряется.
+  const countField = (key) => (
+    <input className="input" type="text" inputMode="numeric" placeholder="0"
+      value={form[key]}
+      onChange={e => setForm(f => ({ ...f, [key]: digitsOnly(e.target.value) }))}
+      onBlur={() => setForm(f => ({ ...f, [key]: normCount(f[key]) }))} />
+  );
 
   return (
     <>
@@ -224,13 +261,13 @@ export default function ContentPlanTool() {
               <div style={{ fontWeight: 700, color: 'var(--text3)', textAlign: 'center' }}>❤️ {tt('Лайки')}</div>
               <div style={{ fontWeight: 700, color: 'var(--text3)', textAlign: 'center' }}>💬 {tt('Комменты')}</div>
               <div style={{ fontWeight: 700, color: 'var(--primary)' }}>{tt('План')}</div>
-              <input className="input" type="number" min="0" value={form.plan_views} onChange={e => setForm({ ...form, plan_views: e.target.value })} placeholder="0" />
-              <input className="input" type="number" min="0" value={form.plan_likes} onChange={e => setForm({ ...form, plan_likes: e.target.value })} placeholder="0" />
-              <input className="input" type="number" min="0" value={form.plan_comments} onChange={e => setForm({ ...form, plan_comments: e.target.value })} placeholder="0" />
+              {countField('plan_views')}
+              {countField('plan_likes')}
+              {countField('plan_comments')}
               <div style={{ fontWeight: 700, color: 'var(--green)' }}>{tt('Факт')}</div>
-              <input className="input" type="number" min="0" value={form.fact_views} onChange={e => setForm({ ...form, fact_views: e.target.value })} placeholder="0" />
-              <input className="input" type="number" min="0" value={form.fact_likes} onChange={e => setForm({ ...form, fact_likes: e.target.value })} placeholder="0" />
-              <input className="input" type="number" min="0" value={form.fact_comments} onChange={e => setForm({ ...form, fact_comments: e.target.value })} placeholder="0" />
+              {countField('fact_views')}
+              {countField('fact_likes')}
+              {countField('fact_comments')}
             </div>
             <Field label={tt('🔍 Разбор: что залетело / что нет / почему')} value={form.analysis}
               onChange={v => setForm({ ...form, analysis: v })}

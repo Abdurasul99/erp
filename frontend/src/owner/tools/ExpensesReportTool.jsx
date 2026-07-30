@@ -1,19 +1,14 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
-import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, Pills, fmtMoneyFull, fmtNum } from '../ui.jsx';
-import { BranchScope } from '../OwnerShell.jsx';
+import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
+import { usePeriodParams, ToolFilters } from '../usePeriod.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
 // Отчёт расходов — операционные расходы + закупки (cash_expense).
 // Только для учредителя/гендиректора. Read-only.
 // /finance/expenses/summary — агрегат по категориям (сумма, доля, динамика).
 // /finance/expenses — реестр операций.
-
-const PERIODS = [
-  { value: '30', label: '30 дней' },
-  { value: '90', label: '90 дней' },
-  { value: '365', label: 'Год' },
-];
+// Период и филиал — из глобального селектора топбара (usePeriodParams).
 
 // Иконки по категориям расходов (совпадают с макетом)
 const CAT_ICON = {
@@ -27,8 +22,7 @@ const CAT_ICON = {
 
 export default function ExpensesReportTool() {
   const { tt, lang } = useTt();
-  const { branchId } = useContext(BranchScope);
-  const [period, setPeriod] = useState('30');
+  const params = usePeriodParams();
   const [summary, setSummary] = useState(null);
   const [ops, setOps] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -37,8 +31,6 @@ export default function ExpensesReportTool() {
   useEffect(() => {
     let ignore = false;
     setLoading(true); setError(null);
-    const params = { days: period };
-    if (branchId) params.branch_id = branchId;
     Promise.all([
       api.get('/finance/expenses/summary', { params }),
       api.get('/finance/expenses', { params }),
@@ -47,7 +39,7 @@ export default function ExpensesReportTool() {
       .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
-  }, [branchId, period]);
+  }, [params]);
 
   const s = summary || {};
   const cats = s.categories || [];
@@ -69,10 +61,7 @@ export default function ExpensesReportTool() {
     <>
       <PageHeader title={'🧾 ' + tt('Отчёт расходов')} sub={tt('Операционные расходы и закупки · реальные данные')} />
 
-      <div style={{ marginBottom: 16 }}>
-        <Pills value={period} onChange={setPeriod} label={tt('Период')}
-          options={PERIODS.map(p => ({ value: p.value, label: tt(p.label) }))} />
-      </div>
+      <ToolFilters />
 
       {loading && !summary ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={200} /></Card>

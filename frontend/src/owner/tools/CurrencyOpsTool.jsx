@@ -1,21 +1,13 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import api from '../../api.js';
-import { Card, Tile, Badge, PageHeader, Pills, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
-import { BranchScope } from '../OwnerShell.jsx';
+import { Card, Tile, Badge, PageHeader, Skeleton, EmptyState, fmtMoneyFull, fmtNum } from '../ui.jsx';
+import { usePeriodParams, ToolFilters } from '../usePeriod.jsx';
 import AiAnalyze from '../AiAnalyze.jsx';
 import { useTt, fmtDate } from '../tt.js';
 
-const PERIOD_OPTS = [
-  { value: 'day', label: 'День' },
-  { value: 'week', label: 'Неделя' },
-  { value: 'month', label: 'Месяц' },
-  { value: 'year', label: 'Год' },
-];
-
 export default function CurrencyOpsTool() {
   const { tt, lang } = useTt();
-  const { branchId } = useContext(BranchScope);
-  const [period, setPeriod] = useState('month');
+  const params = usePeriodParams();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -23,14 +15,12 @@ export default function CurrencyOpsTool() {
   useEffect(() => {
     let ignore = false;
     setLoading(true); setError(null);
-    const params = { period };
-    if (branchId) params.branch_id = branchId;
     api.get('/finance/currency', { params })
       .then(r => { if (!ignore) setData(r.data); })
       .catch(e => { if (!ignore) setError(e.response?.data?.error || e.message); })
       .finally(() => { if (!ignore) setLoading(false); });
     return () => { ignore = true; };
-  }, [branchId, period]);
+  }, [params]);
 
   const d = data || {};
   const ops = d.operations || [];
@@ -39,11 +29,7 @@ export default function CurrencyOpsTool() {
     <>
       <PageHeader title={'💱 ' + tt('Валютные операции')} sub={tt('Долларовые закупки и продажи · курс, эквивалент в сумах, потери')} />
 
-      <div style={{ marginBottom: 16 }}>
-        <Pills value={period} onChange={setPeriod}
-          options={PERIOD_OPTS.map(o => ({ value: o.value, label: tt(o.label) }))}
-          label={tt("Период")} />
-      </div>
+      <ToolFilters />
 
       {loading && !data ? (
         <Card><Skeleton height={40} style={{ marginBottom: 12 }} /><Skeleton height={160} /></Card>

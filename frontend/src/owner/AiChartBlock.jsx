@@ -12,18 +12,18 @@ const CHART_META = {
 };
 
 export default function AiChartBlock({ chartType }) {
-  const { tt } = useTt();
+  const { tt, lang } = useTt();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     setLoading(true);
-    api.get('/ai/chart-data', { params: { type: chartType } })
+    api.get('/ai/chart-data', { params: { type: chartType, lang } })
       .then(r => setData(r.data))
       .catch(e => setError(e.response?.data?.error || e.message))
       .finally(() => setLoading(false));
-  }, [chartType]);
+  }, [chartType, lang]);
 
   const meta = CHART_META[chartType];
 

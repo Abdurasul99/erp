@@ -27,6 +27,20 @@ const TABS = [
 
 const inputStyle = { maxWidth: 220, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text)' };
 
+// ID клиента — это идентификатор, а не количество. Держим его СТРОКОЙ и чистим
+// в onChange всё кроме цифр: вставка «№ 1024» из буфера даёт «1024», а не пустоту.
+// type="number" здесь был вреден: спиннеры + колёсико мыши при прокрутке страницы
+// молча меняло ID (можно было привязать реферала к чужому клиенту).
+// 9 цифр — предел INTEGER в БД, дальше сервер отдал бы 500.
+const digitsOnly = (v) => String(v ?? '').replace(/[^\d]/g, '').slice(0, 9);
+// Нормализация на blur (не в onChange — иначе не стереть первую цифру):
+// «0012» → «12», «0» / «000» → пусто (нулевого клиента не существует).
+const normId = (v) => {
+  if (v === '') return '';
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? String(n) : '';
+};
+
 export default function ReferralsTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
@@ -68,7 +82,8 @@ export default function ReferralsTool() {
   // Генерация промокода FRIEND-<id> для клиента-реферера.
   const generateCode = () => {
     const cid = parseInt(codeCustId, 10);
-    if (!cid) return flash('red', tt('Укажите ID клиента-реферера'));
+    // Пустое / нечитаемое поле не уходит на сервер как NaN — просим ввести ID.
+    if (!Number.isFinite(cid) || cid <= 0) return flash('red', tt('Укажите ID клиента-реферера'));
     setBusy('gen'); setGenCode(null);
     api.post('/crm/referrals/code', { customer_id: cid })
       .then(r => { setGenCode(r.data.code?.code); flash('green', tt('Промокод готов')); })
@@ -79,7 +94,7 @@ export default function ReferralsTool() {
   // Регистрация приглашения: привязать промокод к новому клиенту (создаёт pending-реферал).
   const registerUse = () => {
     const rid = parseInt(useRefId, 10);
-    if (!useCode.trim() || !rid) return flash('red', tt('Укажите промокод и ID нового клиента'));
+    if (!useCode.trim() || !Number.isFinite(rid) || rid <= 0) return flash('red', tt('Укажите промокод и ID нового клиента'));
     setBusy('use');
     api.post('/crm/referrals/use', { code: useCode.trim(), referred_id: rid })
       .then(() => { flash('green', tt('✓ Приглашение зарегистрировано — ожидает первой покупки')); setUseCode(''); setUseRefId(''); load(); })
@@ -231,8 +246,10 @@ export default function ReferralsTool() {
                   {tt('Создаёт код вида FRIEND-<ID> для клиента-реферера. Укажите ID клиента (из карточки клиента).')}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <input type="number" placeholder={tt('ID клиента-реферера')} style={inputStyle}
-                    value={codeCustId} onChange={e => setCodeCustId(e.target.value)} />
+                  <input type="text" inputMode="numeric" placeholder={tt('ID клиента-реферера')} style={inputStyle}
+                    value={codeCustId}
+                    onChange={e => setCodeCustId(digitsOnly(e.target.value))}
+                    onBlur={() => setCodeCustId(v => normId(v))} />
                   <button className="btn" disabled={busy === 'gen'} onClick={generateCode}>
                     {busy === 'gen' ? tt('...') : tt('Создать код')}
                   </button>
@@ -246,8 +263,10 @@ export default function ReferralsTool() {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <input placeholder={tt('Промокод (FRIEND-…)')} style={inputStyle}
                     value={useCode} onChange={e => setUseCode(e.target.value)} />
-                  <input type="number" placeholder={tt('ID нового клиента')} style={inputStyle}
-                    value={useRefId} onChange={e => setUseRefId(e.target.value)} />
+                  <input type="text" inputMode="numeric" placeholder={tt('ID нового клиента')} style={inputStyle}
+                    value={useRefId}
+                    onChange={e => setUseRefId(digitsOnly(e.target.value))}
+                    onBlur={() => setUseRefId(v => normId(v))} />
                   <button className="btn" disabled={busy === 'use'} onClick={registerUse}>
                     {busy === 'use' ? tt('...') : tt('Зарегистрировать')}
                   </button>

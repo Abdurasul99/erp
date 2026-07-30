@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTt, fmtDate } from './tt.js';
-import { PageHeaderContext } from './PageHeaderContext.js';
+import { PageHeaderContext, InsideSheetContext } from './PageHeaderContext.js';
 
 // UI primitives — class names match the prototype's so the 47 copied tools render correctly.
 // All styles are scoped via .owner-shell in owner/styles.css, so they only apply inside the shell.
@@ -271,14 +271,21 @@ export function Progress({ value, max = 100, color = 'var(--primary)' }) {
 
 // Заголовок страницы вынесен в ТОПБАР: PageHeader ничего не рисует в контенте,
 // а «публикует» {title, sub, actions} в топбар шелла через PageHeaderContext.
+// ВНУТРИ окна инструмента (InsideSheetContext) — наоборот: топбар не трогаем
+// (шапка окна уже показывает название), а actions рендерим инлайн в теле окна.
 export function PageHeader({ title, sub, actions }) {
   const setHeader = React.useContext(PageHeaderContext);
+  const insideSheet = React.useContext(InsideSheetContext);
   React.useEffect(() => {
+    if (insideSheet) return undefined; // окно само себя подписывает — топбар чистый
     // Эмодзи из заголовков вычищаются здесь — единая точка для всех инструментов.
     setHeader({ title: stripEmoji(title), sub: stripEmoji(sub), actions });
     return () => setHeader({ title: '', sub: null, actions: null });
     // actions намеренно не в deps (JSX — новый объект каждый рендер → цикл); ок для статичных actions
-  }, [title, sub, setHeader]);
+  }, [title, sub, setHeader, insideSheet]);
+  if (insideSheet && actions) {
+    return <div className="o-sheet-actions">{actions}</div>;
+  }
   return null;
 }
 

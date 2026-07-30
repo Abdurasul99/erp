@@ -26,6 +26,8 @@ function trendCell(delta) {
   );
 }
 
+const EMPTY_SCRIPT = { title: '', situation: '', steps: '', active: true };
+
 export default function SalesScriptsTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
@@ -33,8 +35,11 @@ export default function SalesScriptsTool() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('all');
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState(EMPTY_SCRIPT);
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
     setLoading(true); setError(null);
     const params = {};
     if (branchId) params.branch_id = branchId;
@@ -42,7 +47,22 @@ export default function SalesScriptsTool() {
       .then(r => setData(r.data))
       .catch(e => setError(e.response?.data?.error || e.message))
       .finally(() => setLoading(false));
-  }, [branchId]);
+  };
+  useEffect(load, [branchId]);
+
+  const saveScript = () => {
+    if (!form.title.trim()) return;
+    setSaving(true);
+    api.post('/sales/scripts', {
+      title: form.title.trim(),
+      situation: form.situation.trim() || null,
+      steps: form.steps.trim() || null,
+      active: form.active,
+    })
+      .then(() => { setForm(EMPTY_SCRIPT); setShowAdd(false); load(); })
+      .catch(e => setError(e.response?.data?.error || e.message))
+      .finally(() => setSaving(false));
+  };
 
   const scripts = data?.scripts || [];
   const stats = data?.stats || {};
@@ -58,10 +78,60 @@ export default function SalesScriptsTool() {
       <PageHeader
         title={tt('📞 Скрипты продаж')}
         sub={tt('Речевые модули · ситуации · конверсия по применениям')}
-        actions={<Badge tone="amber">{tt('В обработке')}</Badge>}
+        actions={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Badge tone="green">{tt('Live')}</Badge>
+            <button className="btn-primary" onClick={() => setShowAdd(v => !v)}
+              style={{ padding: '7px 14px', fontSize: 13, fontWeight: 700, borderRadius: 10, border: 'none', cursor: 'pointer',
+                background: showAdd ? 'var(--border)' : 'linear-gradient(135deg,#0A84FF,#5E5CE6)', color: showAdd ? 'var(--text2)' : '#fff' }}>
+              {showAdd ? tt('Закрыть') : '＋ ' + tt('Новый скрипт')}
+            </button>
+          </div>
+        }
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>{error}</div></Card>}
+
+      {showAdd && (
+        <Card icon="✍️" title={tt('Новый скрипт продаж')} style={{ marginBottom: 16 }}>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Название')} *</div>
+              <input className="input" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                placeholder={tt('Например: Работа с возражением «Дорого»')}
+                style={{ width: '100%', padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border)', fontSize: 13, fontFamily: 'inherit' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Ситуация')}</div>
+              <input className="input" value={form.situation} onChange={e => setForm(f => ({ ...f, situation: e.target.value }))}
+                placeholder={tt('Когда применять этот скрипт?')}
+                style={{ width: '100%', padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border)', fontSize: 13, fontFamily: 'inherit' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Текст скрипта / шаги')}</div>
+              <textarea className="input" value={form.steps} onChange={e => setForm(f => ({ ...f, steps: e.target.value }))}
+                placeholder={tt('Что говорить продавцу — по шагам…')} rows={4}
+                style={{ width: '100%', padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border)', fontSize: 13, resize: 'vertical', fontFamily: 'inherit' }} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
+              {tt('Активен (доступен продавцам)')}
+            </label>
+          </div>
+          <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+            <button className="btn-primary" onClick={saveScript} disabled={!form.title.trim() || saving}
+              style={{ padding: '9px 18px', fontSize: 13, fontWeight: 700, borderRadius: 10, border: 'none',
+                cursor: !form.title.trim() || saving ? 'not-allowed' : 'pointer', opacity: !form.title.trim() || saving ? 0.55 : 1,
+                background: 'linear-gradient(135deg,#0A84FF,#5E5CE6)', color: '#fff' }}>
+              {saving ? tt('Сохранение…') : tt('Сохранить скрипт')}
+            </button>
+            <button onClick={() => { setForm(EMPTY_SCRIPT); setShowAdd(false); }}
+              style={{ padding: '9px 18px', fontSize: 13, fontWeight: 700, borderRadius: 10, border: '1.5px solid var(--border)', cursor: 'pointer', background: '#fff', color: 'var(--text2)' }}>
+              {tt('Отмена')}
+            </button>
+          </div>
+        </Card>
+      )}
 
       {loading ? (
         <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>

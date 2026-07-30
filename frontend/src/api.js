@@ -25,15 +25,17 @@ api.interceptors.request.use(cfg => {
 api.interceptors.response.use(
   r => r,
   err => {
-    if (err.response?.status === 401) {
-      // Clear session
+    // НЕ разлогиниваем на случайный 401 от произвольного эндпоинта — раньше это
+    // давало «самопроизвольный логаут»: один сбойный запрос стирал токен и кидал
+    // на /login. ЕДИНСТВЕННОЕ исключение — явный вердикт сервера об одиночной
+    // сессии (вход с другого устройства / токен старого формата): это осознанное
+    // серверное решение, не сетевой сбой — завершаем сессию и объясняем причину.
+    const code = err.response?.data?.code;
+    if (err.response?.status === 401 && (code === 'SESSION_REVOKED' || code === 'SESSION_STALE')) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      // Don't redirect from /auth/me (App.jsx handles it) and don't loop on /login
-      const url = err.config?.url || '';
-      const onLogin = window.location.pathname === '/login';
-      if (!url.includes('/auth/me') && !onLogin) {
-        window.location.href = '/login';
+      if (window.location.pathname !== '/login') {
+        window.location.href = code === 'SESSION_REVOKED' ? '/login?reason=session' : '/login';
       }
     }
     return Promise.reject(err);

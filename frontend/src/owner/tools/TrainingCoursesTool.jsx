@@ -190,7 +190,9 @@ export default function TrainingCoursesTool() {
                                       </div>
                                       <div>
                                         <label style={lbl}>{tt('Длительность (мин)')}</label>
-                                        <input style={inp} type="number" min="0" value={lessonForm.duration_min} onChange={e => setLessonForm({ ...lessonForm, duration_min: e.target.value })} />
+                                        {/* Минуты — целые. type="number" на «12,5» отдавал '' и урок сохранялся без длительности. */}
+                                        <input style={inp} type="text" inputMode="numeric" value={lessonForm.duration_min}
+                                          onChange={e => setLessonForm(f => ({ ...f, duration_min: e.target.value.replace(/[^\d]/g, '') }))} />
                                       </div>
                                     </div>
                                     {formError && <div style={{ marginTop: 10, color: 'var(--red)', fontWeight: 600, fontSize: 13 }}>⚠️ {formError}</div>}
