@@ -93,3 +93,59 @@ test('когда не отвечает ни одна — отдаём перву
   assert.equal(res.status, 503);
   assert.deepEqual(calls, ['a', 'a', 'b']);
 });
+
+// Ниже — случай, который вылез уже НА ПРОДЕ после выкладки: один общий таймер
+// покрывал все попытки сразу и, сработав посреди перебора, ронял запрос с
+// «AI timeout» даже когда следующая модель ответила бы за пару секунд.
+
+test('зависшая попытка уступает место следующей модели, а не роняет запрос', async () => {
+  const calls = [];
+  const fetchImpl = (url, init) => {
+    const model = JSON.parse(init.body).model;
+    calls.push(model);
+    if (model === 'hangs') {
+      // Никогда не отвечает — полагаемся на прерывание по таймауту попытки.
+      return new Promise((_, reject) => {
+        init.signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        });
+      });
+    }
+    return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 }));
+  };
+  const client = createAiClient({ model: 'hangs', fallbacks: ['alive'], fetchImpl, attemptTimeoutMs: 40, timeoutMs: 5000 });
+
+  const res = await call(client);
+
+  assert.equal(res.status, 200, 'запрос обязан дожить до живой модели');
+  assert.deepEqual(calls, ['hangs', 'hangs', 'alive']);
+  assert.equal(client.model(), 'alive');
+});
+
+test('общий бюджет обрывает бесконечный перебор', async () => {
+  const calls = [];
+  const fetchImpl = (url, init) => {
+    calls.push(JSON.parse(init.body).model);
+    return new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      });
+    });
+  };
+  const client = createAiClient({ model: 'a', fallbacks: ['b', 'c', 'd'], fetchImpl, attemptTimeoutMs: 30, timeoutMs: 80 });
+
+  await assert.rejects(() => call(client), (e) => e.statusCode === 504);
+  assert.ok(calls.length < 5, `перебор должен упереться в общий бюджет, а не пройти все модели (попыток: ${calls.length})`);
+});
+
+test('ошибка не по таймауту отдаётся наверх, а не прячется за перебором', async () => {
+  const calls = [];
+  const fetchImpl = (url, init) => {
+    calls.push(JSON.parse(init.body).model);
+    return Promise.reject(new Error('DNS сломался'));
+  };
+  const client = createAiClient({ model: 'a', fallbacks: ['b'], fetchImpl });
+
+  await assert.rejects(() => call(client), /DNS сломался/);
+  assert.deepEqual(calls, ['a'], 'настоящую поломку не маскируем повторами');
+});
