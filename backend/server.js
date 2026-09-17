@@ -80,7 +80,11 @@ function periodRangeUnified(period) {
 // ограничение блокирует лишь обращения с чужих сайтов из браузера. Список — через env CORS_ORIGINS.
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'https://mywarehouse.uz,https://www.mywarehouse.uz').split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
-  origin: (origin, cb) => (!origin || CORS_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('CORS: origin not allowed')),
+  // Отказ отдаём через cb(null, false), а НЕ ошибкой: ошибка уходит в обработчик
+  // express и превращается в 500 Internal Server Error — запрос с чужого домена
+  // выглядел как поломка сервера и засорял логи. Без CORS-заголовков браузер
+  // блокирует ответ сам, а сервер отвечает штатно.
+  origin: (origin, cb) => cb(null, !origin || CORS_ORIGINS.includes(origin)),
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -22748,7 +22752,13 @@ process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
 schemaReady.then(() => {
   if (shuttingDown) return;
-  httpServer = app.listen(PORT, () => console.log('WareApp API running on port ' + PORT));
+  // Слушаем ТОЛЬКО localhost: наружу ходят через nginx (он проксирует на
+  // http://localhost:3001), а без этой привязки API отвечал на публичном IP по
+  // открытому HTTP — вход и JWT уходили по сети в открытом виде мимо TLS и
+  // мимо всех ограничений nginx. HOST оставлен переопределяемым на случай
+  // запуска в контейнере, где localhost родителя недоступен.
+  const HOST = process.env.HOST || '127.0.0.1';
+  httpServer = app.listen(PORT, HOST, () => console.log(`WareApp API running on ${HOST}:${PORT}`));
   httpServer.on('error', error => {
     console.error('HTTP startup failed', error.code || error.name);
     process.exitCode = 1;
