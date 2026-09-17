@@ -13938,12 +13938,12 @@ app.post('/api/ai/diagnose', auth(['admin', 'founder', 'director', 'manager']), 
           body: JSON.stringify({
             model: AI_MODEL, stream: false, temperature: 0.3, max_tokens: 900,
             response_format: { type: 'json_object' },
-            messages: [{ role: 'system', content: sys }, { role: 'user', content: 'Проблемы компании:\n' + problemList }],
+            messages: [{ role: 'system', content: sys }, { role: 'user', content: 'Проблемы компании:\n' + problemList + AI_JSON_MODE_RULE }],
           }),
         });
         if (r.ok) {
           const j = await r.json();
-          const parsed = JSON.parse(j?.choices?.[0]?.message?.content || '{}');
+          const parsed = parseAiJson(j?.choices?.[0]?.message?.content) || {};
           (parsed.items || []).forEach(it => { if (typeof it.i === 'number') enrich[it.i] = it; });
           const usage = j?.usage || {};
           pool.query('INSERT INTO ai_chat_log (user_id, company_id, prompt_tokens, completion_tokens, model, latency_ms) VALUES ($1,$2,$3,$4,$5,$6)',
@@ -13985,6 +13985,41 @@ function plural2(n, one, few, many) {
 // + конкретные действия со ссылками на реальные инструменты. ══════════════════
 
 // Разрешённые графики (те же, что умеет /api/ai/chart-data).
+// Обязательная приписка к ПОЛЬЗОВАТЕЛЬСКОМУ сообщению всюду, где запрошен
+// response_format: json_object.
+//
+// Провайдер отклоняет такой запрос с 400 invalid_request, если слова «json» нет
+// в сообщении роли user. Проверено на проде: слово только в системном промпте —
+// 400; то же слово в пользовательском — 200 (регистр значения не имеет).
+// У нас «Верни СТРОГО JSON» стояло в системном промпте, Groq это устраивало, а
+// новый провайдер отказывал — и правая панель ИИ молча переставала рисоваться:
+// обработчик ловил 400 и отдавал canvas: null, пользователь видел заглушку.
+//
+// Приписка заодно просит не заворачивать ответ в markdown-обёртку, которую
+// JSON.parse тоже не осилит.
+const AI_JSON_MODE_RULE = '\n\nОтвет верни в формате json: один объект, без пояснений до и после и без markdown-обёртки.';
+
+// Разбор ответа модели в JSON. Даже в json-режиме модели иногда заворачивают
+// ответ в ```json ... ``` или добавляют фразу до/после. Голый JSON.parse на этом
+// падает, и экран молча остаётся пустым — поэтому снимаем обёртку и берём
+// содержимое от первой скобки до последней. Вернёт null, если разобрать нечем:
+// вызывающий код сам решает, что показать.
+function parseAiJson(content) {
+  const raw = String(content || '').trim();
+  if (!raw) return null;
+  const unfenced = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const candidates = [unfenced];
+  const first = unfenced.search(/[{[]/);
+  const last = Math.max(unfenced.lastIndexOf('}'), unfenced.lastIndexOf(']'));
+  if (first > 0 || (last >= 0 && last < unfenced.length - 1)) {
+    if (first >= 0 && last > first) candidates.push(unfenced.slice(first, last + 1));
+  }
+  for (const c of candidates) {
+    try { return JSON.parse(c); } catch { /* пробуем следующий вариант */ }
+  }
+  return null;
+}
+
 const CANVAS_CHARTS = ['monthly_revenue', 'top_products', 'top_sellers', 'branches', 'period_compare'];
 
 // Каталог реальных инструментов, из которого ИИ выбирает действия (route строго из allowlist).
@@ -14112,7 +14147,7 @@ app.post('/api/ai/canvas', auth(AI_ROLES), aiGate, async (req, res) => {
       + 'Каталог инструментов (route — назначение):\n' + routeList + '\n'
       + 'Верни СТРОГО JSON: {"title":"...","headline":"...","metrics":[{"label":"...","value":"...","hint":"...","tone":"good|bad|neutral"}],"chart":"...|null","actions":[{"label":"...","route":"...","why":"..."}]}';
 
-    const userMsg = `Вопрос владельца: ${q}\n\nТвой текстовый ответ (слева): ${(reply || '').toString().slice(0, 1500)}\n\nРЕАЛЬНЫЕ факты компании:\n${factSheet}`;
+    const userMsg = `Вопрос владельца: ${q}\n\nТвой текстовый ответ (слева): ${(reply || '').toString().slice(0, 1500)}\n\nРЕАЛЬНЫЕ факты компании:\n${factSheet}` + AI_JSON_MODE_RULE;
 
     const r = await aiFetch(DEEPSEEK_URL, {
       method: 'POST',
@@ -14125,8 +14160,11 @@ app.post('/api/ai/canvas', auth(AI_ROLES), aiGate, async (req, res) => {
     });
     if (!r.ok) { const t = await r.text().catch(() => ''); console.error('ai/canvas non-ok', r.status, t.slice(0, 200)); return res.json({ canvas: null }); }
     const j = await r.json();
-    let parsed = {};
-    try { parsed = JSON.parse(j?.choices?.[0]?.message?.content || '{}'); } catch { return res.json({ canvas: null }); }
+    const parsed = parseAiJson(j?.choices?.[0]?.message?.content);
+    if (!parsed) {
+      console.error('ai/canvas: ответ модели не разобрался в json');
+      return res.json({ canvas: null });
+    }
 
     // Валидация/санитайзинг — не доверяем модели вслепую.
     const metrics = Array.isArray(parsed.metrics) ? parsed.metrics.slice(0, 4).map(m => ({
