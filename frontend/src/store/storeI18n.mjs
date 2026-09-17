@@ -198,6 +198,9 @@ const T = {
   // Интро-заставка
   inTop: { ru: 'Ташкент · Узбекистан', uz: "Toshkent · O'zbekiston", en: 'Tashkent · Uzbekistan' },
   inSkip: { ru: 'Пропустить', uz: "O'tkazib yuborish", en: 'Skip' },
+  // Отдельная подпись для скринридера: на кнопке видно короткое «Пропустить»,
+  // но вслух «Пропустить» без объекта — непонятно, что именно пропускают.
+  inSkipAria: { ru: 'Пропустить заставку', uz: "Ekran lavhasini o'tkazib yuborish", en: 'Skip the intro' },
   inSign: { ru: 'Артефакты · искусство · редкие истории', uz: 'Artefaktlar · san’at · noyob hikoyalar', en: 'Artifacts · art · rare stories' },
   inArt1: { ru: 'Лазурная керамика', uz: 'Lazur sopol', en: 'Azure ceramics' },
   inEra1: { ru: 'XII–XIV вв.', uz: 'XII–XIV asrlar', en: '12th–14th c.' },

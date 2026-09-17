@@ -112,7 +112,7 @@ export const translations = {
     reportHint: 'Excel со всеми данными: продажи, приход/расход, остатки, KPI сотрудников.',
     // Users
     addUser: 'Добавить пользователя', systemUsers: 'Пользователи системы',
-    loginLabel: 'Логин', passwordLabel: 'Пароль', minPassword: 'Мин. 4 символа',
+    loginLabel: 'Логин', passwordLabel: 'Пароль', minPassword: 'Мин. 8 символов, буква и цифра',
     company: 'Компания', branch: 'Филиал', role: 'Роль',
     selectCompany: '— Выберите компанию —', selectBranch: '— Выберите филиал —',
     createUser: 'Создать пользователя', allCompanies: 'Все компании',
@@ -145,6 +145,7 @@ export const translations = {
     blocked: 'Заблок.', active: 'Активен', noCompany: 'Без компании',
     firstNamePlaceholder: 'Имя', lastNamePlaceholder: 'Фамилия',
     accountBlocked: 'Аккаунт заблокирован. Обратитесь к администратору.',
+    companyDisabled: 'Доступ вашей компании приостановлен. Обратитесь к администратору.',
     // Admin panel
     adminPanel: 'Панель управления',
     totalCompanies: 'Компаний', totalBranches: 'Филиалов',
@@ -199,6 +200,13 @@ export const translations = {
     manageCategories: 'Управление категориями', categoryExists: 'Уже существует',
     soldBy: 'Продавец', editOutcome: 'Редактировать расход',
     confirmDelete: 'Удалить запись?',
+    // t() при отсутствии ключа возвращает САМ ключ, а не пустую строку, поэтому
+    // подстраховка `t('loginMin') || 'текст'` не срабатывала и пользователь
+    // видел в форме буквально «loginMin». Ключи обязаны существовать.
+    loginMin: 'Логин минимум 3 символа',
+    passwordRule: 'Пароль: минимум 8 символов, буква и цифра',
+    birthDate: 'Дата рождения',
+    birthDateHint: 'Появится в инструменте «Дни рождения» — поздравления и промокоды',
     periodToday: 'День', periodYesterday: 'Вчера', periodWeek: 'Неделя',
     periodMonth: 'Месяц', periodYear: 'Год', periodAll: 'Все', periodCustom: 'Период',
     showHistory: 'История продаж →', backToForm: '← Назад к форме',
@@ -330,7 +338,7 @@ export const translations = {
     reportHint: 'Excel barcha ma\'lumotlar bilan: sotuvlar, kirim/chiqim, qoldiqlar, xodimlar KPI.',
     // Users
     addUser: 'Foydalanuvchi qo\'shish', systemUsers: 'Tizim foydalanuvchilari',
-    loginLabel: 'Login', passwordLabel: 'Parol', minPassword: 'Kamida 4 belgi',
+    loginLabel: 'Login', passwordLabel: 'Parol', minPassword: 'Kamida 8 belgi, harf va raqam',
     company: 'Kompaniya', branch: 'Filial', role: 'Rol',
     selectCompany: '— Kompaniyani tanlang —', selectBranch: '— Filialni tanlang —',
     createUser: 'Foydalanuvchi yaratish', allCompanies: 'Barcha kompaniyalar',
@@ -366,6 +374,7 @@ export const translations = {
     blocked: 'Bloklangan', active: 'Faol', noCompany: 'Kompaniyasiz',
     firstNamePlaceholder: 'Ism', lastNamePlaceholder: 'Familiya',
     accountBlocked: 'Akkaunt bloklangan. Administrator bilan bog\'laning.',
+    companyDisabled: 'Kompaniyangizga kirish vaqtincha to\'xtatilgan. Administrator bilan bog\'laning.',
     // Admin panel
     adminPanel: 'Boshqaruv paneli',
     totalCompanies: 'Kompaniyalar', totalBranches: 'Filiallar',
@@ -427,6 +436,10 @@ export const translations = {
     manageCategories: 'Kategoriyalarni boshqarish', categoryExists: 'Mavjud',
     soldBy: 'Sotuvchi', editOutcome: 'Chiqimni tahrirlash',
     confirmDelete: 'Yozuvni o\'chirish?',
+    loginMin: 'Login kamida 3 ta belgi',
+    passwordRule: 'Parol: kamida 8 ta belgi, harf va raqam',
+    birthDate: 'Tug\'ilgan kun',
+    birthDateHint: '«Tug\'ilgan kunlar» vositasida chiqadi — tabrik va promokodlar',
     periodToday: 'Kun', periodYesterday: 'Kecha', periodWeek: 'Hafta',
     periodMonth: 'Oy', periodYear: 'Yil', periodAll: 'Hammasi', periodCustom: 'Davr',
     showHistory: 'Sotuvlar tarixi →', backToForm: '← Formaga qaytish',

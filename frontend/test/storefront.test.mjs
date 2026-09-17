@@ -42,15 +42,20 @@ test('normalization keeps the ERP selling data', () => {
   assert.equal(product.stock, 2);
 });
 
-test('normalization supplies curated imagery for an ERP product', () => {
+// Витрина НЕ подставляет чужие фото реальному товару: unsplash-картина на
+// эмалированной кружке вводит покупателя в заблуждение. Товар без фото уходит
+// с image: null, а плейсхолдер рисует сама витрина.
+test('normalization never invents a photo for an ERP product', () => {
   const [product] = normalizeErpProducts([{ id: 92, name_ru: 'Ритм', price_sell: 400000 }]);
 
-  assert.match(product.image, /^https:\/\/images\.unsplash\.com\//);
+  assert.equal(product.image, null);
 });
 
-test('normalization preserves the curated fallback for an empty ERP response', () => {
-  assert.equal(normalizeErpProducts([]), DEMO_PRODUCTS);
-  assert.equal(normalizeErpProducts(null), DEMO_PRODUCTS);
+// Пустой ответ ERP — это пустой каталог, а не демо-товары: показывать
+// несуществующие картины в живом магазине нельзя.
+test('normalization returns an empty catalog for an empty ERP response', () => {
+  assert.deepEqual(normalizeErpProducts([]), []);
+  assert.deepEqual(normalizeErpProducts(null), []);
 });
 
 test('normalization maps alternate ERP aliases', () => {
@@ -76,7 +81,9 @@ test('normalization sanitizes malformed numeric fields', () => {
   assert.equal(product.name, 'Без названия');
   assert.equal(product.price, 0);
   assert.equal(product.stock, 0);
-  assert.equal(product.available, false);
+  // Заказ на витрине = заявка, куратор подтверждает наличие вручную,
+  // поэтому нулевой остаток не закрывает кнопку «в корзину».
+  assert.equal(product.available, true);
 });
 
 test('category filtering returns the selected collection', () => {

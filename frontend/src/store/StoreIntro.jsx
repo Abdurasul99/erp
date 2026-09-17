@@ -67,7 +67,7 @@ export default function StoreIntro({ open, onComplete, t = makeStoreT('ru') }) {
           <div className="store-intro-ambient" aria-hidden="true" />
           <div className="store-intro-topline">
             <span>{t('inTop')}</span>
-            <button ref={skipButtonRef} type="button" onClick={finish} aria-label={t('inSkip')}>
+            <button ref={skipButtonRef} type="button" onClick={finish} aria-label={t('inSkipAria')}>
               {t('inSkip')} <i aria-hidden="true">↗</i>
             </button>
           </div>
