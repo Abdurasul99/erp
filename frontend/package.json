@@ -6,7 +6,7 @@
     "dev:https": "vite --config vite.https.config.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-default-type=module --test test/break-even.test.mjs && node --test test/https-config.test.mjs test/storefront.test.mjs test/storefront-intro.test.mjs test/storefront-render.test.mjs test/company-access-admin.test.mjs test/admin-dock-labels.test.mjs test/decimal-input.test.mjs test/source-bindings.test.mjs && node test/verify_translations.js"
+    "test": "node --experimental-default-type=module --test test/break-even.test.mjs && node --test test/https-config.test.mjs test/storefront.test.mjs test/storefront-intro.test.mjs test/storefront-render.test.mjs test/company-access-admin.test.mjs test/admin-dock-labels.test.mjs test/decimal-input.test.mjs test/source-bindings.test.mjs test/events-isolation.test.mjs && node test/verify_translations.js"
   },
   "dependencies": {
     "axios": "^1.6.2",

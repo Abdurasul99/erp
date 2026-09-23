@@ -203,6 +203,11 @@ export const translations = {
     // t() при отсутствии ключа возвращает САМ ключ, а не пустую строку, поэтому
     // подстраховка `t('loginMin') || 'текст'` не срабатывала и пользователь
     // видел в форме буквально «loginMin». Ключи обязаны существовать.
+    productLabel: 'Продукт',
+    productWave: 'Wave ERP',
+    productWaveDesc: 'Торговля: склад, продажи, касса',
+    productEvents: 'Мероприятия',
+    productEventsDesc: 'Декор и события: заказы, прокат, бригады',
     loginMin: 'Логин минимум 3 символа',
     passwordRule: 'Пароль: минимум 8 символов, буква и цифра',
     birthDate: 'Дата рождения',
@@ -436,6 +441,11 @@ export const translations = {
     manageCategories: 'Kategoriyalarni boshqarish', categoryExists: 'Mavjud',
     soldBy: 'Sotuvchi', editOutcome: 'Chiqimni tahrirlash',
     confirmDelete: 'Yozuvni o\'chirish?',
+    productLabel: 'Mahsulot',
+    productWave: 'Wave ERP',
+    productWaveDesc: 'Savdo: ombor, sotuv, kassa',
+    productEvents: 'Tadbirlar',
+    productEventsDesc: 'Bezak va tadbirlar: buyurtmalar, ijara, brigadalar',
     loginMin: 'Login kamida 3 ta belgi',
     passwordRule: 'Parol: kamida 8 ta belgi, harf va raqam',
     birthDate: 'Tug\'ilgan kun',

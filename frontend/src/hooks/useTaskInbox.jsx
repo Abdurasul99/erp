@@ -31,7 +31,13 @@ const TaskInboxContext = createContext(null);
 
 export function TaskInboxProvider({ children }) {
   const auth = useContext(AuthContext);
-  const userId = auth?.user?.id || null;
+  // Инбокс задач — функция сотрудников компании Wave. Опрашивать его некому:
+  //   • учётке «Мероприятий» — API Wave ей закрыто;
+  //   • оператору платформы (admin) — граница данных админа закрывает ему
+  //     /api/notifications, и браузер админа раз в полминуты получал 403.
+  // В режиме «войти как» роль в токене — роль сотрудника, и опрос работает.
+  const u = auth?.user;
+  const userId = (u && u.product !== 'events' && u.role !== 'admin') ? u.id : null;
 
   const [counts, setCounts] = useState(EMPTY_COUNTS);
   const [version, setVersion] = useState(0);

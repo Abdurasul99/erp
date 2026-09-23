@@ -10,6 +10,9 @@ const Mobile     = lazy(() => import('./pages/Mobile.jsx'));
 const SellerView = lazy(() => import('./pages/SellerView.jsx'));
 const OwnerShell = lazy(() => import('./owner/OwnerShell.jsx'));
 const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
+// «Мероприятия» — отдельный продукт со своим сервисом и базой. С Wave у него
+// общий только вход; код интерфейса в src/events не импортирует ничего из Wave.
+const EventsShell = lazy(() => import('./events/EventsShell.jsx'));
 const Storefront = lazy(() => import('./store/Storefront.jsx'));
 import { isPublicStorefrontPath } from './store/storeRouting.mjs';
 import { getLang, setLang } from './i18n.js';
@@ -28,6 +31,9 @@ function RequireAuth({ children }) {
 function RootRedirect() {
   const { user } = useContext(AuthContext);
   if (!user) return <Navigate to="/login" replace />;
+  // Продукт — РАНЬШЕ роли: у учредителя мероприятий роль тоже founder, и
+  // проверка роли увела бы его в /owner, то есть в Wave.
+  if (user.product === 'events') return <Navigate to="/events" replace />;
   if (user.role === 'seller') {
     return <Navigate to={localStorage.getItem('seller_branch_id') ? '/sell' : '/select-branch'} replace />;
   }
@@ -39,6 +45,20 @@ function RootRedirect() {
 function RequireAdmin({ children }) {
   const { user } = useContext(AuthContext);
   if (user?.role !== 'admin') return <Navigate to="/" replace />;
+  return children;
+}
+
+// Экраны Wave — только для учёток Wave. Учётка мероприятий по старой закладке
+// или ручному адресу попала бы в оболочку, где каждый запрос отвечает 403.
+function RequireWaveProduct({ children }) {
+  const { user } = useContext(AuthContext);
+  if (user?.product === 'events') return <Navigate to="/events" replace />;
+  return children;
+}
+
+function RequireEventsProduct({ children }) {
+  const { user } = useContext(AuthContext);
+  if (user?.product !== 'events') return <Navigate to="/" replace />;
   return children;
 }
 
@@ -187,6 +207,8 @@ function PublicStorefrontApp() {
 const IMP_ROLE_LABEL = {
   founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
   cashier: 'Кассир', warehouse: 'Складовщик', seller: 'Продавец',
+  // Роли «Мероприятий» — админ заходит и туда.
+  project_manager: 'Руководитель проектов', coordinator: 'Координатор',
 };
 function ImpersonationBanner() {
   const { user, stopImpersonate } = useContext(AuthContext);
@@ -385,13 +407,14 @@ function ErpApp() {
             <Suspense fallback={<Splash />}>
               <Routes>
                 <Route path="/login" element={user ? <RootRedirect /> : <Login />} />
-                <Route path="/select" element={<RequireAuth><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireAuth>} />
-                <Route path="/desktop" element={<RequireAuth><RequireNonSeller><RequireNotOwner><Desktop /></RequireNotOwner></RequireNonSeller></RequireAuth>} />
-                <Route path="/mobile" element={<RequireAuth><RequireNonSeller><Mobile /></RequireNonSeller></RequireAuth>} />
-                <Route path="/select-branch" element={<RequireAuth><SellerBranchPicker /></RequireAuth>} />
-                <Route path="/sell" element={<RequireAuth><RequireSellerBranch><SellerView /></RequireSellerBranch></RequireAuth>} />
-                <Route path="/owner/*" element={<RequireAuth><RequireNonSeller><OwnerShell /></RequireNonSeller></RequireAuth>} />
+                <Route path="/select" element={<RequireAuth><RequireWaveProduct><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireWaveProduct></RequireAuth>} />
+                <Route path="/desktop" element={<RequireAuth><RequireWaveProduct><RequireNonSeller><RequireNotOwner><Desktop /></RequireNotOwner></RequireNonSeller></RequireWaveProduct></RequireAuth>} />
+                <Route path="/mobile" element={<RequireAuth><RequireWaveProduct><RequireNonSeller><Mobile /></RequireNonSeller></RequireWaveProduct></RequireAuth>} />
+                <Route path="/select-branch" element={<RequireAuth><RequireWaveProduct><SellerBranchPicker /></RequireWaveProduct></RequireAuth>} />
+                <Route path="/sell" element={<RequireAuth><RequireWaveProduct><RequireSellerBranch><SellerView /></RequireSellerBranch></RequireWaveProduct></RequireAuth>} />
+                <Route path="/owner/*" element={<RequireAuth><RequireWaveProduct><RequireNonSeller><OwnerShell /></RequireNonSeller></RequireWaveProduct></RequireAuth>} />
                 <Route path="/admin/*" element={<RequireAuth><RequireAdmin><AdminShell /></RequireAdmin></RequireAuth>} />
+                <Route path="/events/*" element={<RequireAuth><RequireEventsProduct><EventsShell /></RequireEventsProduct></RequireAuth>} />
                 <Route path="*" element={<RootRedirect />} />
               </Routes>
             </Suspense>
