@@ -12,6 +12,7 @@ const ExcelJS = require('exceljs');
 const rateLimit = require('express-rate-limit');
 const { TOOLS_CATALOG } = require('./toolsCatalog'); // каталог инструментов для Wave AI
 const { companyAccessError, parseCompanyEnabled } = require('./companyAccess');
+const products = require('./products');
 
 const { envInteger, protectAsync, jsonError } = require('./runtime');
 const { createAiClient } = require('./aiClient');
@@ -208,6 +209,27 @@ async function currentSid(userId) {
   return sid;
 }
 
+// ── Продукт компании в SQL ──────────────────────────────────────────────────
+// Столбец companies.product добавляет миграция. Если она почему-то не прошла,
+// Wave обязан работать как раньше: все компании считаются wave, а недоступен
+// только вход в «Мероприятия». Поэтому ни один запрос не читает product
+// напрямую — выражение подставляется по флагу, который выставляется по факту
+// наличия столбца. Функция второго продукта не должна уметь положить первый.
+let PRODUCT_COLUMN = false;
+const productExpr = (alias) => (PRODUCT_COLUMN ? `${alias}.product` : `'wave'::text`);
+async function detectProductColumn() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'companies' AND column_name = 'product'`);
+    PRODUCT_COLUMN = rows.length > 0;
+  } catch (e) {
+    PRODUCT_COLUMN = false;
+    console.error('Не удалось проверить столбец companies.product:', e.message);
+  }
+  if (!PRODUCT_COLUMN) console.error('ВНИМАНИЕ: столбца companies.product нет — вход в «Мероприятия» отключён');
+}
+
 const auth = (roles = []) => async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Нет токена' });
@@ -222,10 +244,16 @@ const auth = (roles = []) => async (req, res, next) => {
   // SaaS-оператор в режиме act_as не прикреплён к компании и сохраняет сервисный доступ.
   if (decoded.company_id && !decoded.act_as) {
     try {
-      const companyQ = await pool.query('SELECT is_enabled FROM companies WHERE id = $1', [decoded.company_id]);
+      const companyQ = await pool.query(
+        `SELECT is_enabled, ${productExpr('companies')} AS product FROM companies WHERE id = $1`, [decoded.company_id]);
       const accessError = companyAccessError(decoded, companyQ.rows[0]);
       if (accessError) {
         return res.status(accessError.status).json({ error: accessError.error, code: accessError.code });
+      }
+      // Продукт в токене обязан совпадать с продуктом компании по базе: токен,
+      // выписанный до переноса компании или подделанный, дальше не проходит.
+      if (companyQ.rows[0] && products.tokenProductMismatch(decoded, companyQ.rows[0])) {
+        return res.status(401).json({ error: 'Сессия устарела — войдите заново', code: 'SESSION_STALE' });
       }
     } catch (e) {
       console.error('company access check err', e.message);
@@ -364,6 +392,21 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Граница продуктов ────────────────────────────────────────────────────────
+// Учётка «Мероприятий» на API Wave получает только общий вход (/api/auth/*).
+// Всё остальное — 403, даже когда роль совпадает по имени: founder есть в обоих
+// продуктах, и без этой границы учредитель компании мероприятий открыл бы
+// дашборд, склад и кассу Wave. Правило — в products.productGate.
+app.use((req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return next();
+  let decoded;
+  try { decoded = jwt.verify(token, JWT_SECRET); } catch { return next(); }
+  const denied = products.productGate(req.path, decoded);
+  if (denied) return res.status(denied.status).json(denied.body);
+  next();
+});
+
 // === COMPANIES ===
 app.get('/api/companies', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   let query = `
@@ -409,13 +452,24 @@ app.post('/api/companies', auth(['admin']), async (req, res) => {
     if (!founder_first_name || !founder_first_name.trim()) return res.status(400).json({ error: 'ФИО учредителя обязательно' });
     if (!director_username || !director_username.trim()) return res.status(400).json({ error: 'Логин учредителя обязателен' });
     { const v = validatePassword(director_password); if (!v.ok) return res.status(400).json({ error: v.error }); }
+    // Продукт выбирается один раз — при создании. Не передан — Wave, как раньше.
+    const product = products.parseProduct(req.body.product);
+    if (product === 'events' && !PRODUCT_COLUMN) {
+      return res.status(503).json({ error: 'Продукт «Мероприятия» недоступен: миграция базы не прошла' });
+    }
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Набор скрытых инструментов по умолчанию — про экраны Wave; у компании
+      // мероприятий своего интерфейса Wave нет, ей он не нужен.
       const { rows: [company] } = await client.query(
-        'INSERT INTO companies (name, address, phone, created_by, disabled_tools) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-        [name.trim(), address || '', phone || '', req.user.id, DEFAULT_DISABLED_TOOLS]
+        PRODUCT_COLUMN
+          ? 'INSERT INTO companies (name, address, phone, created_by, disabled_tools, product) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *'
+          : 'INSERT INTO companies (name, address, phone, created_by, disabled_tools) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+        [name.trim(), address || '', phone || '', req.user.id,
+         product === 'events' ? [] : DEFAULT_DISABLED_TOOLS,
+         ...(PRODUCT_COLUMN ? [product] : [])]
       );
       const hash = await bcrypt.hash(director_password, 10);
       await client.query(
@@ -7917,11 +7971,24 @@ app.post('/api/auth/login', async (req, res) => {
     if (rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован. Обратитесь к администратору.' });
     // Fetch company/branch names for display
     let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [], companyLogo = null;
+    let companyProduct = null;
     if (rows[0].company_id) {
-      const c = await pool.query("SELECT name, logo_url, is_enabled, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [rows[0].company_id]);
+      const c = await pool.query(`SELECT name, logo_url, is_enabled, ${productExpr('companies')} AS product,
+        COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets
+        FROM companies WHERE id=$1`, [rows[0].company_id]);
       const accessError = companyAccessError(rows[0], c.rows[0]);
       if (accessError) {
         return res.status(accessError.status).json({ error: accessError.error, code: accessError.code });
+      }
+      companyProduct = products.productOf(c.rows[0]?.product);
+      // Роль не из продукта компании (кассир в компании мероприятий) — такая
+      // учётка не открыла бы ни одного экрана ни там, ни там. Лучше сказать
+      // сразу, чем пустить в пустой интерфейс. Оператора платформы не трогаем.
+      if (rows[0].role !== 'admin' && !products.roleFitsProduct(rows[0].role, companyProduct)) {
+        return res.status(403).json({
+          error: 'Роль учётки не подходит продукту компании. Обратитесь к администратору.',
+          code: 'ROLE_PRODUCT_MISMATCH',
+        });
       }
       companyName = c.rows[0]?.name || null;
       companyLogo = c.rows[0]?.logo_url || null;
@@ -7942,6 +8009,8 @@ app.post('/api/auth/login', async (req, res) => {
       company_logo_url: companyLogo,
       company_disabled_tools: companyDisabled,
       company_disabled_widgets: companyDisabledWidgets,
+      // По продукту интерфейс решает, куда вести после входа: Wave или «Мероприятия».
+      product: companyProduct,
     };
     // По просьбе владельца: НЕТ таймаута сессии на логине — токен практически бессрочный.
     // Одиночная сессия: новый sid при каждом входе → предыдущее устройство с этим
@@ -7953,6 +8022,9 @@ app.post('/api/auth/login', async (req, res) => {
       id: payload.id, username: payload.username, role: payload.role,
       company_id: payload.company_id, branch_id: payload.branch_id,
       sid,
+      // Продукт — в подписанном токене: по нему граница пропускает учётку
+      // «Мероприятий» только в /api/auth/*, а events-api — только её.
+      product: companyProduct,
     }, JWT_SECRET, { expiresIn: '3650d' });
     res.json({ token, user: payload });
   } catch (e) {
@@ -7969,7 +8041,8 @@ app.get('/api/auth/me', auth(), async (req, res) => {
       const a = await pool.query('SELECT id, username, first_name, last_name, is_blocked FROM users WHERE id = $1', [req.user.imp_by || req.user.id]);
       if (!a.rows[0] || a.rows[0].is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован' });
       let companyName = null, branchName = null, companyDisabled = [], companyDisabledWidgets = [], companyLogo = null;
-      if (req.user.company_id) { const c = await pool.query("SELECT name, logo_url, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1", [req.user.company_id]); companyName = c.rows[0]?.name || null; companyLogo = c.rows[0]?.logo_url || null; companyDisabled = c.rows[0]?.disabled_tools || []; companyDisabledWidgets = c.rows[0]?.disabled_widgets || []; }
+      let companyProduct = null;
+      if (req.user.company_id) { const c = await pool.query(`SELECT name, logo_url, ${productExpr('companies')} AS product, COALESCE(disabled_tools,'{}') AS disabled_tools, COALESCE(disabled_widgets,'{}') AS disabled_widgets FROM companies WHERE id=$1`, [req.user.company_id]); companyName = c.rows[0]?.name || null; companyLogo = c.rows[0]?.logo_url || null; companyDisabled = c.rows[0]?.disabled_tools || []; companyDisabledWidgets = c.rows[0]?.disabled_widgets || []; companyProduct = c.rows[0] ? products.productOf(c.rows[0].product) : null; }
       if (req.user.branch_id)  { const b = await pool.query('SELECT name FROM branches  WHERE id=$1', [req.user.branch_id]);  branchName  = b.rows[0]?.name || null; }
       return res.json({ user: {
         id: req.user.id, username: req.user.username, role: req.user.role,
@@ -7979,6 +8052,7 @@ app.get('/api/auth/me', auth(), async (req, res) => {
         blocked_tools: [], ai_enabled: true, company_disabled_tools: companyDisabled,
         company_disabled_widgets: companyDisabledWidgets,
         act_as: true, impersonator_name: req.user.imp_name || a.rows[0].username,
+        product: companyProduct,
       }});
     }
     const { rows } = await pool.query(
@@ -7986,7 +8060,8 @@ app.get('/api/auth/me', auth(), async (req, res) => {
               COALESCE(u.blocked_tools, '{}') AS blocked_tools, COALESCE(u.ai_enabled, true) AS ai_enabled,
               COALESCE(c.disabled_tools, '{}') AS company_disabled_tools,
               COALESCE(c.disabled_widgets, '{}') AS company_disabled_widgets,
-              c.name AS company_name, c.logo_url AS company_logo_url, b.name AS branch_name
+              c.name AS company_name, c.logo_url AS company_logo_url, b.name AS branch_name,
+              CASE WHEN c.id IS NULL THEN NULL ELSE ${productExpr('c')} END AS product
        FROM users u
        LEFT JOIN companies c ON u.company_id = c.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -8078,6 +8153,8 @@ app.post('/api/users', auth(['admin', 'director', 'founder', 'manager']), async 
     } else {
       companyId = null; branchId = null;
     }
+    try { await assertRoleFitsCompany(req.user, companyId, role); }
+    catch (e) { return res.status(e.statusCode || 400).json({ error: e.message }); }
     // Company-level roles — never attach a branch
     if (isCompanyLevel(role)) branchId = null;
     // Pre-check: only one founder/director per company
@@ -8112,6 +8189,25 @@ function canAssignRole(actorRole, targetRole) {
   if (actorRole === 'admin') return true;
   if (targetRole === 'admin') return false;
   return (ROLE_RANK[targetRole] || 0) < (ROLE_RANK[actorRole] || 0);
+}
+
+// Роль обязана относиться к продукту компании: кассир в компании мероприятий
+// создался бы, но не открыл бы ни одного экрана ни там, ни там. Учётками
+// «Мероприятий» управляет только админ WoW — так задумано: у компаний этого
+// продукта нет доступа к API Wave, где живёт управление пользователями.
+// Бросает ошибку с statusCode; учётки без компании (оператор платформы) — как раньше.
+async function assertRoleFitsCompany(actor, companyId, role) {
+  if (!companyId) return;
+  const { rows: [c] } = await pool.query(
+    `SELECT ${productExpr('companies')} AS product FROM companies WHERE id = $1`, [companyId]);
+  if (!c) throw Object.assign(new Error('Компания не найдена'), { statusCode: 404 });
+  const product = products.productOf(c.product);
+  if (product === 'events' && actor.role !== 'admin') {
+    throw Object.assign(new Error('Учётками продукта «Мероприятия» управляет администратор WoW'), { statusCode: 403 });
+  }
+  if (!products.roleFitsProduct(role, product)) {
+    throw Object.assign(new Error(`Роль не подходит продукту компании («${products.PRODUCT_LABELS[product]}»)`), { statusCode: 400 });
+  }
 }
 
 // Returns true if the calling user is allowed to mutate the target user.
@@ -8151,6 +8247,10 @@ app.put('/api/users/:id', auth(['admin', 'director', 'founder', 'manager']), asy
       effectiveCompany = req.user.company_id;
       if (req.user.role === 'manager') effectiveBranch = req.user.branch_id;
     }
+    // Новая пара «роль + компания» тоже обязана сойтись по продукту: иначе
+    // админ мог бы перенести кассира Wave в компанию мероприятий.
+    try { await assertRoleFitsCompany(req.user, effectiveCompany || cur.company_id, role || cur.role); }
+    catch (e) { return res.status(e.statusCode || 400).json({ error: e.message }); }
     if (cur && role && cur.role !== role) {
       await pool.query(
         'INSERT INTO role_change_log (user_id, username, old_role, new_role, changed_by, changed_by_username) VALUES ($1,$2,$3,$4,$5,$6)',
@@ -12579,16 +12679,21 @@ app.delete('/api/admin/team/:id', auth(['admin']), async (req, res) => {
 // === «ВОЙТИ КАК» (impersonation) — WoW-команда заходит в любую компанию под любой ролью ===
 // Только реальный admin может выписать scoped-токен. Токен несёт выбранные role/company/branch
 // + act_as, поэтому все обычные эндпоинты скоупятся так, будто это реальный сотрудник компании.
-const IMPERSONATABLE_ROLES = new Set(['founder', 'director', 'manager', 'cashier', 'warehouse', 'seller']);
+// Допустимые роли зависят от продукта компании — products.IMPERSONATABLE_ROLES.
 
 app.get('/api/admin/impersonate/targets', auth(['admin']), async (req, res) => {
   try {
     const [companies, branches] = await Promise.all([
-      pool.query('SELECT id, name FROM companies ORDER BY name'),
+      pool.query(`SELECT id, name, ${productExpr('companies')} AS product FROM companies ORDER BY name`),
       pool.query('SELECT id, name, company_id FROM branches ORDER BY name'),
     ]);
     const byCo = {};
-    for (const c of companies.rows) byCo[c.id] = { id: c.id, name: c.name, branches: [] };
+    // Продукт и допустимые роли — чтобы окно «войти как» предлагало роли
+    // именно этого продукта, а не кассира в компании мероприятий.
+    for (const c of companies.rows) {
+      const product = products.productOf(c.product);
+      byCo[c.id] = { id: c.id, name: c.name, product, roles: products.IMPERSONATABLE_ROLES[product], branches: [] };
+    }
     for (const b of branches.rows) if (byCo[b.company_id]) byCo[b.company_id].branches.push({ id: b.id, name: b.name });
     res.json(Object.values(byCo));
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -12600,10 +12705,17 @@ app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
     const role = String(req.body.role || '');
     const reqBranch = req.body.branch_id ? parseInt(req.body.branch_id, 10) : null;
     if (!Number.isFinite(company_id)) return res.status(400).json({ error: 'Выберите компанию' });
-    if (!IMPERSONATABLE_ROLES.has(role)) return res.status(400).json({ error: 'Недопустимая роль' });
-    const co = await pool.query('SELECT id, name FROM companies WHERE id = $1', [company_id]);
+    const co = await pool.query(`SELECT id, name, ${productExpr('companies')} AS product FROM companies WHERE id = $1`, [company_id]);
     if (!co.rows[0]) return res.status(404).json({ error: 'Компания не найдена' });
-    const isCoLevel = (role === 'founder' || role === 'director');
+    // Набор ролей зависит от продукта компании: в «Мероприятия» — только
+    // управленческие роли этого продукта.
+    const product = products.productOf(co.rows[0].product);
+    if (!products.IMPERSONATABLE_ROLES[product].includes(role)) return res.status(400).json({ error: 'Недопустимая роль для этой компании' });
+    // В «Мероприятиях» учредитель и руководитель проектов работают без филиала,
+    // координатор — с филиалом или без (тогда видит всю компанию).
+    const isCoLevel = product === 'events'
+      ? (role === 'founder' || role === 'project_manager' || (role === 'coordinator' && !reqBranch))
+      : (role === 'founder' || role === 'director');
     let branchName = null;
     if (!isCoLevel && !reqBranch) return res.status(400).json({ error: 'Для этой роли нужно выбрать филиал' });
     if (reqBranch) {
@@ -12616,6 +12728,7 @@ app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
       id: req.user.id, username: req.user.username, role,
       company_id, branch_id: effBranch,
       act_as: true, imp_by: req.user.id, imp_name: req.user.username,
+      product,
     }, JWT_SECRET, { expiresIn: '30d' });
     audit(req, 'impersonate', 'company', company_id, null,
       { as_role: role, branch_id: effBranch, company: co.rows[0].name }, { module: 'settings', description: `Вход как ${role} в «${co.rows[0].name}»` });
@@ -12627,6 +12740,7 @@ app.post('/api/admin/impersonate', auth(['admin']), async (req, res) => {
         company_name: co.rows[0].name, branch_name: branchName,
         blocked_tools: [], ai_enabled: true,
         act_as: true, impersonator_name: req.user.username,
+        product,
       },
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -14250,6 +14364,48 @@ app.get('/api/ready', async (req, res) => {
 });
 
 async function ensureSchema() {
+  // Продукт компании — ПЕРВЫМ и в своём try/catch. Остальные миграции ниже идут
+  // одной цепочкой: сбой любой из них отменяет все следующие. Если бы эта стояла
+  // в общей цепочке, её молча пропустили бы, а вход и auth() читают product —
+  // см. PRODUCT_COLUMN: при отсутствии столбца Wave работает по-старому.
+  try {
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS product TEXT NOT NULL DEFAULT 'wave'`);
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'companies_product_check') THEN
+          ALTER TABLE companies ADD CONSTRAINT companies_product_check CHECK (product IN ('wave', 'events'));
+        END IF;
+      END $$`);
+  } catch (e) {
+    console.error('ВНИМАНИЕ: миграция companies.product не прошла — «Мероприятия» недоступны, Wave работает как раньше:', e.message);
+  }
+  await detectProductColumn();
+
+  // Ограничение на роли пользователей. На проде стоит users_role_check со списком
+  // ТОЛЬКО ролей Wave — его когда-то правили вручную, в коде его не было. С ним
+  // первая же учётка «руководитель проектов» или «декоратор» падала бы с ошибкой
+  // базы. Приводим список к ролям обоих продуктов; перестраиваем только когда в
+  // нём чего-то не хватает, чтобы не блокировать таблицу на каждом перезапуске.
+  // DROP и ADD — одной командой ALTER TABLE, то есть атомарно: окна без
+  // ограничения нет.
+  try {
+    const allRoles = [...new Set(['admin', ...products.WAVE_ROLES, ...products.EVENTS_ROLES])];
+    if (!allRoles.every((r) => /^[a-z_]+$/.test(r))) throw new Error('недопустимое имя роли');
+    const { rows: [cur] } = await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid = 'users'::regclass AND conname = 'users_role_check'`);
+    const missing = allRoles.filter((r) => !(cur && cur.def.includes(`'${r}'`)));
+    if (missing.length) {
+      const list = allRoles.map((r) => `'${r}'`).join(', ');
+      await pool.query(
+        `ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check,
+                           ADD CONSTRAINT users_role_check CHECK (role IN (${list}))`);
+      console.log('users_role_check: добавлены роли', missing.join(', '));
+    }
+  } catch (e) {
+    console.error('ВНИМАНИЕ: не удалось обновить users_role_check — учётки «Мероприятий» не создадутся:', e.message);
+  }
+
   try {
     try { // newtools_v2_schema_marker
       await pool.query("CREATE TABLE IF NOT EXISTS competitors (\n  id SERIAL PRIMARY KEY,\n  company_id INT NOT NULL,\n  name TEXT NOT NULL,\n  sku INT DEFAULT 0,\n  avg_price NUMERIC DEFAULT 0,\n  rating NUMERIC DEFAULT 0,\n  service INT DEFAULT 0,\n  locations INT DEFAULT 0,\n  online INT DEFAULT 0,\n  source TEXT,\n  updated_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE INDEX IF NOT EXISTS idx_competitors_company ON competitors (company_id);");
