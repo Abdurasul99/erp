@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f5f7" />
+    <link rel="icon" href="data:," />
+    <title>Wave ERP — Apple Workspace</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-blue" aria-hidden="true"></div>
+    <div class="ambient ambient-violet" aria-hidden="true"></div>
+
+    <div class="app-window" id="app">
+      <header class="window-toolbar">
+        <div class="window-leading">
+          <div class="traffic-lights" aria-hidden="true"><span></span><span></span><span></span></div>
+          <button class="toolbar-icon sidebar-toggle" type="button" data-action="toggle-sitemap" aria-label="Скрыть боковую панель"><i data-lucide="panel-left-close"></i></button>
+          <button class="toolbar-icon mobile-menu" id="mobileMenu" type="button" aria-label="Открыть навигацию"><i data-lucide="sidebar"></i></button>
+          <a class="wave-brand" href="#" data-module="dashboard" aria-label="Wave ERP">
+            <span class="wave-mark"><i data-lucide="waves"></i></span>
+            <span><strong>Wave</strong><small>ERP</small></span>
+          </a>
+        </div>
+
+        <button class="global-search" type="button" data-action="open-command">
+          <i data-lucide="search"></i><span>Искать в компании</span><kbd>⌘ K</kbd>
+        </button>
+
+        <div class="window-actions">
+          <button class="toolbar-pill intelligence-trigger" type="button" data-action="toggle-copilot"><i data-lucide="sparkles"></i><span>Intelligence</span></button>
+          <button class="toolbar-icon notification-trigger" id="notificationTrigger" type="button" aria-label="Уведомления"><i data-lucide="bell"></i><span>6</span></button>
+          <button class="profile-trigger" id="headerProfile" type="button" data-action="open-roles" aria-label="Сменить роль"></button>
+        </div>
+      </header>
+
+      <div class="apple-shell">
+        <aside class="glass-sidebar" id="sidebar" aria-label="Навигация Wave ERP">
+          <div class="sidebar-company" id="spaceSelector"></div>
+          <button class="sidebar-search" type="button" data-action="open-command"><i data-lucide="search"></i><span>Поиск</span><kbd>⌘K</kbd></button>
+
+          <section class="sidebar-section sidebar-main">
+            <div class="sidebar-section-title"><span>Компания</span><button type="button" data-action="manage-navigation" aria-label="Настроить"><i data-lucide="ellipsis"></i></button></div>
+            <nav class="sidebar-nav" id="moduleNav"></nav>
+          </section>
+
+          <section class="sidebar-section quick-access"></section>
+
+          <div class="sidebar-footer">
+            <button class="sidebar-person" id="sidebarPerson" type="button" data-action="open-roles"></button>
+            <button class="sidebar-settings" type="button" data-module="settings" aria-label="Настройки"><i data-lucide="settings"></i></button>
+          </div>
+        </aside>
+
+        <main class="workspace" id="mainContent">
+          <header class="workspace-chrome">
+            <div class="breadcrumbs" id="breadcrumbs"></div>
+            <section class="workspace-heading">
+              <div class="workspace-title" id="projectTitle"></div>
+              <div class="heading-actions">
+                <button class="glass-button" type="button" data-action="share"><i data-lucide="square-arrow-up"></i><span>Поделиться</span></button>
+                <button class="glass-button icon-only" type="button" data-action="more" aria-label="Ещё"><i data-lucide="ellipsis"></i></button>
+              </div>
+            </section>
+            <nav class="workspace-tabs" id="moduleTabs" aria-label="Представления"></nav>
+            <section class="content-toolbar" id="moduleToolbar"></section>
+          </header>
+          <div class="workspace-canvas" id="workspaceRoot"></div>
+        </main>
+
+        <aside class="intelligence-panel" id="copilotPane" aria-label="Wave Intelligence">
+          <header class="intelligence-header">
+            <div><span class="intelligence-mark"><i data-lucide="sparkles"></i></span><div><strong>Wave Intelligence</strong><span>Анализирует текущий экран</span></div></div>
+            <button type="button" data-action="toggle-copilot" aria-label="Закрыть"><i data-lucide="x"></i></button>
+          </header>
+          <div class="copilot-body" id="copilotBody"></div>
+          <form class="copilot-compose" id="copilotForm">
+            <textarea id="copilotInput" rows="2" placeholder="Спросить о данных…"></textarea>
+            <button type="submit" aria-label="Отправить"><i data-lucide="arrow-up"></i></button>
+          </form>
+        </aside>
+      </div>
+
+      <nav class="mobile-module-dock" id="mobileModuleDock" aria-label="Быстрая навигация"></nav>
+    </div>
+
+    <div class="mobile-backdrop" id="mobileBackdrop"></div>
+
+    <aside class="record-panel" id="recordDrawer" aria-hidden="true">
+      <header class="record-panel-header">
+        <div class="drawer-key" id="drawerKey"></div>
+        <div class="record-panel-actions">
+          <button type="button" data-action="drawer-edit" aria-label="Изменить"><i data-lucide="pencil"></i></button>
+          <button type="button" data-action="copy-link" aria-label="Копировать ссылку"><i data-lucide="link"></i></button>
+          <button type="button" data-action="close-drawer" aria-label="Закрыть"><i data-lucide="x"></i></button>
+        </div>
+      </header>
+      <div class="record-panel-content" id="drawerContent"></div>
+    </aside>
+
+    <div class="popover role-popover" id="rolePopover" aria-hidden="true">
+      <header class="popover-header"><div><strong>Рабочее место</strong><span>Интерфейс адаптируется под роль</span></div><button type="button" data-action="close-popovers"><i data-lucide="x"></i></button></header>
+      <div class="role-list" id="roleList"></div>
+    </div>
+
+    <div class="popover notification-popover" id="notificationPopover" aria-hidden="true">
+      <header class="popover-header"><div><strong>Уведомления</strong><span>6 новых событий</span></div><button class="link-button" type="button" data-action="read-all">Прочитать все</button></header>
+      <div class="notification-list" id="notificationList"></div>
+    </div>
+
+    <div class="modal-layer" id="createLayer" aria-hidden="true">
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+        <header><div><span class="dialog-icon"><i data-lucide="plus"></i></span><div><h2 id="createTitle">Новая операция</h2><p>Она появится во всех связанных разделах</p></div></div><button type="button" data-action="close-modal"><i data-lucide="x"></i></button></header>
+        <form id="createForm">
+          <label class="field"><span>Тип операции</span><select id="actionType" name="type"><option value="sale">Продажа</option><option value="receipt">Приход товара</option><option value="expense">Расход</option><option value="customer">Новый клиент</option><option value="employee">Новый сотрудник</option><option value="task">Задача</option></select></label>
+          <label class="field"><span>Название или контрагент</span><input id="actionTitle" name="title" required placeholder="Введите название" /></label>
+          <div class="field-row"><label class="field"><span>Сумма</span><input name="amount" inputmode="numeric" placeholder="0 сум" /></label><label class="field"><span>Филиал</span><select name="branch"><option>Юнусабад</option><option>Чиланзар</option><option>Сергели</option><option>Центральный склад</option></select></label></div>
+          <label class="field"><span>Комментарий</span><textarea id="actionDescription" name="description" rows="3" placeholder="Дополнительный контекст"></textarea></label>
+          <footer><button class="soft-button" type="button" data-action="close-modal">Отмена</button><button class="accent-button" type="submit"><i data-lucide="check"></i> Сохранить</button></footer>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-layer" id="paymentLayer" aria-hidden="true">
+      <section class="dialog payment-dialog" role="dialog" aria-modal="true">
+        <header><div><span class="dialog-icon"><i data-lucide="credit-card"></i></span><div><h2>Оплата продажи</h2><p>Касса №2 · смена 284</p></div></div><button type="button" data-action="close-payment"><i data-lucide="x"></i></button></header>
+        <div class="payment-body">
+          <div class="payment-total"><span>К оплате</span><strong id="paymentTotal">0 сум</strong></div>
+          <div class="payment-methods" id="paymentMethods"></div>
+          <label class="field"><span>Получено</span><input id="receivedAmount" inputmode="numeric" /></label>
+          <button class="accent-button payment-confirm" type="button" data-action="complete-payment"><i data-lucide="check"></i> Завершить продажу</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="command-layer" id="commandLayer" aria-hidden="true">
+      <section class="command-dialog" role="dialog" aria-modal="true">
+        <div class="command-input"><i data-lucide="search"></i><input id="commandInput" placeholder="Модуль, инструмент, клиент или действие" /><kbd>esc</kbd></div>
+        <div class="command-results" id="commandResults"></div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status"><i data-lucide="circle-check"></i><span></span></div>
+
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
