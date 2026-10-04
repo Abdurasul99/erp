@@ -9,6 +9,7 @@
 // Осознанно НЕ перебираем на 401 (плохой ключ — упадут все) и на 429 (лимит:
 // перебор моделей только умножит нагрузку).
 function shouldTryNextModel(status, text) {
+  if (status === 401 || status === 403 || status === 429) return false;
   return modelGone(status, text) || transient(status, text);
 }
 

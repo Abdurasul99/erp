@@ -16,6 +16,7 @@ const products = require('./products');
 
 const { envInteger, protectAsync, jsonError } = require('./runtime');
 const { createAiClient } = require('./aiClient');
+const { createRecomputeGate } = require('./recompute');
 const app = protectAsync(express());
 let shuttingDown = false;
 const PORT = process.env.PORT || 3001;
@@ -52,9 +53,7 @@ pool.on('error', error => console.error('PostgreSQL idle connection error', erro
 // In-memory TTL-гейты для compute-on-read пересчётов (single-instance pm2). Тяжёлые
 // пересчёты (anomaly per-row upsert, branch-daily write-through) выполнялись на КАЖДЫЙ
 // запрос → N+1. Теперь — не чаще TTL на ключ. Ключ — произвольная строка (company+scope).
-const _recomputeAt = new Map();
-const recomputeDue = (key, ttlMs) => (Date.now() - (_recomputeAt.get(key) || 0)) > ttlMs;
-const markRecomputed = (key) => { _recomputeAt.set(key, Date.now()); };
+const recomputeGate = createRecomputeGate();
 
 // Единый диапазон периода для ВСЕХ аналитических инструментов (устраняет расхождение
 // «выручка за месяц» между экранами). 'month' = КАЛЕНДАРНЫЙ месяц [1-е число → сейчас];
@@ -823,7 +822,10 @@ async function rfmRecompute(companyId) {
 }
 
 // Гарантировать свежесть кэша (TTL 6ч), иначе пересчитать.
-async function rfmEnsureFresh(companyId) {
+function rfmEnsureFresh(companyId) {
+  return recomputeGate.run(`rfm:${companyId}`, () => rfmEnsureFreshOnce(companyId));
+}
+async function rfmEnsureFreshOnce(companyId) {
   if (!companyId) return; // admin без компании — не считаем (избегаем company_id=NULL запросов)
   try {
     const q = await pool.query('SELECT MAX(calculated_at) m, COUNT(*) c FROM customer_rfm WHERE company_id=$1', [companyId]);
@@ -1947,9 +1949,9 @@ app.get('/api/company/branch-daily', auth(['admin', 'director', 'founder', 'mana
     // Дату строим локально, чтобы совпасть с ключами дней месяца ниже.
     const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     // TTL-гейт (1ч): снапшот за сегодня пишется не на каждый запрос, а раз в час на компанию.
-    const bdailyKey = `bdaily:${companyId}:${todayIso}`;
-    if (now >= monthStart && now < monthEnd && recomputeDue(bdailyKey, 60 * 60 * 1000)) {
-      markRecomputed(bdailyKey);
+    const bdailyKey = `bdaily:${companyId}:${todayIso}:${[...ids].sort((a, b) => a - b).join(',')}`;
+    if (now >= monthStart && now < monthEnd) {
+      const stock = await recomputeGate.run(bdailyKey, async () => {
       const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
       const [incQ, expQ, salesQ, stockQ] = await Promise.all([
         pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) v FROM cash_income WHERE branch_id=ANY($1::int[]) AND is_settled IS NOT FALSE AND created_at>=$2 GROUP BY branch_id`, [ids, dayStart]),
@@ -1973,6 +1975,8 @@ app.get('/api/company/branch-daily', auth(['admin', 'director', 'founder', 'mana
              margin_pct=EXCLUDED.margin_pct, calculated_at=NOW()`,
           [bid, todayIso, income, expense, gp, sv, margin]);
       }
+      return stock;
+      }, 60 * 60 * 1000);
       if (metric === 'stock') byDay.set(todayIso, ids.reduce((a, b) => a + (stock[b] || 0), 0));
     }
 
@@ -2195,7 +2199,10 @@ function bhiRowToSnapshot(row) {
 }
 
 // Кэш-обёртка: сегодняшний снапшот, пересчёт при отсутствии/устаревании (TTL 2ч).
-async function bhiGetToday(companyId) {
+function bhiGetToday(companyId) {
+  return recomputeGate.run(`bhi:${companyId}`, () => bhiGetTodayOnce(companyId));
+}
+async function bhiGetTodayOnce(companyId) {
   const today = new Date().toISOString().slice(0, 10);
   try {
     const c = await pool.query('SELECT * FROM bhi_daily WHERE company_id=$1 AND date=$2', [companyId, today]);
@@ -4195,11 +4202,8 @@ app.get('/api/analytics/anomalies', auth(['admin', 'director', 'founder', 'manag
     const period = req.query.period === 'month' ? 30 : (req.query.period === 'day' ? 1 : 7);
 
     // compute-on-read с TTL-гейтом (2ч): тяжёлый per-row пересчёт не на каждый запрос.
-    const anomKey = `anom:${companyId}:${[...scopeIds].sort((a, b) => a - b).join(',')}`;
-    if (recomputeDue(anomKey, 2 * 60 * 60 * 1000)) {
-      await anomRecompute(companyId, scopeIds, Math.max(period, 7));
-      markRecomputed(anomKey);
-    }
+    const anomKey = `anom:${companyId}:${[...scopeIds].sort((a, b) => a - b).join(',')}:${Math.max(period, 7)}`;
+    await recomputeGate.run(anomKey, () => anomRecompute(companyId, scopeIds, Math.max(period, 7)), 2 * 60 * 60 * 1000);
 
     const { rows } = await pool.query(`
       SELECT a.id, a.branch_id, b.name AS branch_name, a.date, a.module, a.metric,
@@ -9772,7 +9776,7 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
   try {
     const { product_id, quantity, refund_amount, payment_method, original_outcome_id, note, branch_id: bodyBranch } = req.body;
     const pid = parseInt(product_id);
-    const qty = parseFloat(quantity);
+    const qty = Number(quantity);
     if (!pid || !Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: 'product_id и quantity обязательны' });
     const branchId = getBranchFilter(req.user, req.body);
     if (req.user.role === 'seller' && bodyBranch) {
@@ -9792,6 +9796,9 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
     let origQtyRemaining = Infinity;
     if (original_outcome_id) {
       const orig = await client.query('SELECT * FROM stock_outcome WHERE id=$1 FOR UPDATE', [original_outcome_id]);
+      if (!orig.rows[0] || orig.rows[0].product_id !== pid || orig.rows[0].status !== 'approved' || (orig.rows[0].outcome_type && orig.rows[0].outcome_type !== 'sale')) {
+        await client.query('ROLLBACK'); return res.status(400).json({ error: 'Укажите подтверждённую продажу этого товара' });
+      }
       if (orig.rows[0]) {
         if (orig.rows[0].branch_id !== branchId) {
           await client.query('ROLLBACK');
@@ -9801,11 +9808,8 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
         origId = orig.rows[0].id;
         origRow = orig.rows[0];
         const sold = parseFloat(orig.rows[0].quantity);
-        const { rows: [agg] } = await client.query(
-          'SELECT COALESCE(SUM(quantity), 0) AS returned FROM stock_outcome WHERE original_outcome_id=$1 AND outcome_type=$2',
-          [origId, 'customer_return']
-        );
-        origQtyRemaining = sold - parseFloat(agg.returned);
+        // quantity stores the remaining (net) sold quantity after each return.
+        origQtyRemaining = sold;
         if (qty > origQtyRemaining + 0.0001) {
           await client.query('ROLLBACK');
           return res.status(400).json({ error: `Return qty exceeds available: max ${origQtyRemaining}` });
@@ -9816,18 +9820,22 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
     // If they bought on debt and never paid, we don't pay them anything in cash —
     // we just decrement their outstanding debt by the same amount.
     // Without this cap, a debt-buying customer could "return" goods and walk out with cash.
-    let refundTotal = parseFloat(refund_amount) || (qty * unitPrice);
+    let refundTotal = refund_amount === undefined || refund_amount === null || refund_amount === '' ? qty * unitPrice : Number(refund_amount);
+    if (!Number.isFinite(refundTotal) || refundTotal < 0) {
+      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Некорректная сумма возврата' });
+    }
     let debtCancellation = 0;
     if (origRow) {
-      const origTotal = parseFloat(origRow.quantity) * parseFloat(origRow.price || 0);
       const paid = parseFloat(origRow.paid_amount || 0);
-      const cashCapForFullReturn = paid;
-      const proportional = origTotal > 0 ? (qty / parseFloat(origRow.quantity)) * paid : 0;
-      const maxCash = Math.min(cashCapForFullReturn, proportional);
-      if (refundTotal > maxCash) {
-        debtCancellation = refundTotal - maxCash;
-        refundTotal = maxCash;
+      const returnValue = qty * unitPrice;
+      const maxCash = Math.min(paid, returnValue);
+      refundTotal = Math.min(refundTotal, maxCash);
+      // Never leave paid_amount greater than the remaining sale value.
+      const minRefund = Math.max(0, paid - (Number(origRow.quantity) - qty) * unitPrice);
+      if (refundTotal < minRefund - 0.005) {
+        await client.query('ROLLBACK'); return res.status(400).json({ error: 'Сумма возврата меньше переплаты по продаже' });
       }
+      debtCancellation = returnValue - refundTotal;
     }
     // Record a CUSTOMER_RETURN outcome with NEGATIVE-flow logic: actually we INCREASE stock,
     // and create a cash_expense. We record qty as positive for accounting clarity.
@@ -9850,9 +9858,8 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
     // Card/transfer/wire returns don't touch the cash till — they reverse on the original channel.
     if (refundTotal > 0) {
       const pm = ['cash','card','transfer','wire'].includes(payment_method) ? payment_method : 'cash';
-      const touchesCash = pm === 'cash';
       const prodName = await client.query('SELECT name_ru FROM products WHERE id=$1', [pid]);
-      if (touchesCash) {
+      {
         await client.query(
           `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
            VALUES ($1,$2,$3,$4,$5,'UZS',$1,1)`,
@@ -9861,22 +9868,18 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
       }
     }
     // Decrement the customer's outstanding debt on the original sale.
-    if (origRow && debtCancellation > 0) {
-      const origTotal = parseFloat(origRow.quantity) * parseFloat(origRow.price || 0);
-      const origPaid = parseFloat(origRow.paid_amount || 0);
-      const newPaid = origPaid;
-      const remainingAfter = Math.max(0, origTotal - newPaid - debtCancellation);
-      const newStatus = remainingAfter < 0.01 ? 'paid' : (newPaid > 0 ? 'partial' : 'debt');
+    if (origRow) {
       await client.query(
         `UPDATE stock_outcome
             SET quantity = quantity - $1,
+                paid_amount = GREATEST(0, COALESCE(paid_amount,0) - $3),
                 payment_status = CASE
-                  WHEN (quantity - $1) * price - COALESCE(paid_amount, 0) < 0.01 THEN 'paid'
-                  WHEN COALESCE(paid_amount, 0) > 0 THEN 'partial'
+                  WHEN (quantity - $1) * price - (COALESCE(paid_amount, 0) - $3) < 0.005 THEN 'paid'
+                  WHEN COALESCE(paid_amount, 0) - $3 > 0 THEN 'partial'
                   ELSE 'debt'
                 END
           WHERE id = $2`,
-        [qty, origId]
+        [qty, origId, refundTotal]
       );
     }
     audit(req, 'customer_return', 'stock_outcome', out.rows[0].id, null, {
@@ -9984,7 +9987,7 @@ async function loadScopedOutcome(client, outcomeId, reqUser) {
     `SELECT so.*, b.company_id AS branch_company_id
      FROM stock_outcome so
      LEFT JOIN branches b ON b.id = so.branch_id
-     WHERE so.id = $1`,
+     WHERE so.id = $1 FOR UPDATE OF so`,
     [outcomeId]
   );
   if (!rows[0]) return { row: null, error: { status: 404, msg: 'Not found' } };
@@ -9992,7 +9995,7 @@ async function loadScopedOutcome(client, outcomeId, reqUser) {
   if (reqUser.role !== 'admin' && cur.branch_company_id !== reqUser.company_id) {
     return { row: null, error: { status: 403, msg: 'Out of scope' } };
   }
-  if (reqUser.role === 'manager' && reqUser.branch_id && cur.branch_id !== reqUser.branch_id) {
+  if (['manager', 'cashier', 'warehouse'].includes(reqUser.role) && (!reqUser.branch_id || cur.branch_id !== reqUser.branch_id)) {
     return { row: null, error: { status: 403, msg: 'Out of branch scope' } };
   }
   return { row: cur, error: null };
@@ -10003,61 +10006,44 @@ app.put('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), async (
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { quantity, price, note } = req.body;
     const scoped = await loadScopedOutcome(client, req.params.id, req.user);
     if (scoped.error) { await client.query('ROLLBACK'); return res.status(scoped.error.status).json({ error: scoped.error.msg }); }
     const cur = scoped.row;
-    const newQty = quantity !== undefined ? parseFloat(quantity) : parseFloat(cur.quantity);
-    if (newQty <= 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Quantity must be > 0' }); }
-    // If approved and qty changed, adjust stock by the delta
-    if (cur.status === 'approved' && newQty !== parseFloat(cur.quantity)) {
-      const delta = newQty - parseFloat(cur.quantity); // positive = take more from stock
-      await client.query(
-        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
-        [delta, cur.product_id, cur.branch_id]
-      );
+    const newQty = req.body.quantity === undefined ? Number(cur.quantity) : Number(req.body.quantity);
+    const newPrice = req.body.price === undefined ? Number(cur.price) : Number(req.body.price);
+    if (!Number.isFinite(newQty) || newQty <= 0 || !Number.isFinite(newPrice) || newPrice < 0 || !Number.isFinite(newQty * newPrice)) {
+      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Укажите корректные количество и цену' });
     }
-    const newPrice = price !== undefined ? parseFloat(price) || 0 : parseFloat(cur.price);
-    // Скидочную политику проверяем и здесь: иначе её обходили штатным путём —
-    // продать по разрешённой цене, а потом правкой опустить ниже красной.
-    const belowRedEdit = await priceBelowRedError(client, cur.product_id, newPrice);
-    if (belowRedEdit) { await client.query('ROLLBACK'); return res.status(400).json({ error: belowRedEdit }); }
-    const { rows } = await client.query(
-      `UPDATE stock_outcome SET quantity=$1, price=$2, note=$3 WHERE id=$4 RETURNING *`,
-      [newQty, newPrice, note !== undefined ? note : cur.note, req.params.id]
-    );
-    // Sync the ORIGINAL-sale cash_income only — preserve any /pay debt-payment rows that legitimately
-    // booked customer payments against this outcome. Only touch the original auto-row if it was created
-    // for the FULL sale (i.e. on paid status) — for debt sales, the original row is 0/null and /pay
-    // creates per-payment rows separately.
-    if (cur.status === 'approved' && cur.payment_method !== 'card' && cur.payment_method !== 'transfer' && cur.payment_method !== 'wire') {
-      const newAmount = newQty * newPrice;
-      const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [cur.product_id]);
-      const newDesc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${newQty}`;
-      // Try UPDATE in place to preserve is_settled / settled_at / settled_by metadata
-      const upd = await client.query(
-        `UPDATE cash_income
-           SET amount = $1, description = $2
-         WHERE outcome_id = $3
-           AND description LIKE 'Продажа:%'
-         RETURNING id`,
-        [newAmount, newDesc, req.params.id]
-      );
-      if (upd.rowCount === 0 && newAmount > 0 && cur.payment_status === 'paid') {
-        // No original-sale row existed yet (e.g. was debt, now changed to paid via edit) — create one.
-        const sellerRoleQ = await client.query('SELECT role FROM users WHERE id=$1', [cur.created_by]);
-        const isSettled = sellerRoleQ.rows[0]?.role !== 'seller';
-        await client.query(
-          'INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [newAmount, newDesc, cur.created_by, cur.branch_id, cur.id, isSettled, cur.payment_method || 'cash']
-        );
-      }
+    const changed = newQty !== Number(cur.quantity) || newPrice !== Number(cur.price);
+    const linked = await client.query('SELECT 1 FROM stock_outcome WHERE original_outcome_id=$1 LIMIT 1', [cur.id]);
+    if (changed && (cur.outcome_type === 'customer_return' || linked.rowCount)) {
+      await client.query('ROLLBACK'); return res.status(409).json({ error: 'Нельзя изменять количество или цену операции с возвратом' });
     }
+    const isSale = !cur.outcome_type || cur.outcome_type === 'sale';
+    const paid = Number(cur.paid_amount || 0);
+    const total = newQty * newPrice;
+    // Editing a document does not receive or refund money. Existing receipts stay immutable.
+    if (isSale && total < paid - 0.005) {
+      await client.query('ROLLBACK'); return res.status(409).json({ error: 'Сумма меньше уже полученной оплаты. Оформите возврат' });
+    }
+    if (isSale && changed) {
+      const belowRed = await priceBelowRedError(client, cur.product_id, newPrice);
+      if (belowRed) { await client.query('ROLLBACK'); return res.status(400).json({ error: belowRed }); }
+    }
+    if (cur.status === 'approved' && newQty !== Number(cur.quantity)) {
+      const delta = newQty - Number(cur.quantity);
+      const stock = await client.query('UPDATE product_stock SET quantity=quantity-$1, updated_at=NOW() WHERE product_id=$2 AND branch_id=$3 AND quantity >= $1', [delta, cur.product_id, cur.branch_id]);
+      if (!stock.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' }); }
+    }
+    const status = isSale ? (total - paid < 0.005 ? 'paid' : (paid > 0 ? 'partial' : 'debt')) : cur.payment_status;
+    const { rows } = await client.query('UPDATE stock_outcome SET quantity=$1, price=$2, note=$3, payment_status=$4, original_price=$5 WHERE id=$6 RETURNING *',
+      [newQty, newPrice, req.body.note === undefined ? cur.note : req.body.note, status,
+       newPrice / (Number(cur.exchange_rate) || 1), cur.id]);
     await client.query('COMMIT');
+    audit(req, 'update', 'stock_outcome', cur.id, { quantity: cur.quantity, price: cur.price }, { quantity: newQty, price: newPrice });
     res.json(rows[0]);
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(400).json({ error: e.message });
+    await client.query('ROLLBACK'); res.status(400).json({ error: e.message });
   } finally { client.release(); }
 });
 
@@ -11937,10 +11923,16 @@ app.post('/api/stock/outcome/:id/pay', auth(['admin', 'director', 'founder', 'ma
       `SELECT so.*, p.company_id, c.name AS customer_name
        FROM stock_outcome so JOIN products p ON so.product_id = p.id
        LEFT JOIN customers c ON so.customer_id = c.id
-       WHERE so.id = $1 FOR UPDATE`, [req.params.id]);
+       WHERE so.id = $1 FOR UPDATE OF so`, [req.params.id]);
     if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Sale not found' }); }
     if (cur.company_id !== req.user.company_id && req.user.role !== 'admin') {
       await client.query('ROLLBACK'); return res.status(403).json({ error: 'Out of scope' });
+    }
+    if (['manager', 'cashier'].includes(req.user.role) && (!req.user.branch_id || cur.branch_id !== req.user.branch_id)) {
+      await client.query('ROLLBACK'); return res.status(403).json({ error: 'Out of branch scope' });
+    }
+    if (cur.status !== 'approved' || (cur.outcome_type && cur.outcome_type !== 'sale')) {
+      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Оплата доступна только для подтверждённой продажи' });
     }
     if (cur.payment_status === 'paid') {
       await client.query('ROLLBACK'); return res.status(400).json({ error: 'Already paid' });
