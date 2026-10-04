@@ -4,6 +4,8 @@ import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
+import { AuthContext } from '../../App.jsx';
+import { resolveOwnerPath } from '../modules.js';
 
 const SEVERITY_META = {
   critical: { color: '#DC2626', badge: 'red',    label: 'Критично', icon: '🔴' },
@@ -37,6 +39,7 @@ const MODULE_TABS = [
 export default function AlertCenterTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
+  const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -128,9 +131,12 @@ export default function AlertCenterTool() {
               ) : filtered.map((a) => {
                 const sev = SEVERITY_META[a.severity] || SEVERITY_META.info;
                 const mod = MODULE_META[a.module] || { icon: '📌', label: a.module };
+                // Адрес проверяем по доступам роли: недоступный инструмент
+                // ToolRouter молча меняет на Главную, и переход выглядит сломанным.
+                const to = resolveOwnerPath(user, a.action);
                 return (
-                  <div key={a.id} className="list-item" style={{ alignItems: 'flex-start', cursor: a.action ? 'pointer' : 'default' }}
-                    onClick={() => a.action && navigate(a.action)}>
+                  <div key={a.id} className="list-item" style={{ alignItems: 'flex-start', cursor: to ? 'pointer' : 'default' }}
+                    onClick={() => to && navigate(to)}>
                     <div style={{ width: 5, alignSelf: 'stretch', minHeight: 36, borderRadius: 3, background: sev.color }} />
                     <div style={{ width: 36, height: 36, borderRadius: 9, background: sev.color + '18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{mod.icon}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -143,8 +149,8 @@ export default function AlertCenterTool() {
                       <div className="list-item-sub" style={{ marginTop: 3 }}>{a.description}</div>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                      {a.action && (
-                        <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(a.action); }}>
+                      {to && (
+                        <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(to); }}>
                           {tt('Перейти →')}
                         </button>
                       )}

@@ -53,6 +53,7 @@ export default function AdminDashboard() {
         title="🛡️ Панель администратора SaaS"
         sub="Здоровье всех клиентов · feature-flags · мониторинг"
         actions={<Pills value={period} onChange={setPeriod} options={PERIOD_OPTIONS} />}
+        actionsKey={period}
       />
 
       {error && <Card><div style={{ color: 'var(--red)' }}>⚠️ {error}</div></Card>}
@@ -96,6 +97,7 @@ export default function AdminDashboard() {
                 <thead>
                   <tr>
                     <th>Компания</th>
+                    <th style={{ textAlign: 'center' }}>Доступ</th>
                     <th style={{ textAlign: 'center' }}>Здоровье</th>
                     <th style={{ textAlign: 'right' }}>Филиалов · юзеров</th>
                     <th style={{ textAlign: 'right' }}>Последний логин</th>
@@ -104,7 +106,7 @@ export default function AdminDashboard() {
                 </thead>
                 <tbody>
                   {sorted.length === 0 ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет компаний в системе</td></tr>
+                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text3)', padding: 30 }}>Нет компаний в системе</td></tr>
                   ) : sorted.map(c => (
                     <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/admin/companies/${c.id}`)}>
                       <td style={{ fontWeight: 700 }}>
@@ -112,11 +114,18 @@ export default function AdminDashboard() {
                         <div style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600, marginTop: 2 }}>ID #{c.id}</div>
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <Badge tone={c.health.tone}>{c.health.label}</Badge>
+                        <Badge tone={c.is_enabled === false ? 'red' : 'green'}>
+                          {c.is_enabled === false ? 'Отключена' : 'Включена'}
+                        </Badge>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {/* health приходит с сервера всегда, но одна строка без него
+                            роняла ВЕСЬ экран администратора — читаем мягко. */}
+                        <Badge tone={c.health?.tone || 'gray'}>{c.health?.label || '—'}</Badge>
                       </td>
                       <td className="mono" style={{ textAlign: 'right', fontSize: 12 }}>{c.branches_count} · {c.users_count}</td>
                       <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--text2)' }}>
-                        {c.health.days_since == null ? '—' : c.health.days_since === 0 ? 'сегодня' : `${c.health.days_since} дн назад`}
+                        {c.health?.days_since == null ? '—' : c.health.days_since === 0 ? 'сегодня' : `${c.health.days_since} дн назад`}
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(`/admin/companies/${c.id}`); }}>Открыть →</button>

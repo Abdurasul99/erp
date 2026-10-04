@@ -31,7 +31,6 @@ import GenDirUsers from '../components/GenDirUsers.jsx';
 import RoleBoardTool from './tools/RoleBoardTool.jsx';
 import PanelManagerTool from './tools/PanelManagerTool.jsx';
 import CompanyProfileTool from './tools/CompanyProfileTool.jsx';
-import FounderBoardTool from './tools/FounderBoardTool.jsx';
 import UnitEconomicsTool from './tools/UnitEconomicsTool.jsx';
 import SspTool from './tools/SspTool.jsx';
 import BasketTool from './tools/BasketTool.jsx';
@@ -110,7 +109,6 @@ function LiveWrapper({ Component, title, sub }) {
 // Tool resolver: sectionId/toolId → component to render.
 const RESOLVE = {
   analytics: {
-    'founder-board':  { Comp: FounderBoardTool },
     'control-center': { Comp: ControlCenterHub },
     simulator:        { Comp: SimulatorHub },
     'branch-compare': { Comp: BranchCompareTool },
@@ -226,10 +224,15 @@ export default function ToolRouter() {
 
   // Esc закрывает окно инструмента → возврат в отдел
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') navigate('/owner/' + sectionId); };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      // solo-раздел (один инструмент) не имеет своей страницы — она редиректит
+      // обратно сюда, и Esc зацикливался бы. Выходим на Главную.
+      navigate(section?.solo ? '/owner' : '/owner/' + sectionId);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sectionId, navigate]);
+  }, [sectionId, navigate, section]);
 
   // Запоминаем визит — из этого баннер раздела строит блок «Недавнее».
   // Пишем только для реально существующего инструмента, чтобы битые адреса
@@ -261,7 +264,9 @@ export default function ToolRouter() {
             <h2>{tt(tool.title)}</h2>
             <p>{tt(tool.desc)}</p>
           </div>
-          <span className="o-sheet-crumb">{tt(section.title)}</span>
+          {/* У solo-раздела название раздела и инструмента совпадают — хлебная
+              крошка повторяла бы заголовок слово в слово. */}
+          {!section.solo && <span className="o-sheet-crumb">{tt(section.title)}</span>}
         </div>
       </div>
 

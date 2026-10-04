@@ -82,7 +82,7 @@ export default function UnitEconomicsTool() {
 
       {loading ? (
         <Card><div className="coming-soon"><div className="coming-soon-icon">⏳</div><div>{tt('Загрузка...')}</div></div></Card>
-      ) : !data ? (
+      ) : (!data || !data.customer || !data.transaction) ? (
         <Card><div className="coming-soon"><div className="coming-soon-icon">📊</div><div>{tt('Нет данных')}</div></div></Card>
       ) : (
         <>

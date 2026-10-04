@@ -6,6 +6,7 @@ import api from '../api.js';
 import JsBarcode from 'jsbarcode';
 import { fmtMoney } from '../utils.js';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
+import { priceZone, validateThresholds, ZONE_COLORS, ZONE_HINTS } from '../utils/priceZone.js';
 import MyTasks from '../components/MyTasks.jsx';
 import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 
@@ -630,6 +631,9 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
   const [form, setForm] = useState({
     name_ru: initialName || '', type_id: '', price_sell: '', price_buy: '', quantity: '1',
     color_size: '', brand: '', barcode: initialBarcode || '', photo_url: '', unit: 'шт',
+    // Границы скидки — необязательные. Пустые остаются пустыми: товар без них
+    // продаётся как раньше, без подсветки и без запретов.
+    price_green: '', price_yellow: '', price_red: '',
   });
   const [customUnit, setCustomUnit] = useState('');
   const [showCamera, setShowCamera] = useState(false);
@@ -704,6 +708,13 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
     setUploading(false);
   };
 
+  // Порядок порогов и убыточная красная цена — одной функцией на все экраны
+  // прихода, чтобы тексты и правила на телефоне и на компьютере не разъехались.
+  const thr = validateThresholds(
+    { green: form.price_green, yellow: form.price_yellow, red: form.price_red },
+    { priceBuy: form.price_buy, priceSell: form.price_sell, lang },
+  );
+
   // Validate required fields before creating product
   const validateForm = () => {
     if (!form.name_ru || !form.name_ru.trim()) {
@@ -713,6 +724,11 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
     // Пустую цену НЕ глотаем нулём: раньше товар молча создавался с ценой 0.
     if (numNorm(form.price_buy) === '') {
       setMsg(uz ? 'Tan narxini kiriting' : 'Введите цену закупки');
+      return false;
+    }
+    // Ту же 400 вернул бы сервер, но человеку понятнее увидеть причину до отправки.
+    if (!thr.ok) {
+      setMsg(thr.message);
       return false;
     }
     return true;
@@ -740,6 +756,10 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
         color_size: form.color_size || null,
         brand: form.brand || null,
         unit: form.unit || 'шт',
+        // Нормализованные строки: пустая — «порог не задан» (сервер положит NULL).
+        price_green: numNorm(form.price_green),
+        price_yellow: numNorm(form.price_yellow),
+        price_red: numNorm(form.price_red),
       });
       const pid = product.data.id;
       let finalStock = 0;
@@ -938,6 +958,61 @@ function AddProductForm({ initialBarcode, initialName, onSaved, onCancel, lang }
             {uz ? '↪ Chiqim/sotuv uchun' : '↪ Для расхода/продажи'}
           </div>
         </div>
+      </div>
+
+      {/* Границы скидки — три абсолютные цены за единицу, по ним продавцу
+          подсвечивается поле цены. Раскладка строками, а не тремя колонками:
+          на 360px три поля вместе с подписями в ряд не помещаются. */}
+      <div style={{
+        marginBottom: '14px', padding: '10px 12px',
+        border: '1.5px solid #E2E4F0', borderRadius: '10px', background: '#FCFCFE',
+      }}>
+        <label style={{ ...S.label, marginBottom: '8px' }}>
+          {uz ? "CHEGIRMA CHEGARALARI (IXTIYORIY)" : 'ГРАНИЦЫ СКИДКИ (НЕОБЯЗАТЕЛЬНО)'}
+        </label>
+        {[
+          { key: 'price_green',  field: 'green',  c: ZONE_COLORS.green.hex,  title: uz ? 'Yashil' : 'Зелёная', hint: ZONE_HINTS.canDiscount },
+          { key: 'price_yellow', field: 'yellow', c: ZONE_COLORS.yellow.hex, title: uz ? 'Sariq'  : 'Жёлтая',  hint: ZONE_HINTS.nearLimit },
+          { key: 'price_red',    field: 'red',    c: ZONE_COLORS.red.hex,    title: uz ? 'Qizil'  : 'Красная', hint: ZONE_HINTS.noLower },
+        ].map(row => {
+          const bad = !thr.ok && thr.field === row.field;
+          return (
+            <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '8px' }}>
+              <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: row.c, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '12px', fontWeight: 800, color: row.c }}>{row.title}</div>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9EA3BF', lineHeight: 1.25 }}>
+                  {uz ? row.hint.uz : row.hint.ru}
+                </div>
+              </div>
+              <input
+                style={{
+                  ...S.input, width: '110px', flexShrink: 0, textAlign: 'center',
+                  fontSize: '14px', padding: '9px 8px', fontFamily: "'JetBrains Mono', monospace",
+                  borderColor: bad ? ZONE_COLORS.red.hex : (form[row.key] ? row.c : '#E2E4F0'),
+                }}
+                type="text" inputMode="decimal"
+                value={form[row.key]}
+                onChange={e => setForm(f => ({ ...f, [row.key]: numClean(e.target.value) }))}
+                onBlur={e => setForm(f => ({ ...f, [row.key]: numClamp(e.target.value, 0) }))}
+                placeholder="—"
+              />
+            </div>
+          );
+        })}
+        {!thr.ok && (
+          <div style={{
+            fontSize: '11px', fontWeight: 700, color: ZONE_COLORS.red.hex,
+            background: ZONE_COLORS.red.soft, padding: '7px 9px', borderRadius: '8px',
+          }}>{thr.message}</div>
+        )}
+        {/* Убыток — предупреждение, а не запрет: распродажи ниже себестоимости бывают. */}
+        {thr.warning && (
+          <div style={{
+            fontSize: '11px', fontWeight: 700, color: ZONE_COLORS.yellow.hex,
+            background: ZONE_COLORS.yellow.soft, padding: '7px 9px', borderRadius: '8px',
+          }}>{thr.warning}</div>
+        )}
       </div>
 
       {/* Quantity — full width */}
@@ -1274,6 +1349,10 @@ function CompactProductResult({ product, role, lang, onClear }) {
   // Количество — СТРОКА: можно стереть поле в пустоту и ввести заново
   // (числовой стейт с «|| 1» мгновенно возвращал единицу — жалоба клиента).
   const [qty, setQty] = useState('1');
+  // Цена продажи тоже строкой и тоже редактируемая: продавец даёт скидку прямо
+  // здесь, а подсветка по порогам товара показывает, докуда опускать можно.
+  // По умолчанию — прайсовая цена, поэтому без правки продажа идёт как раньше.
+  const [priceStr, setPriceStr] = useState(() => numNorm(product.price_sell ?? ''));
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(product);
@@ -1282,7 +1361,19 @@ function CompactProductResult({ product, role, lang, onClear }) {
   const uz = lang === 'uz';
   const fmtQty = (v) => parseFloat(parseFloat(v).toFixed(3)).toString();
 
-  useEffect(() => { setCurrentProduct(product); setQty('1'); setMsg(null); }, [product]);
+  useEffect(() => {
+    setCurrentProduct(product);
+    setQty('1');
+    setPriceStr(numNorm(product.price_sell ?? ''));
+    setMsg(null);
+  }, [product]);
+
+  // Скидки суммой на чек на телефоне нет, поэтому введённая цена и есть
+  // фактическая цена за единицу — сравниваем именно её.
+  const zone = priceZone(priceStr, currentProduct, lang);
+  const sellBtn = zone.blocked
+    ? { background: '#C9CDDE', color: '#fff', cursor: 'not-allowed' }
+    : { background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)', color: '#fff' };
 
   const doAction = async (type) => {
     const qtyNum = numVal(qty);
@@ -1290,14 +1381,24 @@ function CompactProductResult({ product, role, lang, onClear }) {
       setMsg({ ok: false, text: uz ? 'Miqdorni kiriting' : 'Введите количество' });
       return;
     }
+    // Сервер такую продажу тоже отклонит, но причина должна быть видна раньше.
+    if (type === 'outcome' && zone.blocked) {
+      setMsg({ ok: false, text: zone.message });
+      return;
+    }
     setLoading(true); setMsg(null);
     try {
-      const price = type === 'income' ? currentProduct.price_buy : currentProduct.price_sell;
+      const entered = numVal(priceStr);
+      const price = type === 'income'
+        ? currentProduct.price_buy
+        : (Number.isFinite(entered) ? entered : currentProduct.price_sell);
       await api.post(`/stock/${type}`, { product_id: currentProduct.id, quantity: qtyNum, price: price || 0 });
       const { data } = await api.get(`/products/${currentProduct.id}`);
       setCurrentProduct(data);
       setMsg({ ok: true, text: `${fmtQty(qtyNum)} ${currentProduct.unit} ${type === 'income' ? (uz ? 'kirim' : 'приход') : (uz ? 'chiqim' : 'расход')}` });
       setQty('1');
+      // Следующая продажа начинается с прайсовой цены, а не с прошлой скидки.
+      setPriceStr(numNorm(data.price_sell ?? ''));
     } catch (e) {
       setMsg({ ok: false, text: e.response?.data?.error || 'Ошибка' });
     }
@@ -1375,6 +1476,31 @@ function CompactProductResult({ product, role, lang, onClear }) {
             {msg.text}
           </div>
         )}
+        {/* Цена продажи за единицу. Рамка и цифра красятся по зоне товара;
+            если порогов нет — поле выглядит и работает как обычное. */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ ...S.label, marginBottom: '4px' }}>
+            {uz ? `SOTUV NARXI (${currentProduct.unit})` : `ЦЕНА ПРОДАЖИ (за ${currentProduct.unit})`}
+          </label>
+          <input
+            style={{
+              ...S.input, textAlign: 'center', fontSize: '17px', fontWeight: 800,
+              padding: '11px 10px', fontFamily: "'JetBrains Mono', monospace",
+              borderColor: zone.hex || '#E2E4F0', color: zone.hex || '#1A1B2E',
+            }}
+            type="text" inputMode="decimal"
+            value={priceStr}
+            onChange={e => setPriceStr(numClean(e.target.value))}
+            onBlur={e => setPriceStr(numClamp(e.target.value, 0))}
+            placeholder="0"
+          />
+          {zone.color && (
+            <div style={{
+              marginTop: '6px', padding: '7px 9px', borderRadius: '8px', textAlign: 'center',
+              fontSize: '11px', fontWeight: 800, color: zone.hex, background: zone.soft,
+            }}>{zone.message}</div>
+          )}
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
           <button onClick={() => setQty(q => String(Math.max(1, (parseFloat(q) || 0) - 1)))} style={{ ...S.qtyBtn, background: '#F4F5FA', color: '#0A84FF', width: '36px', height: '36px' }}>−</button>
           <input style={{ ...S.qtyInput, fontSize: '18px' }} type="text" inputMode="decimal" value={qty}
@@ -1384,8 +1510,8 @@ function CompactProductResult({ product, role, lang, onClear }) {
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           {role === 'seller' ? (
-            <button onClick={() => doAction('outcome')} disabled={loading}
-              style={{ ...S.actionBtn, background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)', color: '#fff', flex: 1, justifyContent: 'center' }}>
+            <button onClick={() => doAction('outcome')} disabled={loading || zone.blocked}
+              style={{ ...S.actionBtn, ...sellBtn, flex: 1, justifyContent: 'center' }}>
               {uz ? 'Sotish' : 'Продать'}
             </button>
           ) : (
@@ -1394,8 +1520,8 @@ function CompactProductResult({ product, role, lang, onClear }) {
                 style={{ ...S.actionBtn, background: 'linear-gradient(135deg, #16a34a, #22C55E)', color: '#fff', flex: 1, justifyContent: 'center' }}>
                 {uz ? 'Kirim' : 'Приход'}
               </button>
-              <button onClick={() => doAction('outcome')} disabled={loading}
-                style={{ ...S.actionBtn, background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)', color: '#fff', flex: 1, justifyContent: 'center' }}>
+              <button onClick={() => doAction('outcome')} disabled={loading || zone.blocked}
+                style={{ ...S.actionBtn, ...sellBtn, flex: 1, justifyContent: 'center' }}>
                 {uz ? 'Chiqim' : 'Расход'}
               </button>
             </>

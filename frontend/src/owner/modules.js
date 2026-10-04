@@ -50,18 +50,18 @@ export const SECTIONS = [
   {
     id: 'analytics',
     // Быстрые действия баннера: самые частые дела раздела, ведут прямо в инструмент.
-    quick: ['founder-board', 'control-center', 'reports'],
+    quick: ['control-center', 'reports', 'branch-compare'],
     title: 'Аналитика',
     group: 'analysis',
     color: '#1D4ED8',
-    desc: 'Сводка по компании · контроль · отчёты · когорты · юнит-экономика · симулятор',
+    desc: 'Контроль · отчёты · филиалы · когорты · юнит-экономика · симулятор',
     // Деньги (выручка/прибыль/касса) убраны из баннера «Аналитика» по просьбе клиента —
     // они дублируют Главную; баннер показывает только счётчики (инструменты · вкладки).
     metrics: [],
     tools: [
-      // Переименован из «Дашборд учредителя»: так теперь называется ролевой дашборд
-      // (раздел myboard), и два экрана с одним именем путали учредителя. id не менялся.
-      { id: 'founder-board',   title: 'Сводка по компании', desc: 'Сводка компании · филиалы · алерты', wired: true },
+      // «Дашборд учредителя» (founder-board) убран 2026-08-03 по просьбе клиента:
+      // он повторял Главную (сводка · филиалы · алерты) и путался по названию
+      // с ролевым дашбордом из раздела myboard. Экран удалён целиком.
       { id: 'control-center',  title: 'Центр контроля',      desc: 'Алерты · аномалии · полиция магазина · риски · дефицит', wired: true, hub: 5 },
       { id: 'simulator',       title: 'Симулятор «Что если»', desc: 'Все сценарии: бизнес · продажи · склад · закупки · персонал · клиенты', wired: true, hub: 8 },
       { id: 'branch-compare',  title: 'Сравнение филиалов',  desc: 'Выручка · маржа · BHI по филиалам', wired: true },
@@ -69,7 +69,7 @@ export const SECTIONS = [
       { id: 'basket-analysis', title: 'Анализ корзины',      desc: 'Совместные покупки · апселл', wired: true },
       { id: 'cohorts',         title: 'Когортный анализ',    desc: 'Ретеншн по месяцу первой покупки · LTV', wired: true },
       { id: 'unit-economics',  title: 'Юнит-экономика',      desc: 'LTV/CAC · на сделку · ROAS', wired: true },
-      { id: 'ab-point',        title: 'A/B точка',           desc: 'Метрики: точка A (вручную) vs точка B (сейчас) · Δ · направление', wired: true },
+      { id: 'ab-point',        title: 'A/B точка',           desc: 'Замеры бизнеса: где были → где сейчас · Δ по 10 метрикам', wired: true },
       { id: 'ssp',             title: 'ССП — стратегия',      desc: 'Система сбалансированных показателей', wired: true },
     ],
   },
@@ -84,6 +84,11 @@ export const SECTIONS = [
     group: 'work',
     color: '#1D4ED8',
     desc: 'Мои дела · поручения · зарплата · нарушения',
+    // solo: раздел из одного инструмента с тем же названием. Промежуточная
+    // страница показывала «Дашборд учредителя», а под ней единственную карточку
+    // «Дашборд учредителя» — лишний клик и вложенность в самого себя.
+    // Заходим сразу в инструмент: и из дока, и по прямому адресу /owner/myboard.
+    solo: true,
     metrics: [],
     tools: [
       { id: 'my-board', title: 'Мой дашборд', desc: 'Мои дела · поручения сотрудникам · зарплата · нарушения', wired: true },
@@ -287,7 +292,6 @@ const HIDDEN_TOOLS = {
     // Ниже — инструменты, которые сервер менеджеру НЕ отдаёт (403): раньше они
     // висели в меню и открывались с «Нет доступа». Сверено прогоном всех 163
     // GET-эндпоинтов под ролью manager (2026-07-29).
-    'founder-board',    // /analytics/founder-dashboard — сводка по ВСЕЙ компании
     'unit-economics',   // /finance/profitability — стратегические финансы
     'simulator',        // /finance|procurement|hr/whatif-base — моделирование
     'event-journal',    // /audit-log — журнал действий всей компании
@@ -329,4 +333,31 @@ export function getUserSections(user) {
   return getSectionsForRole(user?.role)
     .map(s => ({ ...s, tools: (s.tools || []).filter(t => !off.has(t.id)) }))
     .filter(s => s.id === 'dashboard' || s.tools.length > 0);
+}
+
+// Точка входа в раздел: обычно это его страница со списком инструментов, но у
+// solo-раздела (один инструмент, то же название) — сразу сам инструмент.
+export function sectionEntryPath(section) {
+  if (!section) return '/owner';
+  const only = section.solo && section.tools?.length === 1 ? section.tools[0] : null;
+  return only ? `/owner/${section.id}/${only.id}` : '/owner/' + section.id;
+}
+
+// Куда реально можно увести пользователя по адресу вида /owner/раздел/инструмент.
+// Сервер собирает алерты, ничего не зная о роли смотрящего и об отключённых
+// инструментах, а ToolRouter на недоступный адрес МОЛЧА возвращает на Главную —
+// со стороны это выглядит как «кнопка не работает». Поэтому адрес проверяем ДО
+// перехода: инструмент доступен — ведём в него, доступен только раздел — в раздел,
+// не доступно ничего — вызывающий код прячет кнопку.
+export function resolveOwnerPath(user, path) {
+  if (typeof path !== 'string' || !path.startsWith('/owner/')) return null;
+  const [sectionId, toolId] = path.slice('/owner/'.length).split('/');
+  if (!sectionId) return null;
+  const sections = getUserSections(user);
+  const section = sections.find(s => s.id === sectionId);
+  if (!section) return null;
+  if (!toolId) return '/owner/' + sectionId;
+  return section.tools.some(t => t.id === toolId)
+    ? `/owner/${sectionId}/${toolId}`
+    : '/owner/' + sectionId;
 }

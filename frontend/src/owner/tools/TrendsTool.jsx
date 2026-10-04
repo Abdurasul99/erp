@@ -5,12 +5,16 @@ import { BranchScope } from '../OwnerShell.jsx';
 import { useTt } from '../tt.js';
 
 // Цвет/тон/иконка статуса тренда (good/ok/bad/flat). tone ∈ набор ui.jsx Badge.
+// Цвет и подпись — про ОЦЕНКУ (хорошо/плохо), стрелка — про НАПРАВЛЕНИЕ движения.
+// Раньше стрелка бралась из статуса: у растущих расходов рядом с «+12%» стояла
+// «▼ Ухудшение» — знак и число противоречили друг другу.
 const STATUS_META = {
-  good: { color: '#16A34A', tone: 'green', arrow: '▲' },
-  ok:   { color: '#1D4ED8', tone: 'blue',  arrow: '▲' },
-  bad:  { color: '#DC2626', tone: 'red',   arrow: '▼' },
-  flat: { color: '#94A3B8', tone: 'gray',  arrow: '–' },
+  good: { color: '#16A34A', tone: 'green' },
+  ok:   { color: '#1D4ED8', tone: 'blue'  },
+  bad:  { color: '#DC2626', tone: 'red'   },
+  flat: { color: '#94A3B8', tone: 'gray'  },
 };
+const TREND_ARROW = { up: '▲', down: '▼', flat: '–' };
 
 const WINDOWS = [
   { value: 6,  label: '6 мес' },
@@ -106,13 +110,18 @@ export default function TrendsTool() {
                   <div style={{ padding: '14px 16px 8px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <div>
-                        <div style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>{tt(m.label)}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 700 }}>
+                          {tt(m.label)}
+                          {m.direction === 'down_is_good' && (
+                            <span style={{ marginLeft: 6, fontWeight: 600 }}>· {tt('меньше — лучше')}</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: 22, fontWeight: 900, marginTop: 2 }} className="mono">
                           {fmtMetric(last, m.unit)}
                           {m.unit === 'сум' && <span style={{ fontSize: 12, color: 'var(--text3)', marginLeft: 4 }}>UZS</span>}
                         </div>
                       </div>
-                      <Badge tone={sm.tone}>{sm.arrow} {tt(m.status_label)}</Badge>
+                      <Badge tone={sm.tone}>{TREND_ARROW[m.trend] || TREND_ARROW.flat} {tt(m.status_label)}</Badge>
                     </div>
                     <div style={{ fontSize: 12, marginTop: 4, color: sm.color, fontWeight: 800 }} className="mono">
                       {growthLabel(m.growth_pct)} {tt('за период')}
@@ -149,7 +158,7 @@ export default function TrendsTool() {
                         <td style={{ fontWeight: 700 }}>
                           {tt(m.label)}
                           {m.direction === 'down_is_good' && (
-                            <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 6 }}>{tt('↓ лучше')}</span>
+                            <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 6 }}>{tt('меньше — лучше')}</span>
                           )}
                         </td>
                         <td className="mono" style={{ textAlign: 'right', color: 'var(--text2)' }}>{fmtMetric(first, m.unit)}</td>
@@ -157,7 +166,7 @@ export default function TrendsTool() {
                         <td className="mono" style={{ textAlign: 'right', fontWeight: 800, color: sm.color }}>{growthLabel(m.growth_pct)}</td>
                         <td style={{ textAlign: 'center' }}>
                           <span style={{ background: sm.color + '20', color: sm.color, padding: '3px 10px', borderRadius: 14, fontWeight: 800, fontSize: 12 }}>
-                            {sm.arrow} {tt(m.status_label)}
+                            {TREND_ARROW[m.trend] || TREND_ARROW.flat} {tt(m.status_label)}
                           </span>
                         </td>
                       </tr>

@@ -9,6 +9,7 @@ import JsBarcode from 'jsbarcode';
 import { fmtMoney, fmtNum, filterByPeriod, formatDateTimeShort } from '../utils.js';
 import PeriodFilter from '../components/PeriodFilter.jsx';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
+import { priceZone } from '../utils/priceZone.js';
 
 function BarcodeImg({ value }) {
   const ref = useRef(null);
@@ -577,6 +578,11 @@ export default function SellerView() {
     const disc = Math.max(0, toNum(discount) || 0);
     if (disc >= gross) { setError(uz ? 'Chegirma jami summadan ko\'p bo\'lmasligi kerak' : 'Скидка не может быть больше суммы'); return; }
     const effectivePrice = (gross - disc) / qty;
+    // Скидочная политика: сравнивается цена за единицу ПОСЛЕ скидки — ровно та,
+    // что уходит в поле price. Сервер отклонит такую продажу сам, но продавец
+    // должен увидеть минимум до нажатия, а не поймать 400.
+    const zoneOnSell = priceZone(effectivePrice, product, lang);
+    if (zoneOnSell.blocked) { setError(zoneOnSell.message); return; }
 
     setSelling(true); setError('');
     try {
@@ -684,6 +690,16 @@ export default function SellerView() {
   const discNum = Math.max(0, Math.min(gross, toNum(discount) || 0));
   const total = gross - discNum;
   const effectiveUnitPrice = qty > 0 ? total / qty : 0;
+  // Цвет зоны считаем ТОЛЬКО по фактической цене за единицу после скидки
+  // (total / qty). Пока цена не введена — валютная продажа без цены и курса,
+  // пустое количество — зоны нет: иначе ноль читался бы как «ниже минимума»
+  // и гасил кнопку на промежуточном вводе.
+  const pricePicked = qty > 0 && unitPriceUZS > 0;
+  const zone = priceZone(pricePicked ? effectiveUnitPrice : null, product, lang);
+  const sellDisabled = stock <= 0 || zone.blocked;
+  // В валютной продаже цена берётся из поля origUnitPrice, а в шапке карточки
+  // висит сумовая цена из каталога — красить её зоной там нечего.
+  const catalogZoned = saleCurrency === 'UZS' && zone.color;
 
   return (
     <div style={{ background: '#F4F5FA', minHeight: '100vh', maxWidth: '480px', margin: '0 auto', fontFamily: "'Nunito', sans-serif" }}>
@@ -965,10 +981,22 @@ export default function SellerView() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid #F4F5FA' }}>
                 <div style={{ padding: '14px 16px', borderRight: '1px solid #F4F5FA' }}>
                   <div style={{ fontSize: '11px', fontWeight: 800, color: '#9EA3BF', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{uz ? 'Narxi' : 'Цена'}</div>
-                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 900, fontSize: '22px', color: '#FF6B2B', marginTop: '2px' }}>
+                  {/* Рамка и цифра красятся только у товара с заданной политикой;
+                      у остальных карточка выглядит ровно как до появления порогов. */}
+                  <div style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontWeight: 900, fontSize: '22px',
+                    color: catalogZoned ? zone.hex : '#FF6B2B', marginTop: '2px',
+                    ...(catalogZoned ? {
+                      display: 'inline-block', padding: '2px 8px', borderRadius: '10px',
+                      border: `2px solid ${zone.hex}`, background: zone.soft,
+                    } : null),
+                  }}>
                     {fmtNum(product.price_sell || 0)}
                     <span style={{ fontSize: '12px', fontWeight: 400, color: '#9EA3BF', marginLeft: '4px' }}>UZS</span>
                   </div>
+                  {catalogZoned && (
+                    <div style={{ fontSize: '10px', fontWeight: 800, color: zone.hex, marginTop: '4px', lineHeight: 1.3 }}>{zone.hint}</div>
+                  )}
                 </div>
                 <div style={{ padding: '14px 16px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 800, color: '#9EA3BF', textTransform: 'uppercase', letterSpacing: '0.4px' }}>{uz ? 'Qoldiq' : 'Остаток'}</div>
@@ -1051,10 +1079,11 @@ export default function SellerView() {
                         <label style={{ fontSize: '10px', fontWeight: 800, color: '#6B6F8A', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: '4px' }}>
                           {uz ? `Narxi (${saleCurrency}/dona)` : `Цена (${saleCurrency}/шт)`}
                         </label>
+                        {/* Цена в валюте — зона считается по её сумовому эквиваленту после скидки */}
                         <input type="text" inputMode="decimal" value={origUnitPrice}
                           onChange={e => setOrigUnitPrice(cleanNum(e.target.value))}
                           onBlur={() => setOrigUnitPrice(tidyNum(origUnitPrice))} placeholder="0"
-                          style={{ width: '100%', height: '40px', textAlign: 'right', padding: '0 10px', border: '1.5px solid #E2E4F0', borderRadius: '8px', fontSize: '15px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box' }} />
+                          style={{ width: '100%', height: '40px', textAlign: 'right', padding: '0 10px', border: `1.5px solid ${zone.color ? zone.hex : '#E2E4F0'}`, borderRadius: '8px', fontSize: '15px', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box', color: zone.color ? zone.hex : '#1A1B2E', background: zone.color ? zone.soft : '#fff' }} />
                       </div>
                       <div>
                         <label style={{ fontSize: '10px', fontWeight: 800, color: '#6B6F8A', textTransform: 'uppercase', letterSpacing: '0.4px', display: 'block', marginBottom: '4px' }}>
@@ -1091,7 +1120,14 @@ export default function SellerView() {
                     onChange={e => setDiscount(cleanNum(e.target.value))}
                     onBlur={() => setDiscount(tidyNum(discount))}
                     placeholder="0"
-                    style={{ width: '100%', height: '46px', textAlign: 'right', padding: '0 14px', border: '2px solid #E2E4F0', borderRadius: '12px', fontSize: '18px', fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box', color: discNum > 0 ? '#FF6B2B' : '#1A1B2E' }} />
+                    style={{ width: '100%', height: '46px', textAlign: 'right', padding: '0 14px', border: `2px solid ${zone.color ? zone.hex : '#E2E4F0'}`, borderRadius: '12px', fontSize: '18px', fontWeight: 800, fontFamily: "'JetBrains Mono', monospace", outline: 'none', boxSizing: 'border-box', color: zone.color ? zone.hex : (discNum > 0 ? '#FF6B2B' : '#1A1B2E'), background: zone.color ? zone.soft : '#fff' }} />
+                  {/* Подсказка по зоне: в блокировке — с самой суммой минимума */}
+                  {zone.color && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '12px', fontWeight: 800, color: zone.hex }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: zone.hex, flexShrink: 0 }} />
+                      <span>{zone.blocked ? zone.message : zone.hint}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Total breakdown */}
@@ -1109,7 +1145,8 @@ export default function SellerView() {
                       <div style={{ height: '1px', background: '#E2E4F0', margin: '6px 0' }} />
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                         <span style={{ fontSize: '10px', color: '#9EA3BF', fontWeight: 700 }}>{uz ? "1 ta narxi (skidkadan keyin)" : '1 ед. после скидки'}:</span>
-                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: '#6B6F8A', fontWeight: 700 }}>{fmtNum(effectiveUnitPrice)}</span>
+                        {/* Именно эта величина сравнивается с порогами — красим её тем же цветом */}
+                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '12px', color: zone.color ? zone.hex : '#6B6F8A', fontWeight: zone.color ? 800 : 700 }}>{fmtNum(effectiveUnitPrice)}</span>
                       </div>
                     </>
                   )}
@@ -1160,18 +1197,26 @@ export default function SellerView() {
                   </div>
                 )}
 
-                <button onClick={handleSell} disabled={selling || stock <= 0}
+                {/* Причина запрета — до нажатия кнопки, с конкретной суммой минимума */}
+                {zone.blocked && (
+                  <div style={{ background: zone.soft, border: `1px solid ${zone.hex}`, borderRadius: '10px', padding: '10px 14px', fontSize: '14px', fontWeight: 800, color: zone.hex, marginBottom: '12px', textAlign: 'center' }}>
+                    {zone.message}
+                  </div>
+                )}
+
+                <button onClick={handleSell} disabled={selling || sellDisabled}
                   style={{
                     width: '100%', padding: '18px', border: 'none', borderRadius: '14px',
-                    background: stock <= 0 ? '#E2E4F0' : 'linear-gradient(135deg, #FF6B2B, #FF8C55)',
-                    color: stock <= 0 ? '#9EA3BF' : '#fff',
-                    fontWeight: 900, fontSize: '18px', cursor: stock <= 0 ? 'not-allowed' : 'pointer',
+                    background: sellDisabled ? '#E2E4F0' : 'linear-gradient(135deg, #FF6B2B, #FF8C55)',
+                    color: sellDisabled ? '#9EA3BF' : '#fff',
+                    fontWeight: 900, fontSize: '18px', cursor: sellDisabled ? 'not-allowed' : 'pointer',
                     fontFamily: "'Nunito', sans-serif",
-                    boxShadow: stock <= 0 ? 'none' : '0 6px 20px rgba(255,107,43,.4)',
+                    boxShadow: sellDisabled ? 'none' : '0 6px 20px rgba(255,107,43,.4)',
                     transition: 'all .2s', letterSpacing: '0.3px',
                   }}>
                   {selling ? (uz ? 'Saqlanmoqda...' : 'Сохранение...') :
                    stock <= 0 ? (uz ? 'Omborda yo\'q' : 'Нет в наличии') :
+                   zone.blocked ? (uz ? 'Narx minimaldan past' : 'Цена ниже минимума') :
                    `💰 ${uz ? 'Sotish' : 'Продать'} — ${qty} ${product.unit}`}
                 </button>
               </div>

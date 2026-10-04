@@ -6,6 +6,7 @@ import PeriodFilter from './PeriodFilter.jsx';
 import SupplierCombobox from './SupplierCombobox.jsx';
 import ProductCombobox from './ProductCombobox.jsx';
 import { normalizeDecimal } from '../utils/decimalInput.js';
+import { ZONE_COLORS, validateThresholds } from '../utils/priceZone.js';
 
 // ── Числовые поля (деньги и количество) ──────────────────────────────────────
 // Стейт таких полей — СТРОКА, а сам input — type="text" inputMode="decimal".
@@ -36,12 +37,33 @@ const blurNorm = (setState, key, dp) => (e) => {
   setState(f => ({ ...f, [key]: normDec(v, dp) }));
 };
 
+// ── Разрешение на скидку ─────────────────────────────────────────────────────
+// Три абсолютные цены за единицу, которые склад задаёт здесь же, рядом с
+// закупкой и продажей: зелёная — скидку ещё можно, жёлтая — близко к пределу,
+// красная — ниже нельзя. Продавцу они прилетают вместе с карточкой товара и
+// красят у него поле цены. Поля НЕобязательные: пусто = политики нет, товар
+// продаётся как раньше.
+const ZONE_FIELDS = [
+  { key: 'green',  col: 'price_green',  hex: ZONE_COLORS.green.hex,
+    label: { ru: 'Зелёная цена',  uz: 'Yashil narx' },
+    note:  { ru: 'можно ещё скидку', uz: 'yana chegirma mumkin' },
+    err:   { ru: 'Проверьте зелёную цену — введите число', uz: 'Yashil narxni tekshiring — raqam kiriting' } },
+  { key: 'yellow', col: 'price_yellow', hex: ZONE_COLORS.yellow.hex,
+    label: { ru: 'Жёлтая цена',   uz: 'Sariq narx' },
+    note:  { ru: 'близко к пределу', uz: 'chegaraga yaqin' },
+    err:   { ru: 'Проверьте жёлтую цену — введите число', uz: 'Sariq narxni tekshiring — raqam kiriting' } },
+  { key: 'red',    col: 'price_red',    hex: ZONE_COLORS.red.hex,
+    label: { ru: 'Красная цена',  uz: 'Qizil narx' },
+    note:  { ru: 'ниже нельзя', uz: "pastga tushirib bo'lmaydi" },
+    err:   { ru: 'Проверьте красную цену — введите число', uz: 'Qizil narxni tekshiring — raqam kiriting' } },
+];
+
 export default function WarehouseIncome() {
   const { t, lang } = useTranslation();
   const uz = lang === 'uz';
   const [products, setProducts] = useState([]);
   const [list, setList] = useState([]);
-  const [form, setForm] = useState({ product_id: '', quantity: '', price: '', price_sell: '', supplier_id: null, note: '' });
+  const [form, setForm] = useState({ product_id: '', quantity: '', price: '', price_sell: '', price_green: '', price_yellow: '', price_red: '', supplier_id: null, note: '' });
   const [msg, setMsg, clearMsg] = useMsg();
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState('week');
@@ -64,6 +86,12 @@ export default function WarehouseIncome() {
         // normDec, а не String(): «45000.00» из БД в поле выглядит как «45000».
         price:      f.price      === '' ? (selectedProduct.price_buy  ? normDec(selectedProduct.price_buy, 2)  : '') : f.price,
         price_sell: f.price_sell === '' ? (selectedProduct.price_sell ? normDec(selectedProduct.price_sell, 2) : '') : f.price_sell,
+        // Пороги, в отличие от цен, перезаписываем ВСЕГДА: это свойство товара,
+        // а не конкретной поставки. Иначе при смене товара в форме остались бы
+        // пороги предыдущего и молча уехали бы на новый товар.
+        price_green:  selectedProduct.price_green  != null ? normDec(selectedProduct.price_green, 2)  : '',
+        price_yellow: selectedProduct.price_yellow != null ? normDec(selectedProduct.price_yellow, 2) : '',
+        price_red:    selectedProduct.price_red    != null ? normDec(selectedProduct.price_red, 2)    : '',
       }));
     }
   }, [selectedProduct?.id]);
@@ -99,6 +127,22 @@ export default function WarehouseIncome() {
   const buyNum   = toNum(form.price);
   const sellNum  = toNum(form.price_sell);
 
+  // Порядок порогов и предупреждение об убытке считает общий модуль priceZone —
+  // тот же, что и на мобильном приходе, чтобы правила и тексты не разъехались.
+  const zoneCheck = validateThresholds(
+    { green: form.price_green, yellow: form.price_yellow, red: form.price_red },
+    { priceBuy: form.price, priceSell: form.price_sell, lang }
+  );
+  // Набранный мусор («12ю») числом не станет: ловим здесь, а не после нажатия
+  // кнопки, иначе сервер вернёт свою 400 на уже заполненную форму.
+  const zoneBadNum = ZONE_FIELDS.find(z => !isBlank(form[z.col]) && !Number.isFinite(toNum(form[z.col]))) || null;
+  // Ошибка у конкретного поля: сначала нечитаемое число, потом нарушенный порядок.
+  const zoneFieldError = (z) => {
+    if (zoneBadNum?.key === z.key) return uz ? z.err.uz : z.err.ru;
+    if (zoneCheck.field === z.key) return zoneCheck.message;
+    return '';
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!Number.isFinite(qtyNum) || qtyNum <= 0) { setMsg('error', t('error')); return; }
@@ -116,6 +160,8 @@ export default function WarehouseIncome() {
                          : 'Проверьте цену продажи — введите число');
       return;
     }
+    if (zoneBadNum) { setMsg('error', uz ? zoneBadNum.err.uz : zoneBadNum.err.ru); return; }
+    if (!zoneCheck.ok) { setMsg('error', zoneCheck.message); return; }
     setLoading(true);
     try {
       await api.post('/stock/income', {
@@ -123,11 +169,16 @@ export default function WarehouseIncome() {
         quantity: qtyNum,
         price: priceOut,
         price_sell: priceSellOut,
+        // Пороги шлём все три всегда: пустое поле = null = снять политику.
+        // Если слать только заполненные, очистку поля никак не передать.
+        price_green:  isBlank(form.price_green)  ? null : toNum(form.price_green),
+        price_yellow: isBlank(form.price_yellow) ? null : toNum(form.price_yellow),
+        price_red:    isBlank(form.price_red)    ? null : toNum(form.price_red),
         supplier_id: form.supplier_id || null,
         note: form.note,
       });
       setMsg('success', t('success'));
-      setForm({ product_id: '', quantity: '', price: '', price_sell: '', supplier_id: null, note: '' });
+      setForm({ product_id: '', quantity: '', price: '', price_sell: '', price_green: '', price_yellow: '', price_red: '', supplier_id: null, note: '' });
       loadList(); loadProducts();
     } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
     setLoading(false);
@@ -235,6 +286,46 @@ export default function WarehouseIncome() {
                 </div>
               )}
             </div>
+          </div>
+          <div style={{ marginBottom: '12px', padding: '12px 14px', border: '1px solid var(--border)', borderRadius: '10px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 800, color: 'var(--text2)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+              {uz ? 'Chegirmaga ruxsat' : 'Разрешение на скидку'}
+              <span style={{ marginLeft: '6px', fontWeight: 700, textTransform: 'none', letterSpacing: 0, color: 'var(--text3)' }}>
+                {uz ? '(majburiy emas)' : '(необязательно)'}
+              </span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text3)', margin: '3px 0 10px' }}>
+              {uz ? "Sotuvchi narx kiritganda maydon shu ranglarga bo'yaladi. Bo'sh qoldirilsa — rang ham, taqiq ham yo'q."
+                  : 'Продавец наберёт цену — и поле окрасится в эти цвета. Оставите пустыми — ни подсветки, ни запретов.'}
+            </div>
+            <div className="grid-3" style={{ gap: '10px' }}>
+              {ZONE_FIELDS.map(z => {
+                const err = zoneFieldError(z);
+                return (
+                  <div key={z.key}>
+                    <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: z.hex, flexShrink: 0 }} />
+                      <span>{uz ? z.label.uz : z.label.ru}</span>
+                    </label>
+                    <input className="input mono" type="text" inputMode="decimal"
+                      value={form[z.col]}
+                      onChange={e => setForm({ ...form, [z.col]: cleanDec(e.target.value) })}
+                      onBlur={blurNorm(setForm, z.col, 2)}
+                      placeholder="—"
+                      style={{ borderColor: err ? 'var(--red)' : `${z.hex}55` }} />
+                    <div style={{ fontSize: '11px', marginTop: '4px', color: err ? 'var(--red)' : 'var(--text3)', fontWeight: err ? 700 : 400 }}>
+                      {err || (uz ? z.note.uz : z.note.ru)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {zoneCheck.warning && (
+              // Убыток — предупреждение, а не запрет: распродажа ниже себестоимости бывает нужна.
+              <div style={{ marginTop: '10px', padding: '8px 12px', background: 'rgba(255,107,43,.08)', borderRadius: '8px', fontSize: '12px', fontWeight: 700, color: 'var(--orange)' }}>
+                {zoneCheck.warning}
+              </div>
+            )}
           </div>
           <div style={{ marginBottom: '12px' }}>
             <label className="label">{t('supplier')}</label>

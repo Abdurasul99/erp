@@ -57,11 +57,13 @@ export default function Login() {
   // ?reason=session — сессию завершил вход с другого устройства (одиночная сессия).
   const [error, setError] = useState(() => {
     try {
-      if (new URLSearchParams(window.location.search).get('reason') === 'session') {
+      const reason = new URLSearchParams(window.location.search).get('reason');
+      if (reason === 'session') {
         return (localStorage.getItem('lang') === 'uz')
           ? 'Boshqa qurilmadan kirildi — bu qurilmadagi seans yakunlandi.'
           : 'Выполнен вход с другого устройства — сессия на этом устройстве завершена.';
       }
+      if (reason === 'company-disabled') return t('companyDisabled');
     } catch { /* noop */ }
     return '';
   });
@@ -76,16 +78,28 @@ export default function Login() {
       const { data } = await api.post('/auth/login', { username, password });
       login(data.user, data.token);
       const r = data.user.role;
-      if (r === 'seller') navigate('/sell');
+      // Страница входа общая для двух продуктов: учётку «Мероприятий» ведём в
+      // её интерфейс. Проверка — раньше роли: founder есть в обоих продуктах.
+      if (data.user.product === 'events') navigate('/events');
+      else if (r === 'seller') navigate('/sell');
       else if (r === 'admin') navigate('/admin');
       else if (['founder', 'director', 'manager'].includes(r)) navigate('/desktop');
       else navigate('/select');
     } catch (err) {
       const st = err.response?.status;
       const msg = err.response?.data?.error || '';
+      const code = err.response?.data?.code;
       // Локализуем по статус-коду (надёжнее, чем по тексту), узбекский/русский.
       if (st === 429) {
         setError(uz ? "Juda koʻp urinish. 1 daqiqadan soʻng qayta urinib koʻring." : 'Слишком много попыток. Попробуйте через 1 мин.');
+      } else if (st === 403 && code === 'COMPANY_DISABLED') {
+        setError(t('companyDisabled'));
+      } else if (st === 403 && code === 'ROLE_PRODUCT_MISMATCH') {
+        // Иначе упало бы в общую ветку 403 и сообщило «аккаунт заблокирован» —
+        // человек пошёл бы разбираться не с той проблемой.
+        setError(uz
+          ? "Hisob roli kompaniya mahsulotiga mos emas. Administratorga murojaat qiling."
+          : 'Роль учётки не подходит продукту компании. Обратитесь к администратору.');
       } else if (st === 403) {
         setError(t('accountBlocked'));
       } else if (st === 401) {

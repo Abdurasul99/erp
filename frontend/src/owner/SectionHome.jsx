@@ -74,6 +74,10 @@ export default function SectionHome() {
 
   if (!section) return <Navigate to="/owner" replace />;
   if (section.id === 'dashboard') return <Navigate to="/owner" replace />;
+  // solo-раздел: страница-прослойка с единственной карточкой того же названия
+  // («Дашборд учредителя» внутри «Дашборда учредителя») — открываем инструмент.
+  const solo = section.solo && section.tools.length === 1 ? section.tools[0] : null;
+  if (solo) return <Navigate to={`/owner/${section.id}/${solo.id}`} replace />;
 
   const tools = section.tools;
   const hubs = tools.filter(t => t.hub).length;

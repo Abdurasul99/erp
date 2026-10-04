@@ -90,12 +90,12 @@ export default function CustomerCampaignsTool() {
 
           <Card icon="✍️" title={tt('Новая рассылка')} style={{ marginBottom: 16 }}>
             <form onSubmit={submit}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12 }}>
-                <div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12, minWidth: 0 }}>
+                <div style={{ minWidth: 0, maxWidth: '100%' }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Сегмент')}</div>
                   <Pills value={segment} onChange={setSegment} options={SEGMENTS.map(s => ({ ...s, label: tt(s.label) }))} label="Сегмент" />
                 </div>
-                <div>
+                <div style={{ minWidth: 0, maxWidth: '100%' }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>{tt('Канал')}</div>
                   <Pills value={channel} onChange={setChannel} options={CHANNELS.map(c => ({ ...c, label: tt(c.label) }))} label="Канал" />
                 </div>

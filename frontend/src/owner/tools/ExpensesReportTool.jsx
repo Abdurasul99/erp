@@ -10,16 +10,6 @@ import { useTt, fmtDate } from '../tt.js';
 // /finance/expenses — реестр операций.
 // Период и филиал — из глобального селектора топбара (usePeriodParams).
 
-// Иконки по категориям расходов (совпадают с макетом)
-const CAT_ICON = {
-  'Закупка товара': '📦',
-  'Аренда': '🏢',
-  'Зарплаты': '👥',
-  'Реклама': '📢',
-  'Коммунальные': '💡',
-  'Прочие': '📎',
-};
-
 export default function ExpensesReportTool() {
   const { tt, lang } = useTt();
   const params = usePeriodParams();
@@ -48,18 +38,22 @@ export default function ExpensesReportTool() {
 
   const fmtDelta = (d) => {
     if (d == null) return <span style={{ color: 'var(--text3)' }}>—</span>;
-    const up = d >= 0;
+    const v = Math.round(d);
+    // Ноль — это «не изменилось». Раньше он рисовался стрелкой вверх и цветом
+    // роста: «↑ 0%» читалось как подорожание, которого не было.
+    if (v === 0) return <span style={{ color: 'var(--text3)', fontWeight: 700 }}>{tt('без изменений')}</span>;
+    const up = v > 0;
     // Для расходов рост — это «дороже» (оранжевый), падение — «дешевле» (зелёный)
     return (
       <span style={{ color: up ? 'var(--orange)' : 'var(--green)', fontWeight: 700 }}>
-        {up ? '↑' : '↓'} {Math.abs(Math.round(d))}%
+        {up ? '↑' : '↓'} {Math.abs(v)}%
       </span>
     );
   };
 
   return (
     <>
-      <PageHeader title={'🧾 ' + tt('Отчёт расходов')} sub={tt('Операционные расходы и закупки · реальные данные')} />
+      <PageHeader title={tt('Отчёт расходов')} sub={tt('Операционные расходы и закупки · реальные данные')} />
 
       <ToolFilters />
 
@@ -71,24 +65,27 @@ export default function ExpensesReportTool() {
         <Card><EmptyState icon="🧾" title={tt('Нет расходов за период')} description={tt('За выбранный период расходов не зафиксировано. Появятся операции — отчёт заполнится.')} /></Card>
       ) : (
         <>
+          {/* Ни одна плитка расходов не красится зелёным: зелёный в системе значит
+              «хорошо», а 38 миллионов затрат — не повод для радости. Три оттенка
+              одной, «расходной» гаммы: итог, операционные, закупки. */}
           <div className="grid-3" style={{ marginBottom: 16 }}>
-            <Tile icon="💰" label={tt('Всего расходов')} value={fmtMoneyFull(s.total)} sub={tt('сум')} color="#1D4ED8" />
-            <Tile icon="⚙️" label={tt('Операционные')} value={fmtMoneyFull(s.operating)} sub={tt('аренда · зарплаты · прочее')} color="#D97706" />
-            <Tile icon="📦" label={tt('Закупки товара')} value={fmtMoneyFull(s.purchases)} sub={tt('себестоимость закупок')} color="#16A34A" />
+            <Tile label={tt('Всего расходов')} value={fmtMoneyFull(s.total)} sub={tt('сум за период')} color="#B3261E" />
+            <Tile label={tt('Операционные')} value={fmtMoneyFull(s.operating)} sub={tt('аренда · зарплаты · прочее')} color="#D97706" />
+            <Tile label={tt('Закупки товара')} value={fmtMoneyFull(s.purchases)} sub={tt('себестоимость закупок')} color="#6D28D9" />
           </div>
 
           {top && (
             <Card style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                 <div style={{ fontWeight: 800, fontSize: 15 }}>
-                  {CAT_ICON[top.category] || '📂'} {tt('Крупнейшая статья расходов')}: <span style={{ color: 'var(--primary)' }}>{tt(top.category)}</span>
+                  {tt('Крупнейшая статья расходов')}: <span style={{ color: 'var(--primary)' }}>{tt(top.category)}</span>
                 </div>
                 <Badge tone="blue">{top.share}% {tt('от всех расходов')}</Badge>
               </div>
             </Card>
           )}
 
-          <Card icon="📊" title={tt('Структура расходов по категориям')} style={{ marginBottom: 16 }}>
+          <Card title={tt('Структура расходов по категориям')} style={{ marginBottom: 16 }}>
             <div style={{ overflowX: 'auto' }}>
               <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
                 <thead>
@@ -103,7 +100,7 @@ export default function ExpensesReportTool() {
                   {cats.map((c, i) => (
                     <tr key={i} style={{ borderTop: '1px solid var(--border, #E3EAF3)' }}>
                       <td style={{ padding: '10px 10px', fontWeight: 600 }}>
-                        {CAT_ICON[c.category] || '📂'} {tt(c.category)}
+                        {tt(c.category)}
                       </td>
                       <td className="mono" style={{ padding: '10px 10px', textAlign: 'right' }}>{fmtMoneyFull(c.amount)}</td>
                       <td style={{ padding: '10px 10px', textAlign: 'right' }}>
@@ -122,7 +119,7 @@ export default function ExpensesReportTool() {
             </div>
           </Card>
 
-          <Card icon="📋" title={tt('Реестр операций')}>
+          <Card title={tt('Реестр операций')}>
             {rows.length === 0 ? (
               <EmptyState icon="📭" title={tt('Нет операций за период')} description={tt('За выбранный период операций расходов не найдено.')} />
             ) : (
@@ -144,7 +141,7 @@ export default function ExpensesReportTool() {
                           {fmtDate(new Date(r.created_at), { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }, lang)}
                         </td>
                         <td style={{ padding: '9px 10px', fontWeight: 600 }}>
-                          {CAT_ICON[r.category] || '📂'} {tt(r.category || 'Прочие')}
+                          {tt(r.category || 'Прочие')}
                         </td>
                         <td className="mono" style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 700 }}>{fmtMoneyFull(r.amount)}</td>
                         <td style={{ padding: '9px 10px', color: 'var(--text2)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.comment || ''}>

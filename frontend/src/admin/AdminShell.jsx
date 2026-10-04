@@ -1,8 +1,9 @@
-import React, { useContext } from 'react';
+import React, { useContext, useState } from 'react';
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { motion, useMotionValue } from 'framer-motion';
 import { AuthContext } from '../App.jsx';
 import { Icon } from '../owner/icons.jsx';
+import { PageHeaderContext } from '../owner/PageHeaderContext.js';
 import { DockItem } from '../owner/Dock.jsx';
 import '../owner/styles.css';
 
@@ -18,17 +19,17 @@ import BreakEven from './pages/BreakEven.jsx';
 // (стеклянный топбар + macOS-док), но со своей идентичностью: фиолетово-розовый
 // бренд WoW и свои duotone-градиенты разделов. Никаких эмодзи — только SVG-иконки.
 
-const SECTIONS = [
-  { id: 'dashboard', icon: 'home',     title: 'Главная',          desc: 'Сводка по всем клиентам',                grad: ['#7C3AED', '#EC4899'] },
-  { id: 'team',      icon: 'users',    title: 'Наша команда',     desc: 'Сотрудники WoW · доступ ко всем',        grad: ['#BF5AF2', '#5E5CE6'] },
-  { id: 'companies', icon: 'building', title: 'Компании-клиенты', desc: 'Создать/изменить · филиалы · доступы',   grad: ['#0A84FF', '#5E5CE6'] },
-  { id: 'features',  icon: 'trophy',   title: 'Фичи · тарифы',     desc: 'Включить премиум клиенту',               grad: ['#FF9F0A', '#FF6B22'] },
-  { id: 'break-even',icon: 'trending', title: 'Точка безубыточности', desc: 'Когда WoW выходит в плюс',            grad: ['#30D158', '#0A84FF'] },
-  { id: 'audit',     icon: 'activity', title: 'Журнал действий',   desc: 'Операции пользователей',                 grad: ['#8E8E93', '#636366'] },
+export const ADMIN_SECTIONS = [
+  { id: 'dashboard', icon: 'home',     title: 'Главная',          dockLabel: 'Главная',          desc: 'Сводка по всем клиентам',                grad: ['#7C3AED', '#EC4899'] },
+  { id: 'team',      icon: 'users',    title: 'Наша команда',     dockLabel: 'Команда',          desc: 'Сотрудники WoW · доступ ко всем',        grad: ['#BF5AF2', '#5E5CE6'] },
+  { id: 'companies', icon: 'building', title: 'Компании-клиенты', dockLabel: 'Компании',         desc: 'Создать/изменить · филиалы · доступы',   grad: ['#0A84FF', '#5E5CE6'] },
+  { id: 'features',  icon: 'trophy',   title: 'Фичи · тарифы',     dockLabel: 'Тарифы',           desc: 'Включить премиум клиенту',               grad: ['#FF9F0A', '#FF6B22'] },
+  { id: 'break-even',icon: 'trending', title: 'Точка безубыточности', dockLabel: 'Безубыточность', desc: 'Когда WoW выходит в плюс',            grad: ['#30D158', '#0A84FF'] },
+  { id: 'audit',     icon: 'activity', title: 'Журнал действий',   dockLabel: 'Журнал',           desc: 'Операции пользователей',                 grad: ['#8E8E93', '#636366'] },
 ];
 const grad = (s, deg = 135) => `linear-gradient(${deg}deg, ${s.grad[0]}, ${s.grad[1]})`;
 
-function AdminDock({ activeSection, navigate }) {
+export function AdminDock({ activeSection, navigate }) {
   const mouseX = useMotionValue(Infinity);
   return (
     <div className="dock-wrap">
@@ -39,10 +40,12 @@ function AdminDock({ activeSection, navigate }) {
         initial={{ y: 90, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
         transition={{ type: 'spring', stiffness: 420, damping: 38, delay: 0.15 }}
       >
-        {SECTIONS.map((s) => (
+        {ADMIN_SECTIONS.map((s) => (
           <DockItem
             key={s.id}
             title={s.title}
+            label={s.dockLabel}
+            showLabel
             icon={s.icon}
             bg={grad(s)}
             active={activeSection === s.id}
@@ -62,10 +65,16 @@ export default function AdminShell() {
 
   const parts = pathname.split('/').filter(Boolean);
   const activeSection = parts[1] || 'dashboard';
-  const current = SECTIONS.find(s => s.id === activeSection) || SECTIONS[0];
+  const current = ADMIN_SECTIONS.find(s => s.id === activeSection) || ADMIN_SECTIONS[0];
   const initials = (user?.first_name || user?.username || 'A').slice(0, 2).toUpperCase();
 
+  // Страницы админки публикуют свой заголовок и контролы через PageHeader —
+  // без этого провайдера сеттер был no-op, и actions (переключатели периода,
+  // валюты, режима) не рисовались нигде: страница их «отдавала» в пустоту.
+  const [pageHead, setPageHead] = useState({ title: '', sub: null, actions: null });
+
   return (
+   <PageHeaderContext.Provider value={setPageHead}>
     <div className="owner-shell dock-shell">
       <div className="o-main">
         <header className="o-topbar">
@@ -80,20 +89,34 @@ export default function AdminShell() {
             </div>
           </div>
 
-          <div className="o-topbar-head">
-            <div className="o-topbar-copy">
-              <div className="o-topbar-title">{current.title}</div>
-              <div className="o-topbar-sub">{current.desc} · {new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</div>
+          {/* Заголовок раздела берём из навигации; страница может перебить его
+              своим (PageHeader) — тогда показываем её название и подпись. */}
+          <div className="o-topbar-mid">
+            <div className="o-topbar-head">
+              <div className="o-topbar-copy">
+                <div className="o-topbar-title">{pageHead.title || current.title}</div>
+                <div className="o-topbar-sub">
+                  {pageHead.title
+                    ? (pageHead.sub || current.desc)
+                    : `${current.desc} · ${new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}`}
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div className="o-branch-pick" style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)', color: '#fff', border: 'none', cursor: 'default' }}>
-            Все компании
+            {/* Контролы и метка охвата — внутри средней зоны: при нехватке места
+                переносятся ОНИ, а бренд и профиль остаются на своих краях. */}
+            <div className="o-topbar-controls">
+              {pageHead.actions && <div className="o-topbar-actions">{pageHead.actions}</div>}
+              <div className="o-branch-pick o-admin-scope" style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)', color: '#fff', border: 'none', cursor: 'default' }}>
+                Все компании
+              </div>
+            </div>
           </div>
 
           <div className="o-user" onClick={logout} title="Выйти" style={{ cursor: 'pointer' }}>
             <div className="o-avatar" style={{ background: 'linear-gradient(135deg, #7C3AED, #EC4899)' }}>{initials}</div>
-            <div style={{ lineHeight: 1.2, fontSize: 12 }}>
+            {/* .o-user-text — на телефоне шелл прячет подпись, оставляя аватар */}
+            <div className="o-user-text" style={{ lineHeight: 1.2, fontSize: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 13 }}>{user?.username}</div>
               <div style={{ color: 'var(--text3)' }}>Администратор</div>
             </div>
@@ -120,5 +143,6 @@ export default function AdminShell() {
 
       <AdminDock activeSection={activeSection} navigate={navigate} />
     </div>
+   </PageHeaderContext.Provider>
   );
 }

@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { AuthContext } from '../../App.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
 import { PageHeaderContext } from '../PageHeaderContext.js';
-import { getUserSections } from '../modules.js';
+import { getUserSections, resolveOwnerPath, sectionEntryPath } from '../modules.js';
 import { useTt } from '../tt.js';
 import { Icon, SECTION_ICON, gradCss } from '../icons.jsx';
 import { fmtMoney, fmtNum, Skeleton } from '../ui.jsx';
@@ -302,9 +302,22 @@ export default function DashboardBento() {
 
   const bhiColor = bhi?.zone === 'good' || (bhi?.current ?? 0) >= 70 ? '#1D7A35' : (bhi?.current ?? 0) >= 45 ? '#D97706' : '#E5484D';
   const maxBranch = Math.max(...branches.map((b) => b.sales_revenue || 0), 1);
-  const aiText = alerts[0]
-    ? `${alerts[0].title}${alerts[0].sub ? ' — ' + alerts[0].sub : ''}`
-    : tt('Все системы в норме. Задайте вопрос о вашем бизнесе — отвечу по живым данным.');
+  // Подсказка строится по одной логике: ГДЕ → ЧТО → ПОЧЕМУ → ЧТО ДЕЛАТЬ.
+  // Раньше здесь склеивались title и sub через тире: получалось «53 товара» без
+  // места и без действия — прочитать можно, сделать нечего.
+  // Старые поля оставлены запасным вариантом: их отдают и другие источники
+  // алертов, у которых разбора на четыре части пока нет.
+  const top = alerts[0] || null;
+  const advice = top ? {
+    where: top.where || null,
+    what: top.what || top.title || '',
+    why: top.why || top.sub || '',
+    action: top.action || null,
+    // Адрес из алерта проверяем по доступам смотрящего: у менеджера часть
+    // инструментов скрыта, и переход в них молча возвращал на Главную —
+    // кнопка выглядела сломанной. Недоступен инструмент — уводим в его раздел.
+    to: resolveOwnerPath(user, top.to),
+  } : null;
 
   const kpis = [
     { label: tt('Прибыль'), val: t.gross_profit != null ? fmtMoney(t.gross_profit) : '—', d: delta(t.gross_profit, prev.gross_profit) },
@@ -339,7 +352,24 @@ export default function DashboardBento() {
           <div className="o-bt-label" style={{ color: 'rgba(255,255,255,.6)' }}>
             <Icon name="sparkles" size={13} /> Wave Intelligence {isOwner ? '· ' + tt('спросить') : ''}
           </div>
-          <div className="o-bt-ai-text">{aiText}</div>
+
+          {advice ? (
+            <div className="o-bt-ai-advice">
+              {advice.where && <div className="o-ai-where">{tt(advice.where)}</div>}
+              <div className="o-ai-what">{tt(advice.what)}</div>
+              {advice.why && <div className="o-ai-why">{tt(advice.why)}</div>}
+              {advice.action && advice.to && (
+                <button type="button" className="o-ai-do"
+                  onClick={(e) => { e.stopPropagation(); navigate(advice.to); }}>
+                  {tt(advice.action)} <span aria-hidden="true">→</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="o-bt-ai-text">
+              {tt('Всё в норме — тревожных сигналов нет. Спросите о бизнесе, отвечу по живым данным.')}
+            </div>
+          )}
         </Tile>
 
         <Tile className="c1 r2" i={2} style={{ alignItems: 'center', textAlign: 'center' }}>
@@ -360,7 +390,7 @@ export default function DashboardBento() {
             {sections.slice(0, 9).map((s) => (
               <motion.button key={s.id} title={tt(s.title)} style={{ background: gradCss(s.id) }}
                 whileHover={{ scale: 1.12, rotate: -3 }} whileTap={{ scale: 0.94 }}
-                onClick={() => navigate('/owner/' + s.id)}>
+                onClick={() => navigate(sectionEntryPath(s))}>
                 <Icon name={SECTION_ICON[s.id] || 'home'} size={15} />
               </motion.button>
             ))}
@@ -452,15 +482,23 @@ export default function DashboardBento() {
           <div className="o-bt-label"><Icon name="bell" size={12} /> {tt('Алерты')} {alerts.length > 0 && <span className="o-bt-cnt">{alerts.length}</span>}</div>
           <div style={{ marginTop: 4, overflow: 'hidden' }}>
             {alerts.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--text3)', padding: '10px 0' }}>✓ {tt('Всё спокойно')}</div>}
-            {alerts.slice(0, 4).map((a, i) => (
-              <div key={i} className="o-bt-alert">
-                <span className="d" style={{ background: ({ red: '#E5484D', yellow: '#D97706', blue: '#0A84FF', purple: '#BF5AF2' })[a.tone] || '#8E8E93' }} />
-                <div style={{ minWidth: 0 }}>
-                  <div className="t1">{a.title}</div>
-                  {a.sub && <div className="t2">{a.sub}</div>}
+            {/* Строка алерта — вход в проблему: раньше она выглядела кликабельной,
+                но была обычным блоком, и нажатие ничего не давало. */}
+            {alerts.slice(0, 4).map((a, i) => {
+              const to = resolveOwnerPath(user, a.to);
+              return (
+                <div key={i} className={'o-bt-alert' + (to ? ' is-link' : '')}
+                  role={to ? 'button' : undefined} tabIndex={to ? 0 : undefined}
+                  onClick={to ? () => navigate(to) : undefined}
+                  onKeyDown={to ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(to); } } : undefined}>
+                  <span className="d" style={{ background: ({ red: '#E5484D', yellow: '#D97706', blue: '#0A84FF', purple: '#BF5AF2' })[a.tone] || '#8E8E93' }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="t1">{a.title}</div>
+                    {a.sub && <div className="t2">{a.sub}</div>}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Tile>
 

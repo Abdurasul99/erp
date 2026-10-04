@@ -26,8 +26,12 @@
   --primary-dark: #005BB8;
   --primary-50: rgba(0, 113, 227, 0.1);
   --accent-grad: linear-gradient(92deg, #0A84FF, #5E5CE6);
-  --orange: #0071E3;
-  --orange-light: #6FA8F5;
+  /* --orange — это сигнал «внимание» (между зелёным и красным): им красятся
+     рост расходов, «ещё не вышли в плюс», средний ROI, предупреждения интеграций.
+     Значение было #0071E3 — синее, то есть буквально цвет --primary: 36 мест по
+     приложению показывали предупреждение как нейтральную справку. */
+  --orange: #D97706;
+  --orange-light: #F59E0B;
   --green: #1D7A35;
   --red: #E5484D;
   --yellow: #B45309;
@@ -211,7 +215,8 @@
   flex-wrap: nowrap;
   padding: 8px 22px;
 }
-.owner-shell .o-brand-top, .owner-shell .o-user-wrap { flex: 0 0 auto; }
+/* Профиль в админке лежит в топбаре без обёртки .o-user-wrap — он тоже не сжимается. */
+.owner-shell .o-brand-top, .owner-shell .o-user-wrap, .owner-shell .o-topbar > .o-user { flex: 0 0 auto; }
 /* Средняя зона: растягивается, контролы внутри переносятся по строкам. */
 .owner-shell .o-topbar-mid {
   flex: 1 1 auto; min-width: 0;
@@ -348,6 +353,7 @@
 
 .owner-shell .o-card,
 .owner-shell .card {
+  min-width: 0;
   background: var(--surface);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -367,6 +373,7 @@
   margin-left: auto; display: flex; gap: 6px;
   flex-wrap: wrap; justify-content: flex-end; min-width: 0;
 }
+.owner-shell .card-header-actions > div { flex-wrap: wrap; max-width: 100%; }
 
 .owner-shell .o-pageh {
   display: flex; align-items: center; justify-content: space-between;
@@ -376,9 +383,10 @@
 .owner-shell .o-pageh-sub, .owner-shell .page-sub { font-size: 13px; color: var(--text2); margin-top: 4px; font-weight: 400; }
 .owner-shell .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
 
-.owner-shell .o-grid-2, .owner-shell .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.owner-shell .o-grid-3, .owner-shell .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
-.owner-shell .o-grid-4, .owner-shell .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+.owner-shell .o-grid-2, .owner-shell .grid-2 { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.owner-shell .o-grid-3, .owner-shell .grid-3 { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.owner-shell .o-grid-4, .owner-shell .grid-4 { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+.owner-shell :is(.o-grid-2,.o-grid-3,.o-grid-4,.grid-2,.grid-3,.grid-4) > * { min-width: 0; }
 
 .owner-shell .o-bars, .owner-shell .bars { display: flex; align-items: flex-end; gap: 6px; height: 130px; padding: 8px 0; }
 .owner-shell .o-bar, .owner-shell .bars .bar { flex: 1; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 4px; }
@@ -562,20 +570,23 @@
   .owner-shell .o-link span:not(.o-link-mono) { display: none; }
   .owner-shell .o-brand-name, .owner-shell .o-brand-sub { display: none; }
   .owner-shell .o-link { justify-content: center; padding: 10px; }
-  .owner-shell .o-grid-4, .owner-shell .grid-4 { grid-template-columns: repeat(2, 1fr); }
-  .owner-shell .o-grid-3, .owner-shell .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .owner-shell .o-grid-4, .owner-shell .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .owner-shell .o-grid-3, .owner-shell .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* Поиск — только иконка (текст и kbd прячем), экономим место в топбаре. */
   .owner-shell .o-search-btn span, .owner-shell .o-search-btn kbd { display: none; }
   .owner-shell .o-search-btn { padding: 8px; }
 }
 @media (max-width: 700px) {
   .owner-shell .o-grid-2, .owner-shell .o-grid-3, .owner-shell .o-grid-4,
-  .owner-shell .grid-2, .owner-shell .grid-3, .owner-shell .grid-4 { grid-template-columns: 1fr; }
+  .owner-shell .grid-2, .owner-shell .grid-3, .owner-shell .grid-4 { grid-template-columns: minmax(0, 1fr); }
   .owner-shell .o-content { padding: 14px; }
   /* Профиль сжимается до аватара (имя/роль/стрелку прячем), но САМ профиль
      ОСТАЁТСЯ наверху справа на любом экране (требование клиента). */
   .owner-shell .o-user-text { display: none; }
   .owner-shell .o-user > span { display: none; }
+  /* Админка: метка охвата «Все компании» — подпись, а не контрол. На телефоне
+     она вытесняла заголовок раздела и налезала на профиль. */
+  .owner-shell .o-admin-scope { display: none; }
 }
 
 /* ═══ Wave Bento shell: док, стеклянный топбар, баннеры отделов ═══════════
@@ -650,11 +661,27 @@ body:has(.wow-imp-bar) .owner-shell .dock-wrap { bottom: 56px; }
   padding: 5px 10px; border-radius: 8px; pointer-events: none; z-index: 5;
 }
 .owner-shell .dock-label {
-  font-size: 9.5px; font-weight: 650; color: var(--text2);
-  max-width: 72px; text-align: center; line-height: 1.05;
-  margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 10.5px; font-weight: 700; color: var(--text2);
+  max-width: 96px; text-align: center; line-height: 1.1;
+  margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   letter-spacing: -0.02em;
 }
+/* Подписи дока 9,5px читаются на мониторе, но не с телефона в руках. На узком
+   экране поднимаем до 11px. Правило стоит ПОСЛЕ базового — media-блок выше по
+   файлу проигрывал бы ему при равной специфичности. */
+@media (max-width: 700px) {
+  .owner-shell .dock-label { font-size: 11px; max-width: 96px; line-height: 1.15; }
+}
+/* Точка безубыточности в админке: слева ввод, справа результат и график.
+   На узком экране — одна колонка. */
+.owner-shell .bep-cols {
+  display: grid; gap: 16px; align-items: start; min-width: 0;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+}
+@media (max-width: 1100px) {
+  .owner-shell .bep-cols { grid-template-columns: 1fr; }
+}
+
 .owner-shell .dock-sep { width: 1px; align-self: stretch; margin: 6px 2px; background: rgba(20, 20, 40, 0.12); flex-shrink: 0; }
 
 /* ── Баннер отдела (вместо плоского заголовка) ── */
@@ -835,6 +862,27 @@ body:has(.wow-imp-bar) .owner-shell .dock-wrap { bottom: 56px; }
   color: #fff; border: none;
 }
 .owner-shell .o-bt-ai-text { font-size: 14px; line-height: 1.55; margin-top: 9px; font-weight: 450; }
+
+/* Подсказка ИИ читается по одной логике: ГДЕ → ЧТО → ПОЧЕМУ → ЧТО ДЕЛАТЬ.
+   Разная типографика на каждую часть, чтобы взгляд шёл сверху вниз сам и не
+   приходилось вычитывать смысл из склеенной через тире строки. */
+.owner-shell .o-bt-ai-advice { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; position: relative; }
+.owner-shell .o-ai-where {
+  font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+.owner-shell .o-ai-what { font-size: 15.5px; line-height: 1.4; font-weight: 650; color: #fff; }
+.owner-shell .o-ai-why { font-size: 13px; line-height: 1.5; font-weight: 450; color: rgba(255, 255, 255, 0.68); }
+.owner-shell .o-ai-do {
+  align-self: flex-start; margin-top: 3px;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px; border-radius: 11px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff; font-family: inherit; font-size: 12.5px; font-weight: 650;
+  transition: background .15s var(--ease), transform .15s var(--ease);
+}
+.owner-shell .o-ai-do:hover { background: rgba(255, 255, 255, 0.27); transform: translateX(2px); }
 .owner-shell .o-bt-ai-orb {
   position: absolute; right: -30px; top: -30px; width: 150px; height: 150px; border-radius: 50%;
   background: radial-gradient(circle, rgba(94, 92, 230, .5), transparent 70%);
@@ -861,6 +909,10 @@ body:has(.wow-imp-bar) .owner-shell .dock-wrap { bottom: 56px; }
 .owner-shell .o-bt-alert .d { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 .owner-shell .o-bt-alert .t1 { font-size: 12.5px; font-weight: 600; }
 .owner-shell .o-bt-alert .t2 { font-size: 11px; color: var(--text3); margin-top: 1px; }
+/* Кликабельная строка алерта: курсор и подсветка говорят, что это вход в проблему. */
+.owner-shell .o-bt-alert.is-link { cursor: pointer; border-radius: 8px; padding-left: 6px; padding-right: 6px; margin: 0 -6px; transition: background .15s var(--ease); }
+.owner-shell .o-bt-alert.is-link:hover { background: rgba(20, 20, 40, .045); }
+.owner-shell .o-bt-alert.is-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .owner-shell .o-bt-rank { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(20, 20, 40, .05); font-size: 12.5px; }
 .owner-shell .o-bt-rank:last-child { border-bottom: none; }
 .owner-shell .o-bt-rank .n { width: 18px; font-size: 11px; font-weight: 700; color: var(--text3); flex-shrink: 0; }
@@ -1364,4 +1416,3 @@ body:has(.wow-imp-bar) .owner-shell .dock-wrap { bottom: 56px; }
   .owner-shell .aiw-chat { width: 100%; flex: 1 1 50%; border-right: none; border-bottom: 1px solid var(--border); }
   .owner-shell .aiw-canvas { flex: 1 1 50%; }
 }
-

@@ -31,6 +31,16 @@ api.interceptors.response.use(
     // сессии (вход с другого устройства / токен старого формата): это осознанное
     // серверное решение, не сетевой сбой — завершаем сессию и объясняем причину.
     const code = err.response?.data?.code;
+    if (err.response?.status === 403 && code === 'COMPANY_DISABLED') {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      localStorage.removeItem('seller_branch_id');
+      localStorage.removeItem('seller_branch_name');
+      localStorage.removeItem('seller_branch_picked_date');
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login?reason=company-disabled';
+      }
+    }
     if (err.response?.status === 401 && (code === 'SESSION_REVOKED' || code === 'SESSION_STALE')) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');

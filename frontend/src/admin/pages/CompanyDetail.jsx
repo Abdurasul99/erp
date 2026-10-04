@@ -3,6 +3,16 @@ import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { AuthContext } from '../../App.jsx';
 import { Tile, Card, Badge, PageHeader, Skeleton, EmptyState, fmtMoney, fmtNum } from '../../owner/ui.jsx';
+import CompanyAccessControl from '../CompanyAccessControl.jsx';
+import { ROLE_LABELS as EVENTS_ROLE_LABELS } from '../../events/access.js';
+
+// «Войти как» — роли зависят от продукта компании. В «Мероприятия» только
+// управленческие: у админа нет своей бригады, и вход исполнителем показал бы
+// пустоту. Сервер (products.IMPERSONATABLE_ROLES) проверяет то же самое.
+const IMP_ROLES = {
+  wave: ['founder', 'director', 'manager', 'cashier', 'warehouse', 'seller'],
+  events: ['founder', 'project_manager', 'coordinator'],
+};
 
 const ROLE_LABEL = {
   admin:     'Администратор',
@@ -25,6 +35,7 @@ export default function CompanyDetail() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [statusBusy, setStatusBusy] = useState(false);
 
   useEffect(() => {
     setLoading(true); setError(null);
@@ -44,17 +55,52 @@ export default function CompanyDetail() {
   const users = data?.users || [];
   const usage = data?.usage || {};
 
-  const isCoLevel = impRole === 'founder' || impRole === 'director';
+  const product = company?.product === 'events' ? 'events' : 'wave';
+  const impRoles = IMP_ROLES[product];
+  // Роль, которую форма показывает и отправляет, — всегда из списка продукта:
+  // иначе после выбора «кассира» в соседней компании Wave на сервер ушла бы роль,
+  // которой в «Мероприятиях» нет.
+  const effectiveRole = impRoles.includes(impRole) ? impRole : 'founder';
+  // Филиал: в Wave учредитель и директор работают без него, остальным обязателен.
+  // В «Мероприятиях» учредитель и руководитель проектов — без филиала, а
+  // координатор может быть и с филиалом, и без (тогда видит всю компанию).
+  const branchLocked = product === 'events'
+    ? (effectiveRole === 'founder' || effectiveRole === 'project_manager')
+    : (effectiveRole === 'founder' || effectiveRole === 'director');
+  const branchRequired = product === 'wave' && !branchLocked;
+  const isCoLevel = branchLocked;
+  const setCompanyEnabled = async (enabled) => {
+    if (!enabled && !window.confirm(
+      `Отключить «${company.name}»? Все текущие сессии завершатся, и пользователи не смогут войти.`
+    )) return;
+
+    setStatusBusy(true);
+    try {
+      const { data: result } = await api.put(`/companies/${company.id}/status`, { enabled });
+      setData(current => ({
+        ...current,
+        company: { ...current.company, is_enabled: result.is_enabled },
+      }));
+    } catch (e) {
+      window.alert(e.response?.data?.error || e.message);
+    } finally {
+      setStatusBusy(false);
+    }
+  };
+
   const enterCompany = async () => {
-    if (!isCoLevel && !impBranch) { window.alert('Выберите филиал для этой роли'); return; }
+    if (branchRequired && !impBranch) { window.alert('Выберите филиал для этой роли'); return; }
     setImpBusy(true);
     try {
       const { data: r } = await api.post('/admin/impersonate', {
-        company_id: company.id, role: impRole, branch_id: isCoLevel ? null : (impBranch || null),
+        company_id: company.id, role: effectiveRole, branch_id: branchLocked ? null : (impBranch || null),
       });
       impersonate(r.user, r.token);
       const role = r.user.role;
-      if (role === 'seller') {
+      // Продукт — раньше роли: учредитель есть в обоих продуктах.
+      if (r.user.product === 'events') {
+        navigate('/events');
+      } else if (role === 'seller') {
         localStorage.setItem('seller_branch_id', String(r.user.branch_id));
         localStorage.setItem('seller_branch_name', r.user.branch_name || '');
         const d = new Date();
@@ -104,6 +150,14 @@ export default function CompanyDetail() {
             sub={`ID #${company.id} · создана ${new Date(company.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}`}
           />
 
+          <Card icon="🔐" title="Доступ компании" style={{ marginBottom: 16 }}>
+            <CompanyAccessControl
+              enabled={company.is_enabled !== false}
+              busy={statusBusy}
+              onToggle={setCompanyEnabled}
+            />
+          </Card>
+
           <div className="grid-4" style={{ marginBottom: 16 }}>
             <Tile icon="🏭" label="Филиалов"      value={fmtNum(usage.branches_count)} sub="в компании"   color="#5B4FE8" />
             <Tile icon="👥" label="Сотрудников"   value={fmtNum(usage.users_count)}    sub="всего"        color="#0EA5E9" />
@@ -150,7 +204,7 @@ export default function CompanyDetail() {
                           <div className="list-item-sub">@{u.username}</div>
                         </div>
                         <div style={{ textAlign: 'right' }}>
-                          <Badge tone={ROLE_TONE[u.role] || 'gray'}>{ROLE_LABEL[u.role] || u.role}</Badge>
+                          <Badge tone={ROLE_TONE[u.role] || 'gray'}>{ROLE_LABEL[u.role] || EVENTS_ROLE_LABELS[u.role] || u.role}</Badge>
                           <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 4 }}>
                             {days == null ? 'не заходил' : days === 0 ? 'сегодня' : `${days} дн назад`}
                           </div>
@@ -172,19 +226,14 @@ export default function CompanyDetail() {
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div style={{ minWidth: 180 }}>
                 <label className="label">Роль</label>
-                <select className="input" value={impRole} onChange={e => setImpRole(e.target.value)}>
-                  <option value="founder">Учредитель</option>
-                  <option value="director">Директор</option>
-                  <option value="manager">Менеджер</option>
-                  <option value="cashier">Кассир</option>
-                  <option value="warehouse">Складовщик</option>
-                  <option value="seller">Продавец</option>
+                <select className="input" value={effectiveRole} onChange={e => setImpRole(e.target.value)}>
+                  {impRoles.map(r => <option key={r} value={r}>{ROLE_LABEL[r] || EVENTS_ROLE_LABELS[r] || r}</option>)}
                 </select>
               </div>
               <div style={{ minWidth: 200 }}>
-                <label className="label">Филиал{isCoLevel ? ' (все)' : ' *'}</label>
-                <select className="input" value={impBranch} onChange={e => setImpBranch(e.target.value)} disabled={isCoLevel}>
-                  <option value="">{isCoLevel ? 'Все филиалы' : '— выберите —'}</option>
+                <label className="label">Филиал{branchLocked ? ' (все)' : (branchRequired ? ' *' : '')}</label>
+                <select className="input" value={branchLocked ? '' : impBranch} onChange={e => setImpBranch(e.target.value)} disabled={branchLocked}>
+                  <option value="">{branchLocked || !branchRequired ? 'Все филиалы' : '— выберите —'}</option>
                   {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
               </div>

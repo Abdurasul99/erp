@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api.js';
 import { Card, Tile, Badge, PageHeader, Pills, fmtNum } from '../ui.jsx';
 import { BranchScope } from '../OwnerShell.jsx';
+import { AuthContext } from '../../App.jsx';
+import { resolveOwnerPath } from '../modules.js';
 import { useTt } from '../tt.js';
 
 const SEVERITY_META = {
@@ -29,6 +31,7 @@ const TABS = [
 export default function RiskControlTool() {
   const { tt } = useTt();
   const { branchId } = useContext(BranchScope);
+  const { user } = useContext(AuthContext);
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -88,9 +91,12 @@ export default function RiskControlTool() {
               ) : filtered.map((a, i) => {
                 const sev = SEVERITY_META[a.severity];
                 const cat = CATEGORY_META[a.category] || { icon: '📌', label: a.category };
+                // Недоступный роли инструмент ToolRouter молча заменяет на Главную —
+                // ведём в раздел, а если и он закрыт, кнопку «Решить» не рисуем вовсе.
+                const to = resolveOwnerPath(user, a.action_url);
                 return (
-                  <div key={i} className="list-item" style={{ alignItems: 'flex-start', cursor: a.action_url ? 'pointer' : 'default' }}
-                    onClick={() => a.action_url && navigate(a.action_url)}>
+                  <div key={i} className="list-item" style={{ alignItems: 'flex-start', cursor: to ? 'pointer' : 'default' }}
+                    onClick={() => to && navigate(to)}>
                     <div style={{ width: 5, alignSelf: 'stretch', minHeight: 36, borderRadius: 3, background: sev.color }} />
                     <div style={{ width: 36, height: 36, borderRadius: 9, background: sev.color + '18', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{cat.icon}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -101,8 +107,8 @@ export default function RiskControlTool() {
                       </div>
                       <div className="list-item-sub" style={{ marginTop: 3 }}>{a.detail}</div>
                     </div>
-                    {a.action_url && (
-                      <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(a.action_url); }}>
+                    {to && (
+                      <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); navigate(to); }}>
                         {tt('Решить →')}
                       </button>
                     )}

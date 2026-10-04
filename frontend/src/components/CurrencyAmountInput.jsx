@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from '../useTranslation.js';
-import { normalizeDecimal } from '../utils/decimalInput.js';
+import { parseDecimal } from '../utils/decimalInput.js';
 
 // ── Деньги вводим ТЕКСТОМ, а не <input type="number"> ────────────────────────
 // У type="number" Chrome на промежуточно-невалидном вводе («1500,», «1 500»,
@@ -14,15 +14,9 @@ import { normalizeDecimal } from '../utils/decimalInput.js';
 const cleanMoney = (s) => String(s ?? '')
   .replace(/[^\d.,\s\u00A0]/g, '')
   .replace(/[\s\u00A0]+/g, ' ');
-// Строка → число через общий разборщик: два и больше разделителя — это разряды
-// тысяч. Замена одной запятой на точку давала parseFloat('1.500.000') = 1.5,
-// то есть цена в полтора миллиона уходила на сервер как полтора сума.
-const toNum = (s) => {
-  const raw = normalizeDecimal(s);
-  if (!raw || raw === '.') return NaN;
-  const n = parseFloat(raw);
-  return Number.isFinite(n) ? n : NaN;
-};
+// Общий разборщик сохраняет дробную часть локализованных сумм и отклоняет
+// неверную группировку вместо отправки частично прочитанной суммы на сервер.
+const toNum = parseDecimal;
 // Нормализация на blur: то же число без хвостовых разделителей и пробелов.
 const normMoney = (s) => {
   const n = toNum(s);

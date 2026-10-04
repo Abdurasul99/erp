@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from './icons.jsx';
 import AiChartBlock, { RichText } from './AiChartBlock.jsx';
 import { useTt } from './tt.js';
+import { AuthContext } from '../App.jsx';
+import { resolveOwnerPath } from './modules.js';
 
 // AI-воркспейс: чат слева + канвас справа, где перо «рисует» макет, пока ИИ
 // думает, а затем экран материализуется РЕАЛЬНЫМИ данными компании (тот же
@@ -123,6 +125,14 @@ const TONE_COLOR = { good: '#16A34A', bad: '#DC2626', neutral: 'var(--text2)' };
 function BusinessPanel({ canvas }) {
   const { tt } = useTt();
   const navigate = useNavigate();
+  const { user } = useContext(AuthContext);
+  // Каталог маршрутов на сервере не знает ни роли смотрящего, ни отключённых
+  // компанией инструментов. Недоступный адрес ToolRouter молча заменял на
+  // Главную — со стороны «кнопка просто обновляет страницу». Ведём в раздел,
+  // а если закрыт и он — действие не показываем (и блок целиком, если пуст).
+  const actions = (canvas.actions || [])
+    .map(a => ({ ...a, to: resolveOwnerPath(user, a.route) }))
+    .filter(a => a.to);
   const pop = {
     initial: { opacity: 0, y: 10 },
     animate: { opacity: 1, y: 0 },
@@ -156,11 +166,11 @@ function BusinessPanel({ canvas }) {
         </motion.div>
       )}
 
-      {canvas.actions?.length > 0 && (
+      {actions.length > 0 && (
         <motion.div className="aiw-panel-actions" {...pop} transition={{ ...pop.transition, delay: 0.14 }}>
           <div className="aiw-panel-actions-t">{tt('Что сделать')}</div>
-          {canvas.actions.map((a, i) => (
-            <button key={i} className="aiw-action" onClick={() => navigate(a.route)}>
+          {actions.map((a, i) => (
+            <button key={i} className="aiw-action" onClick={() => navigate(a.to)}>
               <div style={{ minWidth: 0 }}>
                 <div className="aiw-action-label">{a.label}</div>
                 {a.why && <div className="aiw-action-why">{a.why}</div>}

@@ -273,7 +273,7 @@ export function Progress({ value, max = 100, color = 'var(--primary)' }) {
 // а «публикует» {title, sub, actions} в топбар шелла через PageHeaderContext.
 // ВНУТРИ окна инструмента (InsideSheetContext) — наоборот: топбар не трогаем
 // (шапка окна уже показывает название), а actions рендерим инлайн в теле окна.
-export function PageHeader({ title, sub, actions }) {
+export function PageHeader({ title, sub, actions, actionsKey }) {
   const setHeader = React.useContext(PageHeaderContext);
   const insideSheet = React.useContext(InsideSheetContext);
   React.useEffect(() => {
@@ -281,8 +281,10 @@ export function PageHeader({ title, sub, actions }) {
     // Эмодзи из заголовков вычищаются здесь — единая точка для всех инструментов.
     setHeader({ title: stripEmoji(title), sub: stripEmoji(sub), actions });
     return () => setHeader({ title: '', sub: null, actions: null });
-    // actions намеренно не в deps (JSX — новый объект каждый рендер → цикл); ок для статичных actions
-  }, [title, sub, setHeader, insideSheet]);
+    // actions намеренно не в deps (JSX — новый объект каждый рендер → цикл); ок для статичных actions.
+    // Если actions ЖИВЫЕ (переключатель периода, бейдж по загруженным данным) — страница
+    // передаёт actionsKey с их состоянием: топбар получит свежую версию, цикла не будет.
+  }, [title, sub, setHeader, insideSheet, actionsKey]);
   if (insideSheet && actions) {
     return <div className="o-sheet-actions">{actions}</div>;
   }

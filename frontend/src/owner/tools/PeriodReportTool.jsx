@@ -182,7 +182,7 @@ export default function PeriodReportTool() {
                       <td style={{ fontWeight: 700 }}>
                         {tt(m.label)}
                         {m.direction === 'down_is_good' && (
-                          <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 6 }}>{tt('↓ лучше')}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text3)', marginLeft: 6 }}>{tt('меньше — лучше')}</span>
                         )}
                       </td>
                       <td className="mono" style={{ textAlign: 'right', color: 'var(--text2)' }}>{fmtMetric(m.previous, m.unit)}</td>

@@ -3,6 +3,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 import api from '../api.js';
 import { useTt } from './tt.js';
 import { useNavigate } from 'react-router-dom';
+import { useContext } from 'react';
+import { AuthContext } from '../App.jsx';
+import { resolveOwnerPath } from './modules.js';
 
 // AI-диагност «Где у меня проблемы?» — фиксированная логика ответа:
 // Где → Кто → Что → Почему → Как решить. Факты приходят с сервера детерминированно
@@ -27,6 +30,10 @@ function sevMeta(sev) {
 export default function AiDiagnose() {
   const { tt, lang } = useTt();
   const navigate = useNavigate();
+  const { user } = useContext(AuthContext);
+  // Инструмент недоступен смотрящему — уводим в его раздел; закрыт и раздел —
+  // кнопку не рисуем вовсе (лучше без кнопки, чем кнопка «в никуда»).
+  const openPath = (path) => resolveOwnerPath(user, path);
   const [state, setState] = useState('idle'); // idle | loading | done | error
   const [problems, setProblems] = useState([]);
   const [summary, setSummary] = useState('');
@@ -110,8 +117,11 @@ export default function AiDiagnose() {
                     <div className="aidiag-card-top">
                       <span className="aidiag-num">{i + 1}</span>
                       <span className="aidiag-sev" style={{ background: sv.bg, color: sv.color }}>{sv.label}</span>
-                      {p.action && (
-                        <button className="aidiag-open" onClick={() => navigate(p.action)}>{tt('Открыть')} →</button>
+                      {/* Маршрут проверяем по доступам: инструмент, скрытый ролью или
+                          отключённый компанией, ToolRouter молча меняет на Главную —
+                          со стороны это «кнопка просто обновляет страницу». */}
+                      {openPath(p.action) && (
+                        <button className="aidiag-open" onClick={() => navigate(openPath(p.action))}>{tt('Открыть')} →</button>
                       )}
                     </div>
                     <div className="aidiag-steps">

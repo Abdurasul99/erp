@@ -2,6 +2,7 @@ import React, { useContext, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { AuthContext } from '../App.jsx';
 import { Icon, SECTION_ICON, gradCss } from './icons.jsx';
+import { sectionEntryPath } from './modules.js';
 
 // Launchpad всех инструментов (стиль Windows 11 Start): поиск, закреплённые,
 // категории/список. Открывается радужной кнопкой в доке.
@@ -102,7 +103,7 @@ export default function StartMenu({ sections, onClose, navigate, tt }) {
                   {deptSections.map((s, ci) => (
                     <motion.button
                       type="button" key={s.id} className="ws-cat"
-                      onClick={() => { onClose(); navigate('/owner/' + s.id); }}
+                      onClick={() => { onClose(); navigate(sectionEntryPath(s)); }}
                       initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
                       transition={{ duration: 0.3, ease: EASE, delay: 0.1 + ci * 0.03 }}
                       whileHover={{ y: -3 }} whileTap={{ scale: 0.97 }}

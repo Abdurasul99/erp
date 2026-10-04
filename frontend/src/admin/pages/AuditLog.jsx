@@ -71,7 +71,7 @@ export default function AuditLog() {
   return (
     <>
       <PageHeader
-        title="📋 Audit Log"
+        title="Журнал действий"
         sub={`Все важные действия в системе · ${fmtNum(logs.length)} записей за последнее время`}
       />
 

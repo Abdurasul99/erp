@@ -113,7 +113,7 @@ export default function CurrencyOpsTool() {
             )}
           </Card>
 
-          <AiAnalyze topic="currency-ops" branchId={branchId} />
+          <AiAnalyze topic="currency-ops" branchId={params.branch_id} />
         </>
       )}
     </>

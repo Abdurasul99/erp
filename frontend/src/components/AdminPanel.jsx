@@ -5,12 +5,20 @@ import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
 import { SECTIONS } from '../owner/modules.js';
+// Роли «Мероприятий» — из их собственного списка: админка ведёт учётки обоих
+// продуктов и не должна держать ещё одну копию, которая однажды разойдётся.
+import { EVENTS_ROLES, ROLE_LABELS as EVENTS_ROLE_LABELS } from '../events/access.js';
 
 // Все инструменты (для матрицы доступов): id → используется в users.blocked_tools.
 const ALL_TOOL_IDS = SECTIONS.flatMap(s => (s.tools || []).map(t => t.id));
 const PERMS_SECTIONS = SECTIONS.filter(s => s.tools && s.tools.length);
 
 const ROLE_KEYS = { founder: 'founderRole', director: 'genDirRole', manager: 'managerRole', cashier: 'cashierRole', warehouse: 'warehouseRole', seller: 'sellerRole', admin: 'adminRole' };
+const WAVE_ROLE_LIST = ['founder', 'director', 'manager', 'cashier', 'warehouse', 'seller'];
+// Подпись роли любого продукта. Без неё роли мероприятий в выпадающем списке
+// были бы пустыми строками: t() по несуществующему ключу ничего не находит.
+const roleLabel = (t, role) => (ROLE_KEYS[role] ? t(ROLE_KEYS[role]) : EVENTS_ROLE_LABELS[role]) || role;
+const rolesForProduct = (product) => (product === 'events' ? EVENTS_ROLES : WAVE_ROLE_LIST);
 const roleBadge = { founder: 'badge-blue', director: 'badge-blue', manager: 'badge-blue', cashier: 'badge-green', warehouse: 'badge-yellow', seller: 'badge-red' };
 const roleColor = { founder: '#7c3aed', director: '#4338ca', manager: '#4338ca', cashier: '#16a34a', warehouse: '#d97706', seller: '#dc2626' };
 const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username;
@@ -73,6 +81,31 @@ export default function AdminPanel() {
   const getCompanyGenDir    = (companyId) => allUsers.find(u => u.company_id === companyId && u.role === 'director');
   const unassignedUsers = allUsers.filter(u => !u.company_id && u.role !== 'admin');
 
+  // Роли в форме учётки — по продукту выбранной компании. ОДНА функция и для
+  // отрисовки, и для отправки: иначе на экране показана одна роль, а на сервер
+  // уходит другая (при смене компании поле роли в данных формы не менялось).
+  const productOf = (cid) => companies.find(c => c.id === Number(cid))?.product || 'wave';
+  const roleOptions = (data) => {
+    // Оператора платформы форма не трогает: admin нет в списках ролей
+    // продуктов, и без этой ветки правка админа тихо понизила бы его до кассира.
+    if (data.role === 'admin') {
+      return { roles: ['admin'], current: 'admin', blockFounder: false, blockGenDir: false, existingFounder: null, existingGenDir: null };
+    }
+    const cid = data.company_id;
+    const existingFounder = cid && getCompanyFounder(cid);
+    const existingGenDir  = cid && getCompanyGenDir(cid);
+    const blockFounder = !!(existingFounder && existingFounder.id !== data.id);
+    const blockGenDir  = !!(existingGenDir  && existingGenDir.id  !== data.id);
+    const product = productOf(cid);
+    const roles = rolesForProduct(product).filter(r => !(r === 'founder' && blockFounder) && !(r === 'director' && blockGenDir));
+    // Занятая руководящая роль → ближайшая свободная руководящая (как раньше:
+    // учредитель занят — предлагаем менеджера); иначе — рядовая роль продукта.
+    const leading = data.role === 'founder' || data.role === 'director';
+    const fallback = product === 'events' ? (leading ? 'project_manager' : 'coordinator') : (leading ? 'manager' : 'cashier');
+    const current = data.role && roles.includes(data.role) ? data.role : fallback;
+    return { roles, current, blockFounder, blockGenDir, existingFounder, existingGenDir };
+  };
+
   const stats = [
     { label: t('totalCompanies'), value: companies.length, icon: 'store', color: '#4338ca' },
     { label: t('totalBranches'),  value: allBranches.length, icon: 'box', color: '#FF6B2B' },
@@ -84,7 +117,7 @@ export default function AdminPanel() {
   const lc = search.toLowerCase();
   const matchCompany = (c) => !search || c.name.toLowerCase().includes(lc);
   const matchBranch = (b) => !search || b.name.toLowerCase().includes(lc);
-  const matchUser = (u) => !search || fullName(u).toLowerCase().includes(lc) || u.username.toLowerCase().includes(lc) || (t(ROLE_KEYS[u.role])||'').toLowerCase().includes(lc);
+  const matchUser = (u) => !search || fullName(u).toLowerCase().includes(lc) || u.username.toLowerCase().includes(lc) || (roleLabel(t, u.role)||'').toLowerCase().includes(lc);
 
   // ─── CRUD ─────────────────────────────────────────────────────────────────────
   const openModal = (type, data = {}) => { setActiveModal(type); setModalData(data); clearMsg(); };
@@ -100,7 +133,7 @@ export default function AdminPanel() {
         if (!modalData.username || modalData.username.trim().length < 3) { setMsg('error', t('loginMin') || 'Логин минимум 3 символа'); return; }
         const pw = modalData.password || '';
         if (pw.length < 8 || !/[a-zA-Zа-яА-Я]/.test(pw) || !/[0-9]/.test(pw)) { setMsg('error', t('passwordRule') || 'Пароль: минимум 8 символов, буква и цифра'); return; }
-        await api.post('/users', modalData);
+        await api.post('/users', { ...modalData, role: roleOptions(modalData).current });
       }
       setMsg('success', t('success'));
       closeModal();
@@ -115,7 +148,7 @@ export default function AdminPanel() {
       } else if (activeModal === 'editBranch') {
         await api.put(`/branches/${modalData.id}`, modalData);
       } else if (activeModal === 'editUser') {
-        await api.put(`/users/${modalData.id}`, modalData);
+        await api.put(`/users/${modalData.id}`, { ...modalData, role: roleOptions(modalData).current });
       }
       setMsg('success', t('success'));
       closeModal();
@@ -128,6 +161,32 @@ export default function AdminPanel() {
       await api.put(`/users/${modalData.id}/permissions`, {
         blocked_tools: Array.isArray(modalData.blocked_tools) ? modalData.blocked_tools : [],
         ai_enabled: modalData.ai_enabled !== false,
+      });
+      setMsg('success', t('success'));
+      closeModal();
+      loadAll();
+    } catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
+  };
+
+  // Панель компании: какие инструменты вообще есть у клиента. Раньше это мог
+  // только учредитель клиента из своего кабинета — оператор платформы был
+  // отрезан своей же границей данных (/api/company/... вне его allowlist).
+  const openCompanyPanel = async (company) => {
+    setActiveModal('companyPanel');
+    setModalData({ id: company.id, name: company.name, disabled_tools: [], loading: true });
+    try {
+      const { data } = await api.get(`/companies/${company.id}/tool-settings`);
+      setModalData({ id: company.id, name: company.name, disabled_tools: data.disabled_tools || [], loading: false });
+    } catch (e) {
+      setMsg('error', e.response?.data?.error || t('error'));
+      setModalData(d => ({ ...d, loading: false }));
+    }
+  };
+
+  const handleCompanyPanel = async () => {
+    try {
+      await api.put(`/companies/${modalData.id}/tool-settings`, {
+        disabled_tools: Array.isArray(modalData.disabled_tools) ? modalData.disabled_tools : [],
       });
       setMsg('success', t('success'));
       closeModal();
@@ -183,7 +242,7 @@ export default function AdminPanel() {
             {u.is_blocked && <span style={{ fontSize: '10px', background: 'rgba(239,68,68,.1)', color: '#dc2626', padding: '1px 5px', borderRadius: '6px', fontWeight: 700, flexShrink: 0 }}>🔒</span>}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px', flexWrap: 'wrap' }}>
-            <span className={`badge ${roleBadge[u.role] || 'badge-blue'}`} style={{ fontSize: '10px', padding: '1px 7px' }}>{t(ROLE_KEYS[u.role]) || u.role}</span>
+            <span className={`badge ${roleBadge[u.role] || 'badge-blue'}`} style={{ fontSize: '10px', padding: '1px 7px' }}>{roleLabel(t, u.role)}</span>
             {u.created_by_name && <CreatorTag name={u.created_by_name} role={u.created_by_role} />}
             {(() => {
               const ll = formatLastLogin(u.last_login_at, t);
@@ -274,6 +333,15 @@ export default function AdminPanel() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 900, fontSize: '16px', color: '#1A1B2E', display: 'flex', alignItems: 'center', gap: '8px' }}>
               {company.name}
+              {/* Продукт виден сразу: у компании мероприятий другие роли и
+                  другой интерфейс — админ не должен путать их с магазинами. */}
+              <span style={{
+                fontSize: '11px', fontWeight: 800, padding: '2px 8px', borderRadius: '999px',
+                background: company.product === 'events' ? 'rgba(30,95,191,.12)' : 'rgba(67,56,202,.08)',
+                color: company.product === 'events' ? '#1E5FBF' : 'var(--primary)',
+              }}>
+                {company.product === 'events' ? t('productEvents') : t('productWave')}
+              </span>
               {company.created_by_name && <CreatorTag name={company.created_by_name} role="admin" />}
             </div>
             <div style={{ fontSize: '12px', color: '#6B6F8A', marginTop: '1px' }}>
@@ -292,11 +360,23 @@ export default function AdminPanel() {
             <button className="btn btn-sm" style={{ padding: '5px 10px', fontSize: '11px', background: 'rgba(67,56,202,.1)', border: 'none', color: 'var(--primary)', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Nunito', sans-serif", fontWeight: 700 }}
               onClick={() => {
                 const hasFounder = !!getCompanyFounder(company.id);
-                const defaultRole = !hasFounder ? 'founder' : 'manager';
+                const defaultRole = !hasFounder ? 'founder' : (company.product === 'events' ? 'project_manager' : 'manager');
                 openModal('user', { company_id: company.id, role: defaultRole });
               }}>
               + {t('addUser')}
             </button>
+            {/* Панель компании: какие инструменты видит клиент. Оператору это
+                нужно для тарифов и включения купленного — раньше могло только
+                руководство клиента из своего кабинета. */}
+            {/* Панель включает и выключает экраны Wave — у компании мероприятий
+                их нет, и настройки здесь ни на что бы не повлияли. */}
+            {company.product !== 'events' && (
+              <button className="btn btn-sm" title="Инструменты компании"
+                style={{ padding: '5px 10px', fontSize: '11px', background: 'rgba(22,163,74,.1)', border: 'none', color: '#16a34a', borderRadius: '8px', cursor: 'pointer', fontFamily: "'Nunito', sans-serif", fontWeight: 700 }}
+                onClick={() => openCompanyPanel(company)}>
+                🎛 Панель
+              </button>
+            )}
             <button className="action-btn action-btn-edit" onClick={() => openModal('editCompany', { ...company })}>
               <Icon name="edit" size={12} color="var(--primary)" />
             </button>
@@ -343,22 +423,30 @@ export default function AdminPanel() {
     const isCompany = m.includes('company');
     const isPwd = activeModal === 'resetPwd';
     const isPerms = activeModal === 'permissions';
-    const blockedSet = new Set(modalData.blocked_tools || []);
-    const toggleTool = (id) => { const s = new Set(modalData.blocked_tools || []); s.has(id) ? s.delete(id) : s.add(id); setModalData({ ...modalData, blocked_tools: [...s] }); };
+    // Панель компании — та же матрица, но список хранится в компании (disabled_tools),
+    // а не в пользователе (blocked_tools). Чтобы не плодить вторую разметку,
+    // работаем с общим ключом внутри одного окна.
+    const isCoPanel = activeModal === 'companyPanel';
+    const listKey = isCoPanel ? 'disabled_tools' : 'blocked_tools';
+    const blockedSet = new Set(modalData[listKey] || []);
+    const toggleTool = (id) => { const s = new Set(modalData[listKey] || []); s.has(id) ? s.delete(id) : s.add(id); setModalData({ ...modalData, [listKey]: [...s] }); };
     const allowedCount = ALL_TOOL_IDS.length - blockedSet.size;
 
-    const title = isPerms ? `Доступы — @${modalData.username}`
+    const title = isCoPanel ? `Панель компании — ${modalData.name || ''}`
+      : isPerms ? `Доступы — @${modalData.username}`
       : isEdit
       ? (isUser ? `${t('editUserTitle')} — @${modalData.username}` : isCompany ? t('editCompany') : t('editBranch'))
       : isPwd ? t('changePassword')
       : isUser ? t('addUser') : isBranch ? `+ ${t('branches')}` : `+ ${t('companies')}`;
 
-    const onSave = isPerms ? handlePermissions : isEdit ? handleEdit : isPwd ? handleResetPwd : handleCreate;
+    const onSave = isCoPanel ? handleCompanyPanel : isPerms ? handlePermissions : isEdit ? handleEdit : isPwd ? handleResetPwd : handleCreate;
     const companiesForBranch = companies;
     const branchesForUser = allBranches.filter(b => b.company_id === (parseInt(modalData.company_id) || modalData.company_id));
 
+    // data-modal — опора для сквозных проверок: у этого окна свои инлайновые
+    // стили, класса .modal нет, и автотесты его «не видели».
     return (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
+      <div data-modal="admin" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
         <div style={{ background: '#fff', borderRadius: '16px', padding: '28px', maxWidth: isPerms ? '680px' : '480px', width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,.2)', maxHeight: '90vh', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div style={{ fontWeight: 800, fontSize: '18px' }}>{title}</div>
@@ -377,6 +465,38 @@ export default function AdminPanel() {
           {/* Company fields */}
           {(isCompany) && (
             <>
+              {/* Продукт выбирается один раз — при создании: у компании «Мероприятий»
+                  своя база и свой интерфейс, данных в Wave у неё нет. */}
+              {!isEdit && (
+                <div style={{ marginBottom: '14px' }}>
+                  <label className="label">{t('productLabel')} *</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px' }} role="radiogroup">
+                    {[
+                      { id: 'wave', title: t('productWave'), desc: t('productWaveDesc') },
+                      { id: 'events', title: t('productEvents'), desc: t('productEventsDesc') },
+                    ].map((p) => {
+                      const active = (modalData.product || 'wave') === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setModalData({ ...modalData, product: p.id })}
+                          style={{
+                            textAlign: 'left', cursor: 'pointer', padding: '10px 12px', borderRadius: '10px',
+                            border: active ? '2px solid var(--primary)' : '1px solid var(--border, #d8dde6)',
+                            background: active ? 'rgba(67,56,202,.06)' : 'transparent',
+                          }}
+                        >
+                          <div style={{ fontWeight: 800, fontSize: '14px' }}>{p.title}</div>
+                          <div style={{ fontSize: '12px', opacity: 0.75, marginTop: '2px' }}>{p.desc}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div style={{ marginBottom: '12px' }}><label className="label">{t('companyName')} *</label><input className="input" value={modalData.name || ''} onChange={e => setModalData({ ...modalData, name: e.target.value })} required /></div>
               <div style={{ marginBottom: '12px' }}><label className="label">{t('address')}</label><input className="input" value={modalData.address || ''} onChange={e => setModalData({ ...modalData, address: e.target.value })} /></div>
               <div style={{ marginBottom: '12px' }}><label className="label">{t('phone')}</label><input className="input" value={modalData.phone || ''} onChange={e => setModalData({ ...modalData, phone: e.target.value })} /></div>
@@ -438,20 +558,7 @@ export default function AdminPanel() {
               <div style={{ marginBottom: '12px' }}><label className="label">{t('loginLabel')}</label><input className="input" value={modalData.username || ''} onChange={e => setModalData({ ...modalData, username: e.target.value })} placeholder="username" required={!isEdit} /></div>
               {!isEdit && <div style={{ marginBottom: '12px' }}><label className="label">{t('passwordLabel')}</label><input className="input" type="password" value={modalData.password || ''} onChange={e => setModalData({ ...modalData, password: e.target.value })} placeholder={t('minPassword')} /></div>}
               {(() => {
-                // For each company-level role, check if the company already has one (excluding current user)
-                const cid = modalData.company_id;
-                const existingFounder = cid && getCompanyFounder(cid);
-                const existingGenDir  = cid && getCompanyGenDir(cid);
-                const blockFounder = existingFounder && existingFounder.id !== modalData.id;
-                const blockGenDir  = existingGenDir  && existingGenDir.id  !== modalData.id;
-                const roles = ['founder','director','manager','cashier','warehouse','seller'].filter(r => {
-                  if (r === 'founder' && blockFounder) return false;
-                  if (r === 'director' && blockGenDir) return false;
-                  return true;
-                });
-                // Coerce current value to a valid choice
-                let currentRole = modalData.role || 'cashier';
-                if ((currentRole === 'founder' && blockFounder) || (currentRole === 'director' && blockGenDir)) currentRole = 'manager';
+                const { roles, current: currentRole, blockFounder, blockGenDir, existingFounder, existingGenDir } = roleOptions(modalData);
                 return (
                   <div style={{ marginBottom: '12px' }}>
                     <label className="label">{t('role')}</label>
@@ -460,7 +567,7 @@ export default function AdminPanel() {
                       const companyLevel = newRole === 'founder' || newRole === 'director';
                       setModalData({ ...modalData, role: newRole, branch_id: companyLevel ? null : modalData.branch_id });
                     }}>
-                      {roles.map(r => <option key={r} value={r}>{t(ROLE_KEYS[r])}</option>)}
+                      {roles.map(r => <option key={r} value={r}>{roleLabel(t, r)}</option>)}
                     </select>
                     {(blockFounder || blockGenDir) && (
                       <div style={{ fontSize: '11px', color: '#9EA3BF', marginTop: '4px' }}>
@@ -496,10 +603,11 @@ export default function AdminPanel() {
             </>
           )}
 
-          {/* Гранулярные доступы: AI + матрица инструментов */}
-          {isPerms && (
+          {/* Гранулярные доступы: AI + матрица инструментов.
+              Для панели компании AI-тумблер не показываем — он персональный. */}
+          {(isPerms || isCoPanel) && (
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: '#EEF3FF', borderRadius: 10, marginBottom: 14 }}>
+              {isPerms && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: '#EEF3FF', borderRadius: 10, marginBottom: 14 }}>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>🤖 AI-помощник</div>
                   <div style={{ fontSize: 12, color: '#6B6F8A' }}>AI-чат, анализ, подсказки — блокируется и на сервере</div>
@@ -508,12 +616,12 @@ export default function AdminPanel() {
                   <input type="checkbox" checked={modalData.ai_enabled !== false} onChange={e => setModalData({ ...modalData, ai_enabled: e.target.checked })} />
                   {modalData.ai_enabled !== false ? 'Включён' : 'Выключен'}
                 </label>
-              </div>
+              </div>}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <div style={{ fontWeight: 800, fontSize: 14 }}>Инструменты <span style={{ color: '#6B6F8A', fontWeight: 600, fontSize: 12 }}>· доступно {allowedCount} из {ALL_TOOL_IDS.length}</span></div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, blocked_tools: [] })}>Открыть все</button>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, blocked_tools: [...ALL_TOOL_IDS] })}>Скрыть все</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, [listKey]: [] })}>Открыть все</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setModalData({ ...modalData, [listKey]: [...ALL_TOOL_IDS] })}>Скрыть все</button>
                 </div>
               </div>
               <div style={{ maxHeight: '46vh', overflowY: 'auto', paddingRight: 4 }}>
@@ -524,7 +632,7 @@ export default function AdminPanel() {
                     <div key={sec.id} style={{ marginBottom: 10 }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '6px 0' }}>
                         <div style={{ fontSize: 12, fontWeight: 800, color: sec.color || '#1D4ED8' }}>{sec.icon} {sec.title}</div>
-                        <button type="button" onClick={() => { const s = new Set(modalData.blocked_tools || []); if (allHidden) ids.forEach(id => s.delete(id)); else ids.forEach(id => s.add(id)); setModalData({ ...modalData, blocked_tools: [...s] }); }}
+                        <button type="button" onClick={() => { const s = new Set(modalData[listKey] || []); if (allHidden) ids.forEach(id => s.delete(id)); else ids.forEach(id => s.add(id)); setModalData({ ...modalData, [listKey]: [...s] }); }}
                           style={{ border: 'none', background: 'none', color: '#6B6F8A', fontSize: 11, cursor: 'pointer' }}>{allHidden ? 'открыть раздел' : 'скрыть раздел'}</button>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
@@ -672,12 +780,12 @@ export default function AdminPanel() {
                         <td style={{ padding: '8px 12px', fontWeight: 700 }}>@{r.username}</td>
                         <td style={{ padding: '8px 12px' }}>
                           <span style={{ background: (roleBadge[r.old_role] === 'badge-blue' ? 'rgba(67,56,202,.1)' : 'rgba(156,163,175,.1)'), color: roleColor[r.old_role] || '#6B6F8A', padding: '2px 8px', borderRadius: '8px', fontWeight: 700, fontSize: '11px' }}>
-                            {t(ROLE_KEYS[r.old_role]) || r.old_role}
+                            {roleLabel(t, r.old_role)}
                           </span>
                         </td>
                         <td style={{ padding: '8px 12px' }}>
                           <span style={{ background: (roleBadge[r.new_role] === 'badge-blue' ? 'rgba(67,56,202,.1)' : 'rgba(34,197,94,.1)'), color: roleColor[r.new_role] || '#16a34a', padding: '2px 8px', borderRadius: '8px', fontWeight: 700, fontSize: '11px' }}>
-                            {t(ROLE_KEYS[r.new_role]) || r.new_role}
+                            {roleLabel(t, r.new_role)}
                           </span>
                         </td>
                         <td style={{ padding: '8px 12px' }}>

@@ -6,6 +6,7 @@ import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
 import { normalizeDecimal } from '../utils/decimalInput.js';
+import { priceZone, hasPricePolicy, validateThresholds, ZONE_COLORS } from '../utils/priceZone.js';
 
 // ── Числовые поля (цены, количество в заказе) ────────────────────────────────
 // Стейт таких полей — СТРОКА, а сам input — type="text" inputMode="decimal".
@@ -36,6 +37,26 @@ const blurNorm = (setState, key, dp) => (e) => {
   const v = e.target.value;
   setState(f => ({ ...f, [key]: normDec(v, dp) }));
 };
+
+// ── Скидочная политика по цветам ─────────────────────────────────────────────
+// Три абсолютные цены за единицу (зелёная >= жёлтая >= красная): по ним у продавца
+// подсвечивается введённая цена. Задаёт их склад при приходе, здесь их видно и можно
+// поправить. Пустое поле = порог снят: PUT /api/products/:id трактует '' как NULL —
+// в отличие от цены закупки/продажи, где пустое значит «не трогать».
+const ZONE_FIELDS = [
+  { col: 'price_green',  zone: 'green',
+    ru: 'Зелёная цена',  uz: 'Yashil narx',
+    noteRu: 'можно ещё скидку', noteUz: 'yana chegirma mumkin' },
+  { col: 'price_yellow', zone: 'yellow',
+    ru: 'Жёлтая цена',   uz: 'Sariq narx',
+    noteRu: 'близко к пределу', noteUz: 'chegaraga yaqin' },
+  { col: 'price_red',    zone: 'red',
+    ru: 'Красная цена',  uz: 'Qizil narx',
+    noteRu: 'ниже нельзя', noteUz: 'pastga tushirib bo\'lmaydi' },
+];
+// Заданные пороги товара парами «подпись — значение»: для подсказки в таблице и
+// строк в карточке. Незаданный порог не показываем вовсе.
+const filledZones = (item) => ZONE_FIELDS.filter(f => item?.[f.col] != null && item[f.col] !== '');
 
 export default function WarehouseBalance() {
   const { t, lang } = useTranslation();
@@ -108,7 +129,12 @@ export default function WarehouseBalance() {
       price_buy: item.price_buy == null ? '' : normDec(item.price_buy, 2),
       price_sell: item.price_sell == null ? '' : normDec(item.price_sell, 2),
       color_size: item.color_size || '', brand: item.brand || '',
-      photo_url: item.photo_url || '' });
+      photo_url: item.photo_url || '',
+      // Пороги скидки — тоже строками. Пустая строка здесь осмысленна: она означает
+      // «порога нет», и сохранение снимет его на сервере.
+      price_green:  item.price_green  == null ? '' : normDec(item.price_green, 2),
+      price_yellow: item.price_yellow == null ? '' : normDec(item.price_yellow, 2),
+      price_red:    item.price_red    == null ? '' : normDec(item.price_red, 2) });
     clearEditMsg();
   };
 
@@ -144,8 +170,26 @@ export default function WarehouseBalance() {
       }
       prices[key] = n;
     }
+    // Пороги скидки шлём ВСЕГДА все три: очищенное поле уходит как '' и снимает
+    // порог на сервере. Отправлять их поштучно нельзя — сервер проверяет порядок по
+    // итоговому состоянию товара и отклонил бы одиночный порог, конфликтующий со
+    // старым соседним.
+    const zones = {};
+    for (const f of ZONE_FIELDS) {
+      if (isBlank(editForm[f.col])) { zones[f.col] = ''; continue; }
+      const n = toNum(editForm[f.col]);
+      if (!Number.isFinite(n) || n < 0) {
+        setEditMsg('error', `${uz ? f.uz : f.ru}: ${uz ? 'raqam kiriting' : 'введите число'}`);
+        return;
+      }
+      zones[f.col] = n;
+    }
+    // Порядок зелёная >= жёлтая >= красная проверяем общим модулем — теми же
+    // текстами, что и форма прихода.
+    const order = validateThresholds(zones, { lang });
+    if (!order.ok) { setEditMsg('error', order.message); return; }
     try {
-      await api.put(`/products/${editItem.id}`, { ...editForm, ...prices });
+      await api.put(`/products/${editItem.id}`, { ...editForm, ...prices, ...zones });
       setEditMsg('success', t('success'));
       setEditItem(null);
       load();
@@ -160,6 +204,31 @@ export default function WarehouseBalance() {
 
   const statusColor = (stock) => parseFloat(stock) <= 0 ? 'var(--red)' : parseFloat(stock) < 5 ? 'var(--yellow)' : 'var(--green)';
   const statusLabel = (stock) => parseFloat(stock) <= 0 ? t('outStatus') : parseFloat(stock) < 5 ? t('lowStatus') : t('inStockStatus');
+
+  // Живая проверка порогов в открытой форме: ошибку порядка показываем у виноватого
+  // поля, предупреждение об убытке — под блоком (это подсказка, а не запрет).
+  const zoneCheck = validateThresholds(editForm, { priceBuy: editForm.price_buy, priceSell: editForm.price_sell, lang });
+
+  // Маленькая цветная метка у цены продажи. Рисуем ТОЛЬКО если у товара задан хоть
+  // один порог — у остальных товаров таблица выглядит ровно как раньше. Цвет — зона,
+  // в которую попала текущая цена продажи; подсказка при наведении перечисляет пороги.
+  const zoneMark = (item) => {
+    if (!hasPricePolicy(item)) return null;
+    const z = priceZone(item.price_sell, item, lang);
+    const title = [
+      z.message,
+      ...filledZones(item).map(f => `${uz ? f.uz : f.ru}: ${fmtNum(item[f.col])}`),
+    ].filter(Boolean).join('\n');
+    return (
+      <span title={title}
+        style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%',
+          marginLeft: '6px', verticalAlign: 'middle', flexShrink: 0,
+          // Цена продажи не читается (товар без цены) — метка остаётся серой:
+          // политика есть, но красить нечего.
+          background: z.hex || 'var(--text3)',
+          boxShadow: z.soft ? `0 0 0 2px ${z.soft}` : 'none' }} />
+    );
+  };
 
   // "From" label that goes into the body (mailto: can't set From — the user's email client does)
   const fromLabel = () => {
@@ -484,7 +553,10 @@ ${draft.from || fromLabel()}`;
                           <span style={{ fontSize: '11px', color: 'var(--text3)', marginLeft: '4px' }}>{item.unit}</span>
                         </td>
                         <td><span className="mono">{fmtNum(item.price_buy || 0)}</span></td>
-                        <td><span className="mono">{fmtNum(item.price_sell || 0)}</span></td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <span className="mono">{fmtNum(item.price_sell || 0)}</span>
+                          {zoneMark(item)}
+                        </td>
                         <td><span className="mono" style={{ fontWeight: 600 }}>{fmtNum(parseFloat(item.stock) * parseFloat(item.price_sell || 0))}</span></td>
                         <td><span style={{ fontSize: '12px', fontWeight: 700, color: clr, background: clr + '18', padding: '3px 10px', borderRadius: '20px' }}>{statusLabel(item.stock)}</span></td>
                         <td style={{ fontSize: '12px', color: 'var(--text2)', whiteSpace: 'nowrap', lineHeight: '1.3' }}>
@@ -554,6 +626,12 @@ ${draft.from || fromLabel()}`;
                     [t('stock'), `${fmtQty(selected.stock)} ${selected.unit || ''}`],
                     [t('priceBuy'), fmtNum(selected.price_buy || 0)],
                     [t('priceSell'), fmtNum(selected.price_sell || 0)],
+                    // Пороги скидки — только заданные. Товар без политики выглядит
+                    // как раньше: лишних строк в карточке не появляется.
+                    ...filledZones(selected).map(f => [
+                      uz ? f.uz : f.ru,
+                      <span style={{ color: ZONE_COLORS[f.zone].hex }}>{fmtNum(selected[f.col])}</span>,
+                    ]),
                     [t('saleSum'), fmtNum(parseFloat(selected.stock) * parseFloat(selected.price_sell || 0))],
                     [t('date'), `${formatDate(selected.created_at)} ${formatTime(selected.created_at)}`],
                   ].map(([k, v, mono], i) => (
@@ -803,6 +881,38 @@ ${draft.from || fromLabel()}`;
               <div><label className="label">{t('priceSell')}</label><input className="input" type="text" inputMode="decimal" value={editForm.price_sell}
                 onChange={e => setEditForm({ ...editForm, price_sell: cleanDec(e.target.value) })}
                 onBlur={blurNorm(setEditForm, 'price_sell', 2)} /></div>
+            </div>
+
+            {/* Границы скидки — необязательный блок. Пустые поля = политики нет,
+                и продавец видит цену без подсветки, как до появления порогов. */}
+            <div style={{ marginBottom: '12px', border: '1px solid var(--line)', borderRadius: '12px', padding: '12px' }}>
+              <div style={{ fontWeight: 800, fontSize: '13px' }}>{uz ? 'Chegirma chegaralari' : 'Границы скидки'}</div>
+              <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px', marginBottom: '10px' }}>
+                {uz
+                  ? 'Sotuvchida narx shu chegaralar bo\'yicha rang oladi. Bo\'sh maydon — chegara yo\'q.'
+                  : 'По ним у продавца подсвечивается цена. Пустое поле — порога нет.'}
+              </div>
+              <div className="grid-3" style={{ gap: '10px' }}>
+                {ZONE_FIELDS.map(f => (
+                  <div key={f.col}>
+                    <label className="label" style={{ color: ZONE_COLORS[f.zone].hex }}>{uz ? f.uz : f.ru}</label>
+                    <input className="input" type="text" inputMode="decimal" placeholder="—"
+                      value={editForm[f.col] || ''}
+                      onChange={e => setEditForm({ ...editForm, [f.col]: cleanDec(e.target.value) })}
+                      onBlur={blurNorm(setEditForm, f.col, 2)}
+                      style={{ borderColor: isBlank(editForm[f.col]) ? undefined : ZONE_COLORS[f.zone].hex }} />
+                    <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '3px', lineHeight: 1.25 }}>
+                      {uz ? f.noteUz : f.noteRu}
+                    </div>
+                    {zoneCheck.field === f.zone && (
+                      <div style={{ fontSize: '11px', color: 'var(--red)', marginTop: '3px', lineHeight: 1.25 }}>{zoneCheck.message}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {zoneCheck.warning && (
+                <div style={{ fontSize: '11px', color: ZONE_COLORS.yellow.hex, marginTop: '10px', lineHeight: 1.3 }}>{zoneCheck.warning}</div>
+              )}
             </div>
             <div className="form-grid" style={{ marginBottom: '12px' }}>
               <div>

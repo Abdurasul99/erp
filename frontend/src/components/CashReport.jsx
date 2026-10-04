@@ -70,7 +70,9 @@ export default function CashReport() {
   }, [data]);
 
   if (loading && !data) return <div className="center" style={{ padding: '60px' }}><div className="spinner" /></div>;
-  if (!data) return null;
+  // Ответ без income — не «пусто», а другая форма ответа: раньше экран падал
+  // целиком. Читаем мягко и показываем нули, а не белую карточку с ошибкой.
+  if (!data || !data.income) return null;
 
   const { income, expense, sales, profit, by_method, by_seller, by_day, top_products, debts, by_currency } = data;
 

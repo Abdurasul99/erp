@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { AnimatePresence, motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import { Icon, SECTION_ICON, gradCss } from './icons.jsx';
+import { sectionEntryPath } from './modules.js';
 
 // macOS-док: главная навигация панели. Иконки-«приложения» с магнификацией
 // при наведении. Заменяет прежний сайдбар (перенос дизайна wave-erp-design).
@@ -84,7 +85,7 @@ export default function Dock({ sections, activeSection, navigate, aiEnabled, isO
             label={tt(s.title)} showLabel={expanded}
             active={activeSection === s.id}
             mouseX={mouseX}
-            onClick={() => navigate('/owner/' + s.id)}
+            onClick={() => navigate(sectionEntryPath(s))}
           />
         ))}
         {(settings || (isOwner && aiEnabled)) && <span className="dock-sep" />}
