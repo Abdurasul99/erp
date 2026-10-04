@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Архитектура WareApp — карта инструментов</title>
+<style>
+  @page { size: A4; margin: 12mm 10mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #14284B; font-size: 10.5px; line-height: 1.5; margin: 0; }
+  h1 { font-size: 23px; color: #173361; margin: 0 0 4px; letter-spacing: -0.5px; }
+  h2 { font-size: 15px; color: #173361; border-bottom: 2px solid #1E5AE8; padding-bottom: 4px; margin: 22px 0 10px; page-break-after: avoid; }
+  h3 { font-size: 12px; color: #173361; margin: 14px 0 6px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ul { margin: 5px 0 8px; padding-left: 18px; } li { margin: 2px 0; }
+  .cover { text-align: center; padding-top: 175px; page-break-after: always; }
+  .cover .sub { color: #4A5B76; font-size: 14px; margin-top: 9px; }
+  .cover .meta { margin-top: 210px; color: #8B99AF; font-size: 10.5px; }
+  .logo { width: 58px; height: 58px; border-radius: 15px; background: linear-gradient(135deg,#21B0EA,#1E5AE8); margin: 0 auto 22px; }
+  .kpi-row { display: flex; gap: 8px; margin: 10px 0 16px; }
+  .kpi { flex: 1; border: 1px solid #DDE5F0; border-radius: 8px; padding: 8px 10px; background: #F8FAFD; text-align: center; }
+  .kpi b { display: block; font-size: 20px; color: #173361; line-height: 1.1; }
+  .kpi span { font-size: 9px; color: #8B99AF; text-transform: uppercase; letter-spacing: .4px; }
+
+  /* ── Слои архитектуры ── */
+  .layer { border: 1px solid #DDE5F0; border-left: 4px solid #1E5AE8; border-radius: 8px; padding: 9px 12px; margin-bottom: 7px; background: #fff; page-break-inside: avoid; }
+  .layer .lt { font-weight: 700; color: #173361; font-size: 11.5px; }
+  .layer .ld { color: #4A5B76; font-size: 10px; margin-top: 2px; }
+  .arrow-down { text-align: center; color: #9FB6D6; font-size: 13px; line-height: 1; margin: -2px 0 5px; }
+
+  /* ── Карта разделов ── */
+  .map { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .sec { border: 1px solid #DDE5F0; border-radius: 9px; overflow: hidden; page-break-inside: avoid; background: #fff; }
+  .sec-h { padding: 6px 10px; color: #fff; font-weight: 700; font-size: 11px; display: flex; justify-content: space-between; align-items: center; }
+  .sec-h em { font-style: normal; font-weight: 600; font-size: 9px; opacity: .85; }
+  .sec-b { padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .tool { border: 1px solid #E3E9F2; border-radius: 5px; padding: 2px 7px; font-size: 9.5px; background: #F8FAFD; color: #14284B; }
+  .tool.hub { border-color: #9FC1F2; background: #E9F1FB; font-weight: 600; }
+  .tool.hub i { font-style: normal; color: #1E5AE8; font-size: 8.5px; }
+  .tabs { width: 100%; font-size: 8.5px; color: #5B6B84; padding: 3px 0 1px 8px; border-left: 2px solid #C9DCF6; margin: 1px 0 3px; line-height: 1.45; }
+  .tabs b { color: #1E5AE8; font-weight: 600; }
+  .qk { width: 100%; font-size: 8.5px; color: #8B99AF; margin-top: 3px; border-top: 1px dashed #E3E9F2; padding-top: 4px; }
+
+  /* ── Поток данных ── */
+  .flow { display: grid; grid-template-columns: 1fr 14px 1fr 14px 1.2fr; gap: 6px; align-items: stretch; margin: 8px 0 6px; }
+  .fcol { border: 1px solid #DDE5F0; border-radius: 8px; overflow: hidden; }
+  .fcol-h { background: #173361; color: #fff; font-size: 9.5px; font-weight: 700; padding: 4px 8px; text-align: center; letter-spacing: .3px; }
+  .fcol-b { padding: 6px 8px; }
+  .fitem { font-size: 9.5px; padding: 3px 0; border-bottom: 1px dashed #EAEFF7; }
+  .fitem:last-child { border-bottom: none; }
+  .fitem b { color: #173361; }
+  .fitem span { color: #6B7A93; }
+  .fa { display: flex; align-items: center; justify-content: center; color: #1E5AE8; font-size: 15px; font-weight: 700; }
+
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; page-break-inside: avoid; }
+  th { background: #E9F1FB; color: #173361; text-align: left; padding: 5px 7px; font-size: 9.5px; border: 1px solid #C6D2E2; }
+  td { padding: 4px 7px; border: 1px solid #DDE5F0; vertical-align: top; font-size: 9.5px; }
+  code { background: #EEF2F8; border-radius: 3px; padding: 0 3px; font-family: Consolas, monospace; font-size: 9px; }
+  .muted { color: #6B7A93; }
+  .note { background: #F8FAFD; border: 1px solid #DDE5F0; border-radius: 8px; padding: 8px 11px; font-size: 10px; color: #4A5B76; margin: 8px 0; }
+  .legend { display: flex; gap: 14px; font-size: 9.5px; color: #6B7A93; margin: 6px 0 10px; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="logo"></div>
+  <h1>Архитектура системы WareApp</h1>
+  <div class="sub">Карта всех инструментов: где находятся, как находятся, как связаны</div>
+  <div class="sub" style="font-size:12px;">ERP для розничной и оптовой торговли · mywarehouse.uz</div>
+  <div class="meta">Версия 1.0 · 16 июля 2026 г. · Составлено по фактическому коду системы</div>
+</div>
+
+<!-- ══════════════ 1. ОБЩАЯ КАРТИНА ══════════════ -->
+<h2>1. Система в цифрах</h2>
+<div class="kpi-row">
+  <div class="kpi"><b>10</b><span>разделов</span></div>
+  <div class="kpi"><b>80</b><span>карточек в меню</span></div>
+  <div class="kpi"><b>16</b><span>хабов с вкладками</span></div>
+  <div class="kpi"><b>51</b><span>вкладка внутри хабов</span></div>
+  <div class="kpi"><b>115</b><span>рабочих экранов</span></div>
+  <div class="kpi"><b>7</b><span>ролей</span></div>
+</div>
+<p class="muted">Формула: <b>80 карточек − 16 карточек-хабов + 51 вкладка = 115 экранов.</b> Родственные экраны собраны в хабы с вкладками, чтобы меню оставалось коротким; ни один экран при этом не удалён.</p>
+
+<h2>2. Четыре слоя системы</h2>
+<div class="layer">
+  <div class="lt">Слой 1 · Навигация (оболочка OwnerShell)</div>
+  <div class="ld">Сайдбар с группами Работа / Анализ / Система · топбар (период, филиал, язык, поиск) · док · лаунчпад · поиск Ctrl+K. Знает только: какие разделы и инструменты показать этой роли.</div>
+</div>
+<div class="arrow-down">▼</div>
+<div class="layer" style="border-left-color:#0EA5E9;">
+  <div class="lt">Слой 2 · Инструменты (115 экранов)</div>
+  <div class="ld">Каждый инструмент — самостоятельный React-компонент. Читает глобальный контекст (период + филиал), запрашивает свой эндпоинт, рисует результат. Изолирован: сбой одного не роняет остальные.</div>
+</div>
+<div class="arrow-down">▼</div>
+<div class="layer" style="border-left-color:#16A34A;">
+  <div class="lt">Слой 3 · API (backend/server.js)</div>
+  <div class="ld">REST <code>/api/*</code>. На каждом запросе: проверка роли → определение скоупа (компания / филиал) → параметризованный SQL → ролевая редакция ответа (менеджер не видит чужих филиалов и стратегических финансов).</div>
+</div>
+<div class="arrow-down">▼</div>
+<div class="layer" style="border-left-color:#D97706;">
+  <div class="lt">Слой 4 · Данные (PostgreSQL)</div>
+  <div class="ld">Одна база на всех клиентов; изоляция по <code>company_id</code> / <code>branch_id</code>. Ядро — 5 таблиц операций, всё остальное считается из них на лету.</div>
+</div>
+
+<!-- ══════════════ 3. КАК НАХОДИТСЯ ══════════════ -->
+<h2>3. Как найти инструмент — 5 путей</h2>
+<table>
+  <tr><th style="width:22%">Путь</th><th style="width:30%">Как выглядит</th><th>Когда быстрее всего</th></tr>
+  <tr><td><b>Сайдбар → раздел → карточка</b></td><td>Группа (Работа / Анализ / Система) → раздел → страница раздела с сеткой карточек → инструмент</td><td>Основной путь. Когда знаешь отдел, но не помнишь точное название</td></tr>
+  <tr><td><b>Поиск Ctrl + K</b></td><td>Палитра поверх экрана: пара букв → Enter</td><td>Самый быстрый. Ищет и по названиям вкладок внутри хабов («полиция» → Центр контроля)</td></tr>
+  <tr><td><b>Быстрые действия</b></td><td>3 кнопки прямо в цветном баннере раздела</td><td>Ежедневные дела отдела — минуя сетку карточек</td></tr>
+  <tr><td><b>Недавнее</b></td><td>Чипы личной истории визитов в баннере раздела</td><td>Вернуться к тому, с чем работал вчера</td></tr>
+  <tr><td><b>Док / лаунчпад</b></td><td>Полоса разделов снизу и меню «Пуск»</td><td>Быстрый переход между отделами не отрывая руки от мыши</td></tr>
+</table>
+<div class="note"><b>Адрес экрана всегда одинаков:</b> <code>/owner/&lt;раздел&gt;/&lt;инструмент&gt;</code> — например <code>/owner/warehouse/stock</code>. Любая ссылка (в том числе из алерта или от AI) проверяется на доступность роли до перехода: недоступный инструмент не показывается кнопкой, а не открывается ошибкой.</div>
+
+<!-- ══════════════ 4. КАРТА ИНСТРУМЕНТОВ ══════════════ -->
+<h2>4. Карта всех инструментов по разделам</h2>
+<div class="legend">
+  <span><span class="sw" style="background:#F8FAFD;border:1px solid #E3E9F2;"></span>обычный инструмент (1 экран)</span>
+  <span><span class="sw" style="background:#E9F1FB;border:1px solid #9FC1F2;"></span>хаб — несколько экранов вкладками</span>
+  <span>★ — быстрое действие в баннере раздела</span>
+</div>
+
+<div class="map">
+
+  <div class="sec">
+    <div class="sec-h" style="background:#1D4ED8;">Главная <em>виджеты, без карточек</em></div>
+    <div class="sec-b">
+      <span class="tool">Выручка</span><span class="tool">Индекс здоровья BHI</span><span class="tool">Касса · Продажи · Чек</span>
+      <span class="tool">Денежный поток</span><span class="tool">Динамика продаж</span><span class="tool">Сравнение филиалов</span>
+      <span class="tool">Алерты</span><span class="tool">Топ товаров</span><span class="tool">Топ сотрудников</span>
+      <div class="qk">9 виджетов · каждый включается/выключается лично и для всей компании</div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#1D4ED8;">Мой дашборд <em>1 экран · для всех ролей</em></div>
+    <div class="sec-b">
+      <span class="tool">Мои дела · поручения · зарплата · нарушения</span>
+      <div class="qk">Ролевой: у учредителя, директора и менеджера — своё наполнение. Единственное место, где сотрудник видит свои задачи и уведомления</div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#1D4ED8;">Аналитика <em>9 карточек · 3 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">★ Центр контроля <i>5</i></span>
+      <div class="tabs"><b>вкладки:</b> Алерты · Аномалии · Полиция магазина · Риски · Дефицит товара</div>
+      <span class="tool hub">Симулятор «Что если» <i>8</i></span>
+      <div class="tabs"><b>вкладки:</b> Бизнес целиком · Цена и маржа · Финансы <span class="muted">(эти 3 — только учредителю)</span> · Продажи · Склад · Закупки · Персонал · Клиенты</div>
+      <span class="tool hub">★ Отчёты и тренды <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Тренды 12 мес · Сводный отчёт за период</div>
+      <span class="tool">★ Сравнение филиалов</span><span class="tool">Анализ корзины</span><span class="tool">Когортный анализ</span>
+      <span class="tool">Юнит-экономика</span><span class="tool">A/B точка</span><span class="tool">ССП — стратегия</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#16A34A;">Финансы <em>11 карточек · 2 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">Прогноз кассы <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Кассовый разрыв · Платёжный календарь</div>
+      <span class="tool hub">Показатели <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Рентабельность · Коэффициенты</div>
+      <span class="tool">★ Кассы</span><span class="tool">★ P&amp;L отчёт</span><span class="tool">★ Отчёт расходов</span>
+      <span class="tool">Cash Flow</span><span class="tool">Ценообразование</span><span class="tool">Точка безубыточности</span>
+      <span class="tool">Финансовая модель</span><span class="tool">Валютные операции</span><span class="tool">Налоги</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#0EA5E9;">Склад <em>9 карточек · 3 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">Движение товара <i>3</i></span>
+      <div class="tabs"><b>вкладки:</b> Расход · Перемещения между складами · История</div>
+      <span class="tool hub">Расчёты запасов <i>3</i></span>
+      <div class="tabs"><b>вкладки:</b> Оптимальный заказ EOQ · Точка заказа · Страховой запас</div>
+      <span class="tool hub">Справочники <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Типы/бренды/единицы · Штрихкоды</div>
+      <span class="tool">★ Товары и остатки</span><span class="tool">★ Инвентаризация</span><span class="tool">★ Брак и списание</span>
+      <span class="tool">ABC/XYZ анализ</span><span class="tool">Оборачиваемость</span><span class="tool">ROI закупки</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#16A34A;">Продажи <em>9 карточек · 1 хаб</em></div>
+    <div class="sec-b">
+      <span class="tool hub">★ Задачи <i>4</i></span>
+      <div class="tabs"><b>вкладки:</b> Доска (канбан) · Шаблоны повторяющихся · Аналитика исполнения · Чеклисты</div>
+      <span class="tool">★ Касса · монитор</span><span class="tool">★ История продаж</span><span class="tool">Топ товаров</span>
+      <span class="tool">Средний чек по продавцу</span><span class="tool">Скидки и акции</span><span class="tool">Возвраты и причины</span>
+      <span class="tool">Прогноз продаж</span><span class="tool">Скрипты продаж</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#D97706;">Закупки <em>9 карточек · 2 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">Прогноз закупок <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Что заказать · Потребность склада</div>
+      <span class="tool hub">Оценка поставщиков <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> Рейтинг 0–5 · Сравнение цен/качества/сроков</div>
+      <span class="tool">★ Приход товара</span><span class="tool">★ Заказы поставщикам</span><span class="tool">★ Поставщики</span>
+      <span class="tool">Приёмка товара</span><span class="tool">История закупок</span><span class="tool">Возвраты поставщику</span>
+      <span class="tool">Долги поставщикам</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#9333EA;">Персонал <em>11 карточек · 2 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">Команда <i>3</i></span>
+      <div class="tabs"><b>вкладки:</b> KPI команды · Лидерборд · Картотека</div>
+      <span class="tool hub">HR-аналитика <i>4</i></span>
+      <div class="tabs"><b>вкладки:</b> Рейтинг и увольнение · Карта рабочего дня · Выгорание · Калькулятор найма</div>
+      <span class="tool">★ Сотрудники</span><span class="tool">★ Зарплата (ФОТ)</span><span class="tool">★ Штрафы и бонусы</span>
+      <span class="tool">Расписание и смены</span><span class="tool">Табель и явка</span><span class="tool">Отпуска и больничные</span>
+      <span class="tool">Производительность</span><span class="tool">Прогноз персонала</span><span class="tool">Обучение</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#1D4ED8;">Клиенты <em>7 карточек · 2 хаба</em></div>
+    <div class="sec-b">
+      <span class="tool hub">Сегменты <i>3</i></span>
+      <div class="tabs"><b>вкладки:</b> ABC-анализ · Сегменты VIP/спящие/ушедшие · Отток</div>
+      <span class="tool hub">★ Отзывы и жалобы <i>2</i></span>
+      <div class="tabs"><b>вкладки:</b> NPS и отзывы · Жалобы</div>
+      <span class="tool">★ Клиентская база</span><span class="tool">★ Долги клиентов</span><span class="tool">Дни рождения</span>
+      <span class="tool">Рефералы</span><span class="tool">Прогноз клиентов</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#EC4899;">Маркетинг <em>8 карточек · 1 хаб</em></div>
+    <div class="sec-b">
+      <span class="tool hub">★ Воронка <i>4</i></span>
+      <div class="tabs"><b>вкладки:</b> Воронка бизнеса · Потери · Планировщик · Лиды</div>
+      <span class="tool">★ Каналы и ROI</span><span class="tool">★ Рассылки клиентам</span><span class="tool">LTV клиентов</span>
+      <span class="tool">Лояльность</span><span class="tool">Зеркало конкурентов</span><span class="tool">Анализ ЦА (JTBD)</span>
+      <span class="tool">Конструктор контента</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-h" style="background:#6B7280;">Настройки <em>6 карточек · только учредитель и директор</em></div>
+    <div class="sec-b">
+      <span class="tool">★ Управление панелью</span><span class="tool">★ Компания (логотип)</span><span class="tool">★ Безопасность</span>
+      <span class="tool">Интеграции</span><span class="tool">Масштабирование</span><span class="tool">Журнал событий</span>
+      <div class="qk">«Управление панелью» — рубильник: учредитель включает/выключает любой инструмент и виджет для всей компании</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════════ 5. СВЯЗИ ══════════════ -->
+<h2>5. Как инструменты связаны: позвоночник данных</h2>
+<p>Инструменты не обмениваются данными между собой напрямую. Все они — <b>разные взгляды на одни и те же 5 операций</b>, которые совершают сотрудники. Один факт (например, продажа) автоматически питает десятки экранов.</p>
+
+<div class="flow">
+  <div class="fcol">
+    <div class="fcol-h">ЧТО ДЕЛАЕТ СОТРУДНИК</div>
+    <div class="fcol-b">
+      <div class="fitem"><b>Продажа</b><br><span>касса, продавец, B2B-расход</span></div>
+      <div class="fitem"><b>Приход товара</b><br><span>от поставщика</span></div>
+      <div class="fitem"><b>Движение денег</b><br><span>приход/расход кассы</span></div>
+      <div class="fitem"><b>Возврат / списание</b><br><span>клиент или брак</span></div>
+      <div class="fitem"><b>Перемещение<br>и инвентаризация</b><br><span>коррекция остатков</span></div>
+    </div>
+  </div>
+  <div class="fa">→</div>
+  <div class="fcol">
+    <div class="fcol-h">ГДЕ ЭТО ХРАНИТСЯ</div>
+    <div class="fcol-b">
+      <div class="fitem"><b>stock_outcome</b><br><span>расход: продажи, возвраты, списания, перемещения</span></div>
+      <div class="fitem"><b>stock_income</b><br><span>приход от поставщиков</span></div>
+      <div class="fitem"><b>product_stock</b><br><span>текущие остатки по филиалам</span></div>
+      <div class="fitem"><b>cash_income / cash_expense</b><br><span>деньги, инкассация</span></div>
+      <div class="fitem"><b>customers / suppliers / users</b><br><span>справочники контрагентов и людей</span></div>
+      <div class="fitem"><b>audit_log</b><br><span>кто что сделал + пометка подозрительных</span></div>
+    </div>
+  </div>
+  <div class="fa">→</div>
+  <div class="fcol">
+    <div class="fcol-h">ЧТО ИЗ ЭТОГО СЧИТАЕТСЯ</div>
+    <div class="fcol-b">
+      <div class="fitem"><b>Продажи:</b> <span>история, топ товаров, средний чек по продавцу, скидки, возвраты, прогноз</span></div>
+      <div class="fitem"><b>Склад:</b> <span>остатки, ABC/XYZ, оборачиваемость, мёртвый сток, EOQ, точка заказа, ROI закупки, дефицит</span></div>
+      <div class="fitem"><b>Финансы:</b> <span>P&amp;L, Cash Flow, прогноз кассы, рентабельность, безубыточность, налоги</span></div>
+      <div class="fitem"><b>Клиенты:</b> <span>сегменты и ABC, LTV, когорты, отток, долги, дни рождения, прогноз базы</span></div>
+      <div class="fitem"><b>Персонал:</b> <span>KPI, лидерборд, производительность, зарплата с процентом, HR-аналитика</span></div>
+      <div class="fitem"><b>Контроль:</b> <span>алерты, аномалии, полиция магазина, риски</span></div>
+      <div class="fitem"><b>Сверху:</b> <span>Главная, BHI, сравнение филиалов, юнит-экономика, симулятор, AI</span></div>
+    </div>
+  </div>
+</div>
+
+<h3>Живые цепочки (что за чем тянется)</h3>
+<table>
+  <tr><th style="width:26%">Событие</th><th>Что происходит автоматически</th></tr>
+  <tr><td><b>Продавец пробил продажу</b></td><td>Остаток товара уменьшился → выручка попала в кассу (наличные помечены как несданные до инкассации) → продавцу засчитан KPI и процент к зарплате → клиенту записана история покупки (сегмент, LTV, когорта) → обновились Главная, топ товаров, средний чек, прогноз продаж и BHI</td></tr>
+  <tr><td><b>Складовщик оформил приход</b></td><td>Остаток вырос → возник долг поставщику (если не оплачен) → пересчитались оборачиваемость, ABC/XYZ, ROI закупки, потребность в заказе → приход попал в историю закупок и рейтинг поставщика</td></tr>
+  <tr><td><b>Остаток упал ниже нормы</b></td><td>Сработал алерт «Дефицит товара» в Центре контроля → оттуда одной кнопкой создаётся <b>задача</b> с ответственным и сроком → задача появляется у сотрудника в «Моём дашборде» → выполнение попадает в аналитику задач</td></tr>
+  <tr><td><b>Скидка больше нормы или частые отмены</b></td><td>Операция помечается подозрительной в журнале → «Полиция магазина» показывает алерт с оценкой потерь и виновником → руководитель ставит задачу или разбирается в Журнале событий</td></tr>
+  <tr><td><b>Клиент не покупает 60+ дней</b></td><td>Переходит в сегмент «спящие» → попадает в отток и прогноз клиентской базы → его можно вернуть рассылкой из Маркетинга или поздравлением ко дню рождения</td></tr>
+</table>
+
+<div class="note"><b>Почему это важно для понимания системы:</b> добавляя новый инструмент, мы почти никогда не заводим новые данные — мы даём новый взгляд на те же 5 операций. Поэтому 115 экранов держатся на компактной базе и остаются согласованными между собой: цифра выручки одинакова и на Главной, и в P&amp;L, и в KPI продавца.</div>
+
+<!-- ══════════════ 6. РОЛИ ══════════════ -->
+<h2>6. Кто что видит</h2>
+<table>
+  <tr><th style="width:16%">Роль</th><th style="width:16%">Где работает</th><th>Что доступно</th></tr>
+  <tr><td><b>Учредитель</b></td><td>Панель управления</td><td>Все 10 разделов и 115 экранов. Плюс рубильник: включает/выключает инструменты и виджеты для всей компании и для конкретных сотрудников</td></tr>
+  <tr><td><b>Директор сети</b></td><td>Панель управления</td><td>Всё, кроме стратегических финансов (P&amp;L, Cash Flow, налоги, финмодель, показатели, прогноз кассы, A/B точка) и настроек компании</td></tr>
+  <tr><td><b>Менеджер филиала</b></td><td>Панель управления</td><td>Только свой филиал (изоляция на сервере). Без стратегических финансов, цен, расходов, сравнения филиалов, симулятора и журнала. Деньги своего филиала видит</td></tr>
+  <tr><td><b>Кассир</b></td><td>Рабочее окно /desktop</td><td>Касса (приём и расход, инкассация выручки продавцов), склад, клиенты, заказы с сайта, <b>свои задачи</b></td></tr>
+  <tr><td><b>Складовщик</b></td><td>Рабочее окно /desktop</td><td>Приход, остатки, возвраты и списания, печать ценников, поставщики, <b>свои задачи</b></td></tr>
+  <tr><td><b>Продавец</b></td><td>Касса-POS (телефон/планшет)</td><td>Продажа со сканером, свой KPI и несданная выручка, <b>свои задачи</b> кнопкой в шапке</td></tr>
+  <tr><td><b>Оператор платформы</b></td><td>Админка</td><td>Компании, филиалы, пользователи. К финансовым данным клиентов доступа нет — закрыто на уровне сервера</td></tr>
+</table>
+
+<p class="muted" style="margin-top:22px;">Документ отражает фактическое состояние системы на 16.07.2026 и построен по исходному коду (реестр разделов, состав хабов, матрица ролей, схема данных). Требования — в SRS, проектные решения — в SDS.</p>
+
+</body>
+</html>

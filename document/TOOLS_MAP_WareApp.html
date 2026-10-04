@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Карта бизнес-инструментов WareApp</title>
+<style>
+  @page { size: A4 landscape; margin: 5mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #14284B; }
+  .page { position: relative; width: 1085px; height: 752px; }
+
+  .head { position: absolute; top: 0; left: 0; right: 0; height: 26px; display: flex; align-items: baseline; gap: 12px; }
+  .head h1 { font-size: 15.5px; color: #173361; letter-spacing: -0.3px; }
+  .head span { font-size: 9px; color: #8B99AF; }
+  .head .cnt { margin-left: auto; font-size: 9px; color: #1E5AE8; font-weight: 700; }
+
+  .row { position: absolute; left: 0; right: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
+  .r1 { top: 30px;  height: 220px; }
+  .r2 { top: 276px; height: 200px; }
+  .r3 { top: 502px; height: 110px; }
+
+  .box { border: 1.4px solid #C9D5E6; border-radius: 7px; background: #fff; overflow: hidden; display: flex; flex-direction: column; }
+  .bh { padding: 4px 7px; color: #fff; font-weight: 700; font-size: 10.4px; display: flex; justify-content: space-between; align-items: center; letter-spacing: .2px; }
+  .bh em { font-style: normal; font-weight: 600; font-size: 8.2px; opacity: .92; }
+  .bb { padding: 5px 6px; display: flex; flex-wrap: wrap; gap: 3.5px; align-content: flex-start; flex: 1; }
+  .t { border: 1px solid #E3E9F2; border-radius: 4px; padding: 2.2px 5px; font-size: 8.4px; background: #F8FAFD; line-height: 1.35; }
+  .t.h { border-color: #1E5AE8; background: #E9F1FB; font-weight: 700; }
+  .t.h u { text-decoration: none; color: #1E5AE8; }
+  .tb { width: 100%; font-size: 7.5px; color: #6B7A93; line-height: 1.4; padding-left: 5px; border-left: 1.5px solid #C9DCF6; margin: -1px 0 1px; }
+  .note { width: 100%; margin-top: auto; font-size: 7.4px; color: #8B99AF; border-top: 1px dashed #E3E9F2; padding-top: 3px; }
+
+  svg.links { position: absolute; inset: 0; width: 1085px; height: 752px; pointer-events: none; z-index: 5; }
+
+  .legend { position: absolute; left: 0; right: 0; top: 620px; height: 132px; border: 1px solid #DDE5F0; border-radius: 7px; background: #F8FAFD; padding: 7px 11px; }
+  .legend h2 { font-size: 9px; color: #173361; letter-spacing: .5px; margin-bottom: 5px; }
+  .lrow { display: flex; gap: 18px; font-size: 7.6px; color: #5B6B84; align-items: center; margin-bottom: 5px; }
+  .lg-line { display: inline-block; width: 22px; height: 0; border-top: 1.8px solid #1E5AE8; vertical-align: middle; margin-right: 4px; }
+  .lg-line.d { border-top: 1.5px dashed #B07FD8; }
+  .lg-sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+  .rules { font-size: 7.7px; color: #5B6B84; line-height: 1.55; }
+  .rules b { color: #173361; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="head">
+    <h1>Карта бизнес-инструментов WareApp</h1>
+    <span>что где находится и как связано между собой</span>
+    <span class="cnt">10 разделов · 80 карточек · 16 хабов · 51 вкладка · 115 экранов</span>
+  </div>
+
+  <!-- ═══ РЯД 1 — ОПЕРАЦИИ: товар слева направо ═══ -->
+  <div class="row r1">
+
+    <div class="box">
+      <div class="bh" style="background:#D97706;">ЗАКУПКИ <em>9 карточек</em></div>
+      <div class="bb">
+        <span class="t">Поставщики</span><span class="t">Приход товара</span><span class="t">Приёмка</span>
+        <span class="t">Заказы поставщикам</span><span class="t">История закупок</span><span class="t">Возвраты поставщику</span>
+        <span class="t">Долги поставщикам</span>
+        <span class="t h">Прогноз закупок <u>2</u></span>
+        <div class="tb">Что заказать · Потребность склада</div>
+        <span class="t h">Оценка поставщиков <u>2</u></span>
+        <div class="tb">Рейтинг 0–5 · Сравнение цен и сроков</div>
+        <div class="note">Начало цепочки: товар входит, деньги уходят</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#0EA5E9;">СКЛАД <em>9 карточек</em></div>
+      <div class="bb">
+        <span class="t">Товары и остатки</span><span class="t">ABC/XYZ анализ</span><span class="t">Оборачиваемость</span>
+        <span class="t">ROI закупки</span><span class="t">Брак и списание</span><span class="t">Инвентаризация</span>
+        <span class="t h">Движение товара <u>3</u></span>
+        <div class="tb">Расход · Перемещения · История</div>
+        <span class="t h">Расчёты запасов <u>3</u></span>
+        <div class="tb">EOQ · Точка заказа · Страховой запас</div>
+        <span class="t h">Справочники <u>2</u></span>
+        <div class="tb">Типы, бренды, единицы · Штрихкоды</div>
+        <div class="note">Остаток — единая точка правды по товару</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#16A34A;">ПРОДАЖИ <em>9 карточек</em></div>
+      <div class="bb">
+        <span class="t">Касса — монитор</span><span class="t">История продаж</span><span class="t">Топ товаров</span>
+        <span class="t">Средний чек по продавцу</span><span class="t">Скидки и акции</span><span class="t">Возвраты и причины</span>
+        <span class="t">Прогноз продаж</span><span class="t">Скрипты продаж</span>
+        <span class="t h">Задачи <u>4</u></span>
+        <div class="tb">Доска · Шаблоны · Аналитика · Чеклисты</div>
+        <div class="note">Продажа сразу списывает склад и создаёт выручку</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#1D4ED8;">КЛИЕНТЫ <em>7 карточек</em></div>
+      <div class="bb">
+        <span class="t">Клиентская база</span><span class="t">Долги клиентов</span><span class="t">Дни рождения</span>
+        <span class="t">Рефералы</span><span class="t">Прогноз клиентов</span>
+        <span class="t h">Сегменты <u>3</u></span>
+        <div class="tb">ABC клиентов · VIP, спящие, ушедшие · Отток</div>
+        <span class="t h">Отзывы и жалобы <u>2</u></span>
+        <div class="tb">NPS и отзывы · Жалобы</div>
+        <div class="note">История покупок превращается в сегмент и LTV</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ РЯД 2 — СЛЕДСТВИЯ: каждый столбец под своей операцией ═══ -->
+  <div class="row r2">
+
+    <div class="box">
+      <div class="bh" style="background:#16A34A;">ФИНАНСЫ <em>11 карточек</em></div>
+      <div class="bb">
+        <span class="t">Кассы</span><span class="t">P&amp;L отчёт</span><span class="t">Денежный поток</span>
+        <span class="t">Отчёт расходов</span><span class="t">Ценообразование</span><span class="t">Точка безубыточности</span>
+        <span class="t">Финансовая модель</span><span class="t">Валютные операции</span><span class="t">Налоги</span>
+        <span class="t h">Прогноз кассы <u>2</u></span>
+        <div class="tb">Кассовый разрыв · Платёжный календарь</div>
+        <span class="t h">Показатели <u>2</u></span>
+        <div class="tb">Рентабельность · Коэффициенты</div>
+        <div class="note">Себестоимость закупки задаёт цену и всю маржу</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#1D4ED8;">АНАЛИТИКА <em>9 карточек</em></div>
+      <div class="bb">
+        <span class="t">Сравнение филиалов</span><span class="t">Анализ корзины</span><span class="t">Когорты</span>
+        <span class="t">Юнит-экономика</span><span class="t">A/B точка</span><span class="t">ССП</span>
+        <span class="t h">Центр контроля <u>5</u></span>
+        <div class="tb">Алерты · Аномалии · Полиция магазина · Риски · Дефицит товара</div>
+        <span class="t h">Симулятор «Что если» <u>8</u></span>
+        <div class="tb">Бизнес целиком · Цена и маржа · Финансы · Продажи · Склад · Закупки · Персонал · Клиенты</div>
+        <span class="t h">Отчёты и тренды <u>2</u></span>
+        <div class="tb">Тренды 12 месяцев · Сводный отчёт</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#9333EA;">ПЕРСОНАЛ <em>11 карточек</em></div>
+      <div class="bb">
+        <span class="t">Сотрудники</span><span class="t">Зарплата (ФОТ)</span><span class="t">Штрафы и бонусы</span>
+        <span class="t">Расписание и смены</span><span class="t">Табель и явка</span><span class="t">Отпуска</span>
+        <span class="t">Производительность</span><span class="t">Прогноз персонала</span><span class="t">Обучение</span>
+        <span class="t h">Команда <u>3</u></span>
+        <div class="tb">KPI · Лидерборд · Картотека сотрудника</div>
+        <span class="t h">HR-аналитика <u>4</u></span>
+        <div class="tb">Рейтинг и увольнение · Карта дня · Выгорание · Найм</div>
+        <div class="note">Кто продал — тот и в KPI, и в проценте к зарплате</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#EC4899;">МАРКЕТИНГ <em>8 карточек</em></div>
+      <div class="bb">
+        <span class="t">Каналы и ROI</span><span class="t">LTV клиентов</span><span class="t">Рассылки клиентам</span>
+        <span class="t">Лояльность</span><span class="t">Зеркало конкурентов</span><span class="t">Анализ ЦА (JTBD)</span>
+        <span class="t">Конструктор контента</span>
+        <span class="t h">Воронка <u>4</u></span>
+        <div class="tb">Воронка бизнеса · Потери · Планировщик · Лиды</div>
+        <div class="note">Единственный раздел, который возвращает клиента обратно</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ РЯД 3 — ИТОГ, УПРАВЛЕНИЕ И СКВОЗНЫЕ СЕРВИСЫ ═══ -->
+  <div class="row r3">
+
+    <div class="box">
+      <div class="bh" style="background:#173361;">ГЛАВНАЯ <em>9 виджетов</em></div>
+      <div class="bb">
+        <span class="t">Выручка</span><span class="t">Индекс здоровья BHI</span><span class="t">Касса · Продажи · Чек</span>
+        <span class="t">Денежный поток</span><span class="t">Динамика продаж</span><span class="t">Филиалы</span>
+        <span class="t">Алерты</span><span class="t">Топ товаров</span><span class="t">Топ сотрудников</span>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#173361;">МОЙ ДАШБОРД <em>своя версия у каждой роли</em></div>
+      <div class="bb">
+        <span class="t">Мои дела</span><span class="t">Поручения сотрудникам</span><span class="t">Зарплата</span><span class="t">Нарушения</span>
+        <div class="note">Сюда падает задача исполнителю — с дедлайном и уведомлением</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:#6B7280;">НАСТРОЙКИ <em>6 · учредитель и директор</em></div>
+      <div class="bb">
+        <span class="t">Управление панелью</span><span class="t">Компания и логотип</span><span class="t">Безопасность</span>
+        <span class="t">Интеграции</span><span class="t">Масштабирование</span><span class="t">Журнал событий</span>
+        <div class="note">«Управление панелью» включает и выключает любой инструмент</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="bh" style="background:linear-gradient(90deg,#21B0EA,#1E5AE8);">AI-ПОМОЩНИК <em>сквозной, поверх всех разделов</em></div>
+      <div class="bb">
+        <span class="t">Чат по данным компании</span><span class="t">Разбор внутри инструмента</span>
+        <div class="note">Работает только на данных этой компании, наружу в интернет не выходит</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ СВЯЗИ ═══ -->
+  <svg class="links" viewBox="0 0 1085 752">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#1E5AE8"/>
+      </marker>
+      <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#94A6BF"/>
+      </marker>
+      <marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#B07FD8"/>
+      </marker>
+    </defs>
+
+    <!-- главный конвейер: Закупки → Склад → Продажи → Клиенты -->
+    <path d="M261 132 L273 132" stroke="#1E5AE8" stroke-width="2" marker-end="url(#ar)"/>
+    <path d="M536 132 L548 132" stroke="#1E5AE8" stroke-width="2" marker-end="url(#ar)"/>
+    <path d="M810 132 L822 132" stroke="#1E5AE8" stroke-width="2" marker-end="url(#ar)"/>
+
+    <!-- операция → её следствие (строго вниз по своему столбцу) -->
+    <path d="M60 250 L60 274" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="67" y="266" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">себестоимость и оплата поставщику</text>
+
+    <path d="M334 250 L334 274" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="341" y="266" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">остатки → ABC, дефицит, аномалии</text>
+
+    <path d="M609 250 L609 274" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="616" y="266" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">кто продал → KPI и процент к зарплате</text>
+
+    <path d="M883 250 L883 274" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="890" y="266" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">сегмент клиента → кампания</text>
+
+    <!-- маркетинг возвращает клиента обратно -->
+    <path d="M1062 274 L1062 252" stroke="#B07FD8" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arp)"/>
+    <text x="1054" y="266" font-size="6.9" fill="#9B79C0" font-family="Segoe UI" text-anchor="end">возврат клиента</text>
+
+    <!-- следствия → итог и управление -->
+    <path d="M60 476 L60 500" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="67" y="492" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">итог дня и индекс здоровья BHI</text>
+
+    <path d="M334 476 L334 500" stroke="#1E5AE8" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#ar)"/>
+    <text x="341" y="492" font-size="6.9" fill="#5A82CE" font-family="Segoe UI">алерт → задача с дедлайном → исполнитель</text>
+
+    <path d="M609 476 L609 500" stroke="#94A6BF" stroke-width="1.5" marker-end="url(#arg)"/>
+    <text x="616" y="492" font-size="6.9" fill="#7D8CA6" font-family="Segoe UI">сотрудник видит поручение и свою зарплату</text>
+  </svg>
+
+  <!-- ═══ ЛЕГЕНДА ═══ -->
+  <div class="legend">
+    <h2>КАК ЧИТАТЬ ЭТУ КАРТУ</h2>
+    <div class="lrow">
+      <span><span class="lg-sw" style="background:#F8FAFD;border:1px solid #E3E9F2;"></span>инструмент — один экран</span>
+      <span><span class="lg-sw" style="background:#E9F1FB;border:1px solid #1E5AE8;"></span>хаб — несколько экранов вкладками, число = сколько</span>
+      <span><span class="lg-line"></span>главный поток операций</span>
+      <span><span class="lg-line d"></span>обратная связь</span>
+      <span style="margin-left:auto;color:#1E5AE8;font-weight:700;">Поиск любого экрана: Ctrl + K</span>
+    </div>
+    <div class="rules">
+      <b>Верхний ряд — то, что реально происходит в бизнесе, слева направо:</b> закупили товар → положили на склад → продали → получили клиента. Ручной ввод данных живёт только здесь.<br>
+      <b>Средний ряд — следствия той же операции, каждое строго под своей причиной:</b> закупка задаёт себестоимость в Финансах, остаток питает Аналитику, продажа определяет KPI и зарплату в Персонале, покупка формирует сегмент клиента для Маркетинга. Маркетинг — единственный раздел, который возвращает клиента обратно в продажи.<br>
+      <b>Нижний ряд — итог и управление:</b> Финансы сходятся на Главной и в индексе здоровья BHI; алерт из Центра контроля превращается в задачу с дедлайном и падает в «Мой дашборд» исполнителя; Настройки включают и выключают инструменты компании; AI-помощник работает поверх всего, но только на данных этой компании.<br>
+      <b>Почему инструментов много, а ввода данных мало.</b> Инструменты не пересылают данные друг другу — это разные взгляды на одни и те же операции. Поэтому выручка одинакова на Главной, в P&amp;L и в KPI продавца, а новый отчёт почти никогда не требует новых ручных вводов.<br>
+      <b>Доступ.</b> Учредитель видит всё · директор сети — без стратегических финансов · менеджер — только свой филиал и без чужих сумм · кассир, продавец и складовщик работают в своих окнах и видят отсюда только «Мои задачи».
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

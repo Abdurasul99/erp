@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>SDS — WareApp ERP</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #14284B; font-size: 11.5px; line-height: 1.55; margin: 0; }
+  h1 { font-size: 24px; color: #173361; margin: 0 0 4px; }
+  h2 { font-size: 16px; color: #173361; border-bottom: 2px solid #1E5AE8; padding-bottom: 4px; margin: 26px 0 10px; page-break-after: avoid; }
+  h3 { font-size: 13px; color: #173361; margin: 16px 0 6px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; page-break-inside: avoid; }
+  th { background: #E9F1FB; color: #173361; text-align: left; padding: 6px 8px; font-size: 10.5px; border: 1px solid #C6D2E2; }
+  td { padding: 5px 8px; border: 1px solid #DDE5F0; vertical-align: top; }
+  ul { margin: 6px 0 10px; padding-left: 20px; }
+  li { margin: 3px 0; }
+  .cover { text-align: center; padding-top: 200px; page-break-after: always; }
+  .cover .sub { color: #4A5B76; font-size: 15px; margin-top: 10px; }
+  .cover .meta { margin-top: 260px; color: #8B99AF; font-size: 11px; }
+  code { background: #EEF2F8; border-radius: 3px; padding: 0 4px; font-family: Consolas, monospace; font-size: 10.5px; }
+  pre { background: #F5F8FC; border: 1px solid #DDE5F0; border-radius: 8px; padding: 10px 12px; font-family: Consolas, monospace; font-size: 10px; line-height: 1.5; overflow: hidden; white-space: pre-wrap; }
+  .muted { color: #4A5B76; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div style="width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#21B0EA,#1E5AE8);margin:0 auto 24px;"></div>
+  <h1>Спецификация проектных решений (SDS)</h1>
+  <div class="sub">WareApp — облачная ERP-система для розничной и оптовой торговли</div>
+  <div class="sub" style="font-size:13px;">mywarehouse.uz</div>
+  <div class="meta">
+    Версия документа: 1.0 · Дата: 15 июля 2026 г.<br>
+    Статус: действующая система (production)
+  </div>
+</div>
+
+<h2>1. Архитектура системы</h2>
+<h3>1.1 Общая схема</h3>
+<pre>
+Браузер (SPA React)  ──HTTPS──►  nginx  ──►  Node.js/Express (pm2: wareapp-api, :3001)
+                                   │                    │
+                                   │ статика dist/      ├──► PostgreSQL «warehouse» (единая БД, мульти-тенант)
+                                   │ /uploads (фото)    ├──► AI-провайдер (OpenAI-совместимый API, ключ в .env)
+                                   │                    └──► Telegram Bot API (уведомления компаний)
+</pre>
+<p>Монолитный backend (один процесс Express) + одностраничный frontend. Всё состояние — в PostgreSQL; файлы (фото товаров, логотипы компаний) — на диске в <code>/uploads</code>, раздаются как статика.</p>
+
+<h3>1.2 Технологический стек</h3>
+<table>
+  <tr><th>Слой</th><th>Технологии</th></tr>
+  <tr><td>Frontend</td><td>React 18, Vite, React Router 6, axios; сборка в статический bundle; шрифты Inter/Nunito</td></tr>
+  <tr><td>Backend</td><td>Node.js, Express, node-postgres (pool), jsonwebtoken, bcryptjs, multer (загрузки), dotenv</td></tr>
+  <tr><td>БД</td><td>PostgreSQL; часовой пояс Asia/Tashkent; timestamp без TZ (локальное время)</td></tr>
+  <tr><td>Инфраструктура</td><td>VPS Ubuntu, nginx (TLS, статика, proxy), pm2 (процессы wareapp-api, wareapp-sim), ежедневный pg_dump</td></tr>
+  <tr><td>AI</td><td>OpenAI-совместимый чат-эндпоинт; провайдер/модель/ключ задаются переменными AI_API_URL / AI_MODEL / AI_API_KEY</td></tr>
+</table>
+
+<h3>1.3 Структура репозитория (ключевое)</h3>
+<pre>
+backend/
+  server.js            — весь API (маршруты, бизнес-логика, ensureSchema-миграции, audit)
+  toolsCatalog.js      — текстовый каталог инструментов для Wave AI (генерируется из modules.js)
+frontend/src/
+  App.jsx              — маршрутизация верхнего уровня, AuthContext, выбор оболочки по роли
+  components/          — «живые» операционные экраны (POS, склад, касса, клиенты, KPI…)
+  pages/               — Login, Desktop (операционные роли), Mobile POS, SellerView
+  owner/               — панель управленческих ролей:
+    OwnerShell.jsx     — каркас: сайдбар (группы Работа/Анализ/Система), топбар, период, филиал
+    modules.js         — реестр разделов/инструментов + матрица видимости ролей (HIDDEN_TOOLS)
+    ToolRouter.jsx     — резолвер sectionId/toolId → компонент; ErrorBoundary на инструмент
+    tools/             — ~70 инструментов; CombinedTools.jsx — 16 хабов с вкладками
+    CommandPalette.jsx — глобальный поиск Ctrl+K
+    icons.jsx          — line-иконки (SVG, Lucide-стиль) + карты SECTION_ICON/WIDGET_ICON
+    ui.jsx             — примитивы (Card/Tile/Badge/Charts/Pills…) + stripEmoji + форматтеры
+    styles.css         — дизайн-токены Confluent-канона (scoped .owner-shell)
+    tt.js / tt_tools.js— словари переводов RU→UZ
+</pre>
+
+<h2>2. Модель данных</h2>
+<h3>2.1 Принцип мульти-тенантности</h3>
+<p>Все бизнес-таблицы несут <code>company_id</code> (и, где применимо, <code>branch_id</code>). Каждый SQL-запрос фильтруется по скоупу пользователя; для управленческих ролей скоуп вычисляет хелпер <code>getUserBranchIds(user, query)</code>: admin — по запросу, founder/director — все филиалы компании (или выбранный), manager — жёстко свой филиал (иначе 403).</p>
+
+<h3>2.2 Основные таблицы (доменные группы)</h3>
+<table>
+  <tr><th>Группа</th><th>Таблицы (ключевые поля)</th></tr>
+  <tr><td>Организация</td><td><code>companies</code> (name, logo_url, disabled_tools[], disabled_widgets[], hr_criteria jsonb) · <code>branches</code> (company_id, name) · <code>users</code> (role, company_id, branch_id, blocked_tools[], ai_enabled, профиль)</td></tr>
+  <tr><td>Каталог</td><td><code>products</code> (name_ru/uz, type_id, category_id, brand, unit, price_buy, price_sell, barcode, photo_url) · <code>product_types</code> · <code>categories</code> · <code>product_stock</code> (branch_id, product_id, quantity)</td></tr>
+  <tr><td>Движение товара</td><td><code>stock_income</code> (поставщик, оплата/долг) · <code>stock_outcome</code> (продажа/возврат/списание/перемещение: status pending/approved/rejected, outcome_type, customer_id, payment_method/status, currency, exchange_rate, original_price, due_date)</td></tr>
+  <tr><td>Деньги</td><td><code>cash_income</code> (amount, currency, original_amount, exchange_rate, payment_method, is_settled, outcome_id) · <code>cash_expense</code> · <code>cash_categories</code></td></tr>
+  <tr><td>Контрагенты</td><td><code>customers</code> (phone, source, birth_date…) · <code>suppliers</code> · долги считаются из stock_income/stock_outcome (paid_amount/payment_status) + платежи погашения</td></tr>
+  <tr><td>HR</td><td><code>schedules</code>/смены · <code>attendance</code> · <code>absences</code> · <code>salaries</code>/выплаты · <code>hr_adjustments</code> (штрафы/бонусы) · обучение (курсы/прогресс)</td></tr>
+  <tr><td>Операции/задачи</td><td><code>tasks</code> · <code>task_templates</code> (повторяющиеся) · <code>checklists</code>/выполнения · <code>police_alerts</code> (статусы resolved/ignored к вычисляемым алертам)</td></tr>
+  <tr><td>Маркетинг/CRM</td><td><code>leads</code> · <code>channel_spend</code> · <code>marketing_content</code> (funnel_stage, план/факт) · <code>complaints</code> · NPS-отзывы · <code>referrals</code>/бонусы · события клиентов (ДР) · лояльность (баллы/тиры) · <code>discounts</code> · <code>scripts</code>+usage</td></tr>
+  <tr><td>Платформа</td><td><code>audit_log</code> (module, is_suspicious, suspicious_reason, old/new value) · <code>company_features</code> · <code>company_integrations</code> (тип, config jsonb: Telegram) · <code>ai_chat_log</code> · ручные фин.таблицы: <code>fixed_assets</code>, <code>loans</code>, <code>tax_obligations</code>, <code>payroll_liab</code></td></tr>
+</table>
+
+<h3>2.3 Эволюция схемы</h3>
+<p>Функция <code>ensureSchema()</code> выполняется при старте процесса: идемпотентные <code>CREATE TABLE IF NOT EXISTS</code> / <code>ALTER TABLE ADD COLUMN IF NOT EXISTS</code> / индексы. Отдельные волны миграций логируются («schema OK», «wave4 (sales) schema OK» и т.д.). Отказ одной необязательной таблицы не роняет чтение (degrade: try/catch с нулевыми значениями).</p>
+
+<h2>3. Backend: проектные решения</h2>
+<h3>3.1 API</h3>
+<ul>
+  <li>REST поверх <code>/api/*</code>; ответы JSON; ошибки — { error } с корректным HTTP-статусом.</li>
+  <li>Авторизация: middleware <code>auth([roles])</code> проверяет JWT и роль; скоупинг данных — <code>getUserBranchIds</code>/<code>getBranchFilter</code>.</li>
+  <li>Только параметризованный SQL ($1, $2…); строковая интерполяция допустима лишь для значений из белых списков (например, гранулярность date_trunc).</li>
+  <li>Крупные агрегирующие эндпоинты: <code>/company/dashboard</code> (totals, by_method, sales_trend c авто-гранулярностью час/день/месяц, biz_state c ролевой редакцией, топы, алерты), <code>/company/sales-chart</code> (бакеты периода + prev), <code>/team/kpi</code>, <code>/customers/segments</code>, <code>/risks</code>, <code>/police/alerts</code> и др.</li>
+  <li>Admin-плоскость отделена allowlist-ом маршрутов: оператор платформы не достигает финансовых данных клиентов; журналы для него редактируются.</li>
+</ul>
+
+<h3>3.2 Ролевая редакция данных (privacy by design)</h3>
+<ul>
+  <li>Менеджеру сервер отдаёт агрегаты «состояния бизнеса» только в долях (equity_ratio/liability_ratio) и тренд в нормированном виде (idx 0..1) — суммы не покидают сервер.</li>
+  <li>В операционных экранах «Продажи» менеджер видит денежные суммы строго своего филиала (осознанное скоуп-послабление).</li>
+  <li>AI-контекст для менеджера не формируется (роль вне AI_ROLES).</li>
+</ul>
+
+<h3>3.3 Журнал и «полиция магазина»</h3>
+<ul>
+  <li>Единый хелпер <code>audit(req, action, entity, id, old, new, opts)</code> пишет в audit_log; авто-детект подозрительности: скидка &gt;15%, списание &gt;3 шт, возврат, изменение цены, удаление.</li>
+  <li>Алерты «полиции» вычисляются на лету: suspicious-строки журнала + группировка отклонённых продаж (≥3 на продавца, ≥8 — high) с оценкой потерь; статусы «проверено/игнорировано» хранятся по детерминированному id алерта.</li>
+</ul>
+
+<h3>3.4 AI-подсистема</h3>
+<ul>
+  <li>Системный промпт собирается на сервере: язык ответа, правило «границы данных» (только данные компании, без внешних источников/бенчмарков), роль собеседника, свод данных компании (продажи 24 мес, касса, клиенты, филиалы).</li>
+  <li>Единый вызов OpenAI-совместимого API; таймауты и обработка недоступности провайдера; лог токенов в ai_chat_log; каталог инструментов (toolsCatalog) включается в промпт, чтобы AI подсказывал «куда нажать».</li>
+</ul>
+
+<h2>4. Frontend: проектные решения</h2>
+<h3>4.1 Оболочки по ролям</h3>
+<ul>
+  <li>founder/director/manager → owner-панель (OwnerShell); cashier/seller/warehouse → операционный Desktop/Mobile POS; admin → админ-оболочка.</li>
+  <li>OwnerShell даёт глобальный контекст BranchScope: выбранный филиал, период (пресеты + произвольный диапазон), язык; все инструменты читают его из контекста.</li>
+</ul>
+
+<h3>4.2 Реестр инструментов и хабы</h3>
+<ul>
+  <li><code>modules.js</code> — единственный источник структуры панели: разделы, инструменты, группы сайдбара, счётчики вкладок хабов; матрица HIDDEN_TOOLS по ролям; функции getSectionsForRole/getUserSections учитывают персональные и компанейские отключения.</li>
+  <li>Хаб = компонент TabHub (CombinedTools.jsx): сегмент-контрол вкладок, роль-фильтр вкладок (например, финансовые сценарии симулятора — только учредителю), запоминание активной вкладки в localStorage; каждая вкладка рендерит существующий инструмент без изменений.</li>
+  <li>ToolRouter резолвит URL /owner/:section/:tool → компонент, оборачивая в ErrorBoundary (изоляция сбоев) и хлебные крошки.</li>
+</ul>
+
+<h3>4.3 Дизайн-система (канон Confluent-light)</h3>
+<ul>
+  <li>Токены в <code>styles.css</code> (scoped .owner-shell): фон #F8FAFD, поверхность #FFFFFF, текст #14284B/#173361, primary denim #173361, акцент-градиент #21B0EA→#1E5AE8, границы #E3E9F2, мягкие тени; тёмные темы запрещены.</li>
+  <li>Иконки — только line-SVG (icons.jsx, штрих 1.8, currentColor); эмодзи вычищаются централизованно (stripEmoji в примитивах ui.jsx — Tile/Card/PageHeader/Badge/Pills/EmptyState), поэтому 60+ файлов инструментов не требуют правок.</li>
+  <li>Числа: Inter + tabular-nums; денежные значения — полные, с разделителями разрядов.</li>
+  <li>Локализация: tt(строка) с fallback-цепочкой словарей; узбекские даты — собственный fmtDate.</li>
+</ul>
+
+<h3>4.4 Навигация</h3>
+<ul>
+  <li>Сайдбар: Главная → группы РАБОТА / АНАЛИЗ / СИСТЕМА → AI; при сворачивании остаются иконки.</li>
+  <li>CommandPalette (Ctrl+K): поиск по названию и описанию инструментов (описания хабов содержат имена вкладок), клавиатурная навигация, переход по Enter.</li>
+</ul>
+
+<h2>5. Безопасность</h2>
+<table>
+  <tr><th>Механизм</th><th>Решение</th></tr>
+  <tr><td>Аутентификация</td><td>JWT (секрет из .env, ≥24 симв. в production); bcrypt-хэши; rate-limit 5/15мин на IP+логин</td></tr>
+  <tr><td>Авторизация</td><td>Ролевые списки на каждом маршруте; скоупинг company/branch на уровне SQL; PUT/DELETE проверяют принадлежность записи компании</td></tr>
+  <tr><td>Изоляция admin</td><td>Middleware-allowlist: admin достигает только /admin|companies|branches|users|auth|audit-log|role-change-log; прочее — 403; журналы редактируются</td></tr>
+  <tr><td>Импersonation</td><td>Отдельный scoped-токен (act_as, imp_by); /auth/me честно помечает режим; плашка возврата в UI</td></tr>
+  <tr><td>Файлы</td><td>multer: белые списки расширений и MIME для изображений; отдача только из /uploads</td></tr>
+  <tr><td>Аудит</td><td>audit_log со старым/новым значением, IP, ролью; авто-пометка подозрительных операций; журнал событий в панели</td></tr>
+  <tr><td>Секреты</td><td>Только backend/.env на сервере (JWT, DB, AI-ключ, Telegram); в репозитории секретов нет; ротация проведена</td></tr>
+</table>
+
+<h2>6. Развёртывание и эксплуатация</h2>
+<ul>
+  <li>Прод: VPS, nginx → статика frontend/dist и proxy /api → pm2-процесс wareapp-api (порт 3001).</li>
+  <li>Деплой: сборка Vite → выгрузка server.js + toolsCatalog.js + dist по SFTP → pm2 restart → smoke (HTTP 200, логи, «schema OK»). После выгрузки статики обязателен chmod -R a+rX.</li>
+  <li>Резервное копирование: ежедневный pg_dump с ротацией.</li>
+  <li>Наблюдаемость: pm2 logs; журнал событий; health-sweep скриптом по ~150 GET-эндпоинтам.</li>
+  <li>Нагрузочное тестирование: отдельный симулятор (Node+Vue+MQTT) гоняет полный цикл через реальный API на [SIM]-компаниях, измеряя ёмкость БД.</li>
+</ul>
+
+<h2>7. Ключевые проектные компромиссы</h2>
+<ul>
+  <li><b>Монолит вместо микросервисов</b> — скорость разработки и простота эксплуатации для команды из одного разработчика; горизонтальный рост отложен до реальной потребности.</li>
+  <li><b>Одна БД на всех тенантов</b> — дешевле и проще; изоляция обеспечивается дисциплиной скоупинга и проверками; строки-миллионники индексированы по (company_id/branch_id, created_at).</li>
+  <li><b>Вычисляемые алерты вместо материализованных</b> («полиция», риски, аномалии) — нет фоновых воркеров; статусы разрешения хранятся отдельно и мёржатся по детерминированным id.</li>
+  <li><b>ensureSchema на старте вместо внешних миграторов</b> — идемпотентно и атомарно с релизом кода; требует аккуратности с владельцем таблиц.</li>
+  <li><b>Хабы с вкладками вместо удаления инструментов</b> — упрощение навигации (116→78 карточек) без потери функциональности и с обратимостью.</li>
+</ul>
+
+<p class="muted" style="margin-top:30px;">Документ отражает фактическую реализацию на 15.07.2026 и предназначен для сопровождения и развития системы. Требования — в сопутствующем документе SRS.</p>
+
+</body>
+</html>
