@@ -90,3 +90,8 @@ COLLABORATOR_KEYS.md
 *_KEYS.md
 *_KEY.md
 KEYS.md
+
+# Архивы выкладки (собираются из коммита, см. document/*-ВЫКЛАДКА.md)
+/decor-deploy.tar
+/wave-dist.tgz
+/wave-deploy.tar
