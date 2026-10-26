@@ -16,7 +16,7 @@ setTimeout clearTimeout setInterval clearInterval requestAnimationFrame cancelAn
 alert confirm prompt performance crypto atob btoa Intl JSON Math Date Number String Boolean Object
 Array Set Map WeakMap Promise RegExp Error TypeError parseFloat parseInt isNaN isFinite Infinity
 NaN undefined globalThis arguments encodeURIComponent decodeURIComponent encodeURI decodeURI
-structuredClone`.split(/\s+/));
+structuredClone createImageBitmap`.split(/\s+/));
 
 test('frontend modules have no unbound runtime identifiers', () => {
   const missing = [];

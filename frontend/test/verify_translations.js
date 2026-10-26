@@ -20,11 +20,19 @@ function keysOf(file) {
   return set;
 }
 
+// Третий словарь — у сферы «Декор» (src/decor/texts.js, RU и UZ): её экраны
+// сверяются с ним, а не с общим.
 const storeDir = path.join(srcDir, 'store');
+const decorDir = path.join(srcDir, 'decor');
 const appKeys = keysOf(path.join(srcDir, 'i18n.js'));
 const storeKeys = keysOf(path.join(storeDir, 'storeI18n.mjs'));
-const dictFor = (file) => (file.startsWith(storeDir + path.sep) ? storeKeys : appKeys);
-const definedKeys = new Set([...appKeys, ...storeKeys]);
+const decorKeys = keysOf(path.join(decorDir, 'texts.js'));
+const dictFor = (file) => {
+  if (file.startsWith(storeDir + path.sep)) return storeKeys;
+  if (file.startsWith(decorDir + path.sep)) return decorKeys;
+  return appKeys;
+};
+const definedKeys = new Set([...appKeys, ...storeKeys, ...decorKeys]);
 
 // Walk source directory and find t('key') calls
 function walk(dir) {

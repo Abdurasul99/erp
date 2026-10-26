@@ -14,6 +14,7 @@ const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
 // общий только вход; код интерфейса в src/events не импортирует ничего из Wave.
 const EventsShell = lazy(() => import('./events/EventsShell.jsx'));
 const Storefront = lazy(() => import('./store/Storefront.jsx'));
+const DecorApp = lazy(() => import('./decor/DecorApp.jsx'));
 import { isPublicStorefrontPath } from './store/storeRouting.mjs';
 import { getLang, setLang } from './i18n.js';
 import { TaskInboxProvider } from './hooks/useTaskInbox.jsx';
@@ -428,7 +429,26 @@ function ErpApp() {
   );
 }
 
+// Сфера «Декор» (/decor/*): свой вход /decor/login, свой токен и свой сервис decor-api.
+// Отдельная ветка, как витрина: проверка входа Wave, заставка и опрос задач здесь не нужны.
+function DecorStandaloneApp() {
+  return (
+    <BrowserRouter>
+      <Suspense fallback={null}>
+        <Routes>
+          <Route path="/decor/*" element={<DecorApp />} />
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+}
+
+export function isDecorPath(pathname = '') {
+  return pathname === '/decor' || pathname.startsWith('/decor/');
+}
+
 export default function App() {
   const pathname = typeof window === 'undefined' ? '/' : window.location.pathname;
+  if (isDecorPath(pathname)) return <DecorStandaloneApp />;
   return isPublicStorefrontPath(pathname) ? <PublicStorefrontApp /> : <ErpApp />;
 }
