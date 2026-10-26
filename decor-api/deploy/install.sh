@@ -100,41 +100,8 @@ echo "$HEALTH"
 case "$HEALTH" in *'"status":"ok"'*) ;; *) die "decor-api не ответил ok. Лог: pm2 logs decor-api --lines 50 --nostream";; esac
 
 say "7/8 nginx: /api/decor/ → 127.0.0.1:$PORT"
-CONF="$(grep -lE '^[[:space:]]*location[[:space:]]+/api/[[:space:]]*\{' /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf 2>/dev/null | head -1 || true)"
-[ -n "$CONF" ] || die "не найден конфиг nginx с 'location /api/ {' — добавьте блок вручную (document/ДЕКОР-ВЫКЛАДКА.md)"
-CONF="$(readlink -f "$CONF")"
-if grep -q 'location /api/decor/' "$CONF"; then
-  echo "блок уже есть в $CONF"
-else
-  BACKUP_CONF="$CONF.before-decor-$(date +%F-%H%M%S)"
-  cp "$CONF" "$BACKUP_CONF"
-  # Блок вставляется перед каждым 'location /api/ {' (если server-блоков несколько — в каждый)
-  # [ \t] вместо [[:space:]]: в Ubuntu awk — это mawk, старые версии классов символов не знают
-  awk -v port="$PORT" '
-    /^[ \t]*location[ \t]+\/api\/[ \t]*\{/ {
-      match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH)
-      print ind "# Сервис «Декор» (decor-api): фото и видео с телефона до 300 МБ за раз"
-      print ind "location /api/decor/ {"
-      print ind "    proxy_pass http://127.0.0.1:" port "/api/decor/;"
-      print ind "    proxy_http_version 1.1;"
-      print ind "    proxy_set_header Host $host;"
-      print ind "    proxy_set_header X-Real-IP $remote_addr;"
-      print ind "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
-      print ind "    proxy_set_header X-Forwarded-Proto $scheme;"
-      print ind "    client_max_body_size 300m;"
-      print ind "    proxy_read_timeout 300s;"
-      print ind "    proxy_send_timeout 300s;"
-      print ind "}"
-    }
-    { print }' "$BACKUP_CONF" > "$CONF"
-  if nginx -t; then
-    systemctl reload nginx
-    echo "блок добавлен в $CONF, nginx перезагружен (копия прежнего: $BACKUP_CONF)"
-  else
-    cp "$BACKUP_CONF" "$CONF"
-    die "nginx -t не прошёл — конфиг возвращён как был"
-  fi
-fi
+. "$APP_DIR/deploy/nginx-decor.sh"
+nginx_decor "$PORT" || die "nginx: см. сообщение выше"
 
 say "8/8 Ежедневный бэкап: база $DB и папка фото"
 mkdir -p "$BACKUP_DIR"

@@ -198,6 +198,17 @@ test('файл чужой компании не отдаётся', async () => {
   assert.equal(JSON.stringify(orders.data).includes('Дилфуза'), false, 'заказы другой компании не видны');
 });
 
+test('reset-password: старый пароль перестаёт подходить, новый — подходит', async () => {
+  const { resetPassword } = require('../scripts/reset-password');
+  const r = await resetPassword(stack.pool, { username: 'dora_founder' });
+  assert.notEqual(r.password, founder.password);
+  const old = await call('POST', '/api/decor/auth/login', { body: { username: 'dora_founder', password: founder.password } });
+  assert.equal(old.status, 401);
+  await login('dora_founder', r.password);
+  await assert.rejects(resetPassword(stack.pool, { username: 'nobody' }), /не найден/);
+  founder.password = r.password;
+});
+
 test('заблокированный сотрудник теряет доступ сразу, даже с действующим токеном', async () => {
   await stack.pool.query('UPDATE users SET is_blocked=true WHERE id=$1', [cashier.userId]);
   const r = await call('GET', '/api/decor/auth/me', { token: cashier.token });
