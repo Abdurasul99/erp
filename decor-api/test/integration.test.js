@@ -209,6 +209,32 @@ test('reset-password: старый пароль перестаёт подход�
   founder.password = r.password;
 });
 
+test('create-staff: ученик и ПМ со входом — как через «Команду»', async () => {
+  const { createStaff, ROLE_BY_LEVEL } = require('../scripts/create-staff');
+  const staffSrc = fs.readFileSync(path.join(__dirname, '..', 'decor', 'staff.js'), 'utf8');
+  for (const [level, role] of Object.entries(ROLE_BY_LEVEL)) {
+    assert.match(staffSrc, new RegExp(`${level}: '${role}'`), `уровень ${level} → ${role} как в decor/staff.js`);
+  }
+  const trainee = await createStaff(stack.pool, { founder: 'dora_founder', level: 'trainee', username: 'dora_uchenik', name: 'Ученик Тест' });
+  const manager = await createStaff(stack.pool, { founder: 'dora_founder', level: 'pm', username: 'dora_menejer' });
+  assert.equal(trainee.role, 'pm');
+  assert.equal(manager.role, 'pm');
+  assert.equal(trainee.companyId, founder.companyId);
+
+  const tToken = await login('dora_uchenik', trainee.password);
+  const me = await call('GET', '/api/decor/auth/me', { token: tToken });
+  assert.equal(me.status, 200);
+  assert.equal(me.data.employee.level, 'trainee', 'вход привязан к сотруднику-ученику');
+  assert.deepEqual([...me.data.permissions].sort(), ['change_status', 'take_money', 'upload_report']);
+  const team = await call('GET', '/api/decor/employees', { token: founderToken });
+  const names = team.data.filter(e => e.has_login).map(e => e.username);
+  assert.ok(names.includes('dora_uchenik') && names.includes('dora_menejer'), 'оба видны учредителю в «Команде»');
+
+  await assert.rejects(createStaff(stack.pool, { founder: 'dora_founder', level: 'pm', username: 'dora_menejer' }), /уже занят/);
+  await assert.rejects(createStaff(stack.pool, { founder: 'nobody', level: 'pm', username: 'x_pm1' }), /не найден/);
+  await assert.rejects(createStaff(stack.pool, { founder: 'dora_founder', level: 'manager', username: 'x_pm2' }), /--level/);
+});
+
 test('заблокированный сотрудник теряет доступ сразу, даже с действующим токеном', async () => {
   await stack.pool.query('UPDATE users SET is_blocked=true WHERE id=$1', [cashier.userId]);
   const r = await call('GET', '/api/decor/auth/me', { token: cashier.token });
