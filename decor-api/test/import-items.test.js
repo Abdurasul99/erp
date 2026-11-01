@@ -85,6 +85,10 @@ test('остатки видны на складе и в калькуляторе
   assert.equal(avail.status, 200);
   assert.equal(avail.data.items.find(i => i.name === 'Тифони кичкина бой').free, 457);
   assert.equal(await count("SELECT count(*) n FROM audit_log WHERE username='import-items.js' AND entity_type='decor_item'"), 74);
+  // Журнал склада (D25): остаток каждой новой вещи — строкой opening, сумма журнала = «Куплено»
+  const { rows: [j] } = await stack.pool.query(`SELECT count(*)::int n, COALESCE(sum(qty), 0)::int s FROM decor_stock_moves
+    WHERE company_id=$1 AND kind='opening' AND comment='Импорт: dora-decor-2026-10-21.json'`, [dora.companyId]);
+  assert.deepEqual([j.n, j.s], [74, NOTEBOOK.filter(x => x.name !== 'Медуза').reduce((a, x) => a + x.qty, 0)]);
 
   const foreign = await call('GET', '/api/decor/items', other.token);
   assert.deepEqual(foreign.data, [], 'другая компания остатков Dora Decor не видит');

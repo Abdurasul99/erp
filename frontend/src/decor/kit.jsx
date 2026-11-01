@@ -133,6 +133,51 @@ export function Stepper({ value, onChange, min = 0, max, label }) {
   );
 }
 
+// Выбор вещи из длинного списка: поле с поиском по названию и выпадающий список (↑ ↓, Enter — выбрать, Esc — закрыть).
+// items — [{ id, name, note?, tone? }]; value — id или ''; onChange(id | ''). Набор текста сбрасывает выбор, пока вещь
+// не выбрана из списка. Нажатие на строку не уводит фокус из поля (mousedown → preventDefault), выбор — по click.
+export function ItemPick({ items, value, onChange, placeholder, label, id }) {
+  const { t } = useT();
+  const [q, setQ] = useState(null);        // null — в поле название выбранной вещи
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const list = useRef(null);
+  const sel = items.find(i => String(i.id) === String(value));
+  const needle = (q || '').trim().toLowerCase();
+  const found = needle ? items.filter(i => i.name.toLowerCase().includes(needle)) : items;
+  const shown = found.slice(0, 50);
+  const choose = it => { onChange(it.id); setQ(null); setOpen(false); };
+  useEffect(() => { if (open) list.current?.children[hi]?.scrollIntoView?.({ block: 'nearest' }); }, [hi, open]);
+  const key = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) setOpen(true); else setHi(h => Math.min(h + 1, shown.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter' && open && shown[hi]) { e.preventDefault(); choose(shown[hi]); }
+    else if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); setQ(null); }   // окно (Sheet) не закрывается
+  };
+  const listId = `${id || 'pick'}-list`;
+  return (
+    <div className="dd-combo">
+      <Icon name="search" size={16} />
+      <input id={id} className="dd-inp" role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list"
+        aria-label={label || placeholder} autoComplete="off" placeholder={placeholder} value={q ?? (sel?.name || '')}
+        onChange={e => { setQ(e.target.value); setOpen(true); setHi(0); if (sel) onChange(''); }}
+        onFocus={e => { setOpen(true); e.target.select(); }} onBlur={() => { setOpen(false); setQ(null); }} onKeyDown={key} />
+      {open && (
+        <ul id={listId} ref={list} role="listbox" className="dd-combo-list">
+          {shown.map((it, k) => (
+            <li key={it.id} role="option" aria-selected={k === hi} className={k === hi ? 'on' : ''}
+              onMouseDown={e => e.preventDefault()} onClick={() => choose(it)} onMouseEnter={() => setHi(k)}>
+              <span>{it.name}</span>{it.note && <small className={it.tone || ''}>{it.note}</small>}
+            </li>
+          ))}
+          {!shown.length && <li className="dd-combo-note">{t('noItemsFound')}</li>}
+          {found.length > shown.length && <li className="dd-combo-note">{t('pickMore', { n: found.length - shown.length })}</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function Sheet({ title, onClose, children, footer }) {
   useEffect(() => {
     const k = e => e.key === 'Escape' && onClose?.();

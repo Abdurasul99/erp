@@ -7,7 +7,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import Icon from '../icons.jsx';
 import { useT, fm, fm2, fday, fmonth, fts } from '../i18n.js';
-import { useDecor, useLoad, useActions, Hero, Tabs, Card, Chip, Sheet, Loading, Empty, NoAccess, numIn } from '../kit.jsx';
+import { useDecor, useLoad, useActions, Hero, Tabs, Card, Chip, Sheet, Loading, Empty, NoAccess, ItemPick, numIn } from '../kit.jsx';
 import { EvidenceSheet, Thumb, evForm, evidenceError } from '../evidence.jsx';
 import OrderCard from '../orders/OrderCard.jsx';
 
@@ -321,9 +321,8 @@ function BuySheet({ onClose, onDone }) {
       {f.kind === 'item' && <>
         <div className="dd-form">
           <div className="dd-field"><label htmlFor="b_it">{t('colItem')}</label>
-            <select id="b_it" className="dd-inp" value={f.item_id} onChange={e => set({ item_id: e.target.value })}>
-              <option value="">{t('pickItem')}</option>{(items || []).map(i => <option key={i.id} value={i.id}>{i.name} · {i.qty_bought} {t('pcs')}</option>)}
-            </select></div>
+            <ItemPick id="b_it" items={(items || []).map(i => ({ id: i.id, name: i.name, note: `${i.qty_bought} ${t('pcs')}` }))} value={f.item_id}
+              placeholder={t('pickItem')} onChange={v => set({ item_id: v === '' ? '' : String(v) })} /></div>
           <div className="dd-field"><label htmlFor="b_q">{t('fundQty')}</label><input id="b_q" className="dd-inp num" inputMode="numeric" value={f.qty} onChange={e => set({ qty: e.target.value.replace(/\D/g, '') })} /></div>
           <div className="dd-field"><label htmlFor="b_u">{t('fundUnit')}</label><input id="b_u" className="dd-inp num" inputMode="decimal" value={f.unit} placeholder={unitAuto !== null ? String(unitAuto) : ''} onChange={e => set({ unit: numIn(e.target.value) })} /></div>
           <div className="dd-field"><label htmlFor="b_r">{t('fundResource')}</label><input id="b_r" className="dd-inp num" inputMode="numeric" value={f.resource} placeholder={item ? String(item.resource_orders ?? '') : ''} onChange={e => set({ resource: e.target.value.replace(/\D/g, '') })} /></div>

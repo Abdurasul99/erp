@@ -8,6 +8,7 @@ const STATUSES = ['lead', 'design', 'prepay', 'booked', 'install', 'acceptance',
 const ACTIONS = [
   'create_order', 'change_status', 'handle_decor', 'take_money', 'confirm_money',
   'upload_report', 'approve_report', 'pay_team', 'see_finance', 'edit_settings',
+  'manage_items',   // D25: заводить вещи, название, архив, приход, списание, инвентаризация (цена и ресурс — edit_settings)
 ];
 // Учредитель и ген. директор могут всё; их полномочия не хранятся и не выключаются
 const OWNERS = ['founder', 'gen_dir'];
@@ -44,7 +45,7 @@ const PANEL_SECTIONS = ['tools', 'orders', 'calc', 'booking', 'decor', 'finance'
 // ПМ — статусы, приём денег, отчёты» (ТЗ и прототип). Учредитель меняет их сам в Настройках.
 const DEFAULT_PERMISSIONS = {
   cashier: ['create_order', 'change_status', 'take_money', 'confirm_money', 'pay_team'],
-  warehouse: ['handle_decor'],
+  warehouse: ['handle_decor', 'manage_items'],
   pm: ['change_status', 'take_money', 'upload_report'],
 };
 

@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { getPool } = require('../sphere_db');
+const { stockMove } = require('../decor/stock');
 
 // Файл: { items: [{ name, qty, check? }] }; check — пометка «сверить с тетрадью», в базу не идёт
 function readList(file) {
@@ -40,14 +41,17 @@ async function importItems(pool, { founder, file, dryRun = false }) {
     if (!f) throw new Error(`Учредитель «${founder}» не найден`);
     // Новые вещи — в конец списка склада, в порядке файла
     let sort = (await c.query('SELECT COALESCE(MAX(sort_order), 0) AS n FROM decor_items WHERE company_id=$1', [f.company_id])).rows[0].n;
+    // Журнал склада (D25) есть — «Куплено» ставится строкой opening, как у вещи с экрана; до D25 — напрямую
+    const journal = (await c.query("SELECT to_regclass('public.decor_stock_moves') IS NOT NULL AS ok")).rows[0].ok;
     const added = [];
     const kept = [];
     for (const it of list) {
       const { rows: [row] } = await c.query(
         `INSERT INTO decor_items (company_id, name, qty_bought, sort_order) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (company_id, lower(name)) DO NOTHING RETURNING id`, [f.company_id, it.name, it.qty, sort + 1]);
+         ON CONFLICT (company_id, lower(name)) DO NOTHING RETURNING id`, [f.company_id, it.name, journal ? 0 : it.qty, sort + 1]);
       if (row) {
         sort += 1;
+        if (journal) await stockMove(c, { cid: f.company_id, itemId: row.id, kind: 'opening', qty: it.qty, comment: `Импорт: ${source}` });
         added.push({ id: row.id, ...it });
         await c.query(
           `INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, new_value)

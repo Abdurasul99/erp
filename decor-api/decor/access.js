@@ -9,7 +9,7 @@ const ACTION_LABELS = {
   create_order: 'оформлять заказы', change_status: 'менять статус заказа', handle_decor: 'выдавать и принимать декор',
   take_money: 'принимать деньги от клиента', confirm_money: 'подтверждать деньги (касса)', upload_report: 'загружать отчёты',
   approve_report: 'одобрять отчёты', pay_team: 'выплачивать сдельную оплату', see_finance: 'видеть себестоимость и прибыль',
-  edit_settings: 'менять настройки',
+  edit_settings: 'менять настройки', manage_items: 'вести склад (вещи, приход, списание, инвентаризация)',
 };
 const FEATURE_LABELS = {
   'decor-orders': 'Заказы, калькулятор и бронь', 'decor-warehouse': 'Склад и износ', 'decor-finance': 'Себестоимость и деньги',

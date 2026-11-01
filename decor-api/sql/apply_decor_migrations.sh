@@ -7,7 +7,7 @@ set -euo pipefail
 DB="${1:?укажите базу, например wave_decor}"
 PSQL="${PSQL:-psql}"
 cd "$(dirname "$0")"
-FILES=(D00_core_contract.sql D10_decor_domain.sql D20_late_return.sql D21_returned_after_close.sql D22_company_delete.sql D23_idempotency.sql D24_evidence_fund.sql)
+FILES=(D00_core_contract.sql D10_decor_domain.sql D20_late_return.sql D21_returned_after_close.sql D22_company_delete.sql D23_idempotency.sql D24_evidence_fund.sql D25_stock_journal.sql)
 for f in "${FILES[@]}"; do
   v="${f%.sql}"
   if "$PSQL" -d "$DB" -tAc "SELECT 1 FROM schema_migrations WHERE version='$v'" 2>/dev/null | grep -q 1; then

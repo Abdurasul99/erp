@@ -7,6 +7,7 @@
 const F = require('./formulas');
 const { loadCompany } = require('./data');
 const { makeView } = require('./views');
+const { stockMove } = require('./stock');
 const { PAYMENT_KINDS, PRICE_MODES } = require('./defaults');
 const { wrap, fail, idParam, toInt, money, oneOf, intIn, text, todayYmd } = require('./common');
 const U = require('./uploads');
@@ -161,8 +162,8 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
       let item = null;
       if (newItem) {
         const { rows: [it] } = await c.query(`INSERT INTO decor_items (company_id, name, qty_bought, price_usd, resource_orders, sort_order)
-          VALUES ($1,$2,$3,$4,$5,(SELECT COALESCE(max(sort_order),0)+1 FROM decor_items WHERE company_id=$1))
-          RETURNING id, name, qty_bought, price_usd::float8 AS price_usd, resource_orders`, [req.decor.cid, newName, qty, unit, resource]);
+          VALUES ($1,$2,0,$3,$4,(SELECT COALESCE(max(sort_order),0)+1 FROM decor_items WHERE company_id=$1))
+          RETURNING id, name, qty_bought, price_usd::float8 AS price_usd, resource_orders`, [req.decor.cid, newName, unit, resource]);
         item = { ...it, qty_before: 0, price_before: null, resource_before: null };
       } else if (itemId) {
         const { rows: [old] } = await c.query(`SELECT id, qty_bought, price_usd::float8 AS price_usd, resource_orders
@@ -171,13 +172,15 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
         // «Старое количество» для средней — сколько вещи реально есть: куплено − окончательно пропавшее
         const present = F.model(await loadCompany(c, req.decor.cid), todayYmd()).presentQty(itemId);
         const price = mode === 'average' ? F.averagePrice(present, old.price_usd, qty, unit) : mode === 'replace' ? unit : old.price_usd;
-        const { rows: [it] } = await c.query(`UPDATE decor_items SET qty_bought=qty_bought+$3, price_usd=$4, resource_orders=COALESCE($5, resource_orders), is_active=true
+        const { rows: [it] } = await c.query(`UPDATE decor_items SET price_usd=$3, resource_orders=COALESCE($4, resource_orders), is_active=true
           WHERE id=$1 AND company_id=$2 RETURNING id, name, qty_bought, price_usd::float8 AS price_usd, resource_orders`,
-        [itemId, req.decor.cid, qty, price, resource]);
+        [itemId, req.decor.cid, price, resource]);
         item = { ...it, qty_before: old.qty_bought, present_before: present, price_before: old.price_usd, resource_before: old.resource_orders };
       }
       const { rows: [sp] } = await c.query(`INSERT INTO decor_fund_spend (company_id, amount_usd, comment, item_id, qty, unit_price_usd, new_item, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [req.decor.cid, amount, comment, item?.id || null, qty, unit, Boolean(newItem), req.user.id]);
+      // Склад пополняется операцией журнала (D25) — со ссылкой на покупку
+      if (item) item.qty_bought = (await stockMove(c, { cid: req.decor.cid, itemId: item.id, kind: 'purchase', qty, userId: req.user.id, comment, fundSpendId: sp.id })).qty_after;
       return { spend_id: sp.id, item };
     });
     audit(req, 'fund_spend', 'decor_fund_spend', r.spend_id, r.item ? { qty_bought: r.item.qty_before, price_usd: r.item.price_before } : null,

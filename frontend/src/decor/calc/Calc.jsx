@@ -8,7 +8,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import api, { errText, store } from '../api.js';
 import Icon from '../icons.jsx';
 import { useT, fm, fm2, fsum, fday, fperiod, localYmd, addDays } from '../i18n.js';
-import { useDecor, useLoad, useActions, Hero, Card, Chip, Stepper, DateInput, numIn } from '../kit.jsx';
+import { useDecor, useLoad, useActions, Hero, Card, Chip, Stepper, DateInput, ItemPick, numIn } from '../kit.jsx';
 
 const emptyCalc = () => ({ client: '', phone: '', address: '', event_date: addDays(localYmd(), 3), type: 'big', team: [], lines: [], rented: '', price: '', prepay: '' });
 
@@ -32,6 +32,7 @@ export default function Calc() {
   const KEY = `decor_calc_${me.user.id}`;
   const [C, setC] = useState(() => { try { return { ...emptyCalc(), ...JSON.parse(store.get(KEY) || '{}') }; } catch { return emptyCalc(); } });
   const [pick, setPick] = useState({ item: '', qty: '' });
+  const qtyRef = useRef(null);   // после выбора вещи — сразу количество
   const [preview, setPreview] = useState(null);
   const [created, setCreated] = useState(null);
   const actions = useActions();                 // ключ повтора для «Подтвердить»: тот же, пока сервер не ответил
@@ -167,11 +168,11 @@ export default function Calc() {
             <div className="dd-row dd-between"><h3>{t('designItems')}</h3><Chip tone="blue">{t('period', { from: fdd2(period.from), to: fdd2(period.to) })}</Chip></div>
             <p className="dd-note" style={{ marginTop: 4 }}>{t('freeHint', { period: fperiod(period, lang) })}</p>
             <div className="dd-row" style={{ margin: '12px 0' }}>
-              <select className="dd-inp" style={{ flex: '2 1 220px' }} value={pick.item} onChange={e => setPick({ ...pick, item: e.target.value })} aria-label={t('pickItem')}>
-                <option value="">{t('pickItem')}</option>
-                {items.map(it => <option key={it.id} value={it.id}>{it.name} · {it.free > 0 ? t('freeOpt', { n: it.free }) : t('freeNone')}</option>)}
-              </select>
-              <input className="dd-inp" style={{ flex: '1 1 80px' }} inputMode="numeric" placeholder={t('qty')} value={pick.qty}
+              <div style={{ flex: '2 1 220px', minWidth: 0 }}>
+                <ItemPick id="c_pick" items={items.map(it => ({ id: it.id, name: it.name, note: it.free > 0 ? t('freeOpt', { n: it.free }) : t('freeNone'), tone: it.free > 0 ? '' : 'bad' }))}
+                  value={pick.item} placeholder={t('pickItem')} onChange={v => { setPick({ ...pick, item: v === '' ? '' : String(v) }); if (v !== '') qtyRef.current?.focus(); }} />
+              </div>
+              <input ref={qtyRef} className="dd-inp" style={{ flex: '1 1 80px' }} inputMode="numeric" placeholder={t('qty')} value={pick.qty}
                 onChange={e => setPick({ ...pick, qty: e.target.value.replace(/\D/g, '') })} onKeyDown={e => e.key === 'Enter' && addLine()} aria-label={t('qty')} />
               <button type="button" className="dd-btn" onClick={addLine} disabled={!pick.item || !(Number(pick.qty) > 0)}><Icon name="plus" size={16} /> {t('add')}</button>
             </div>

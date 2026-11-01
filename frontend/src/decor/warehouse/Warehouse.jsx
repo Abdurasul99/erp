@@ -35,7 +35,7 @@ export default function Warehouse() {
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const [wh, err, reload] = useLoad(() => api.get('/warehouse').then(r => r.data), []);
-  const [items, itemsErr, reloadItems] = useLoad(() => api.get('/items').then(r => r.data), []);
+  const [items, itemsErr, reloadItems] = useLoad(() => api.get('/items', { params: { all: 1 } }).then(r => r.data), []);   // с архивом — для вкладки «Декор и износ»
   const [qty, setQty] = useState({});          // количества в заявках: 'orderId:itemId' → шт
   const [sheet, setSheet] = useState(null);     // окно действия
   const actions = useActions();                 // ключ повтора на каждое действие, кнопки заблокированы до ответа
@@ -81,7 +81,7 @@ export default function Warehouse() {
     return t('finalAllDone', { n: d?.accepted?.length || 0 }) + (short.length ? t('finalAllShort', { list: short.map(a => `${names.get(a.item_id)} ${a.short}`).join(', ') }) : '');
   });
 
-  const stats = [[items ? items.length : '·', t('whStatItems')], [counts.requests, t('whStatRequests')], [counts.onsite, t('whStatSites')]];
+  const stats = [[items ? items.filter(i => i.is_active).length : '·', t('whStatItems')], [counts.requests, t('whStatRequests')], [counts.onsite, t('whStatSites')]];
   if (counts.notback) stats.push([counts.notback, t('whStatNotBack')]);
   return (
     <>
