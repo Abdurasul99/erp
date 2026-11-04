@@ -5,7 +5,9 @@
    Этого хватает и экранам, и ИИ: ИИ берёт выручку, прибыль, тренд по месяцам, топ товаров и продавцов,
    склад, долги и клиентов именно из этих таблиц (getCompanyContextForAI в server.js).
 
-   Метка сида — '[SEED]' в note/description/title, у товаров — штрихкод 'SEED-<компания>-<n>'.
+   Метка сида — '[SEED-ZOO]' в note/description/title, у товаров — штрихкод 'SEED-<компания>-<n>'.
+   Своя метка, а не общий '[SEED]': им помечают и seed_demo.js, и чужие тестовые наборы (в Zveri такой уже был),
+   а очистка любого из них не должна задевать другие.
    Всё одной транзакцией; повторный запуск сначала убирает прежний сид ЭТОЙ компании (чужие не трогает).
    Своих товаров и остатков компании скрипт не меняет — каталог сида отдельный.
 
@@ -17,7 +19,7 @@
 require('dotenv').config({ path: __dirname + '/.env' });
 const { Pool } = require('pg');
 
-const M = '[SEED]';
+const M = '[SEED-ZOO]'; // LIKE '%[SEED]%' её не находит — и наоборот
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const flag = (name) => process.argv.includes(name);
 
@@ -178,8 +180,11 @@ async function main() {
     console.log(`Компания ${cid} «${company.name}»: филиалов ${branches.length} (${branchRows.map(b => b.name).join(', ') || '—'}), сотрудников ${users.length} (${users.map(u => `${u.username}:${u.role}`).join(', ') || '—'})`);
     const own = (await c.query(`SELECT
         (SELECT COUNT(*) FROM products WHERE company_id=$1 AND deleted_at IS NULL AND COALESCE(barcode,'') NOT LIKE 'SEED-%')::int AS products,
-        (SELECT COUNT(*) FROM stock_outcome WHERE branch_id = ANY($2::int[]) AND COALESCE(note,'') NOT LIKE '%${M}%')::int AS sales`, [cid, branches])).rows[0];
-    if (own.products || own.sales) console.log(`  своих данных: товаров ${own.products}, продаж ${own.sales} — не трогаются, сид ляжет рядом`);
+        (SELECT COUNT(*) FROM stock_outcome WHERE branch_id = ANY($2::int[]) AND COALESCE(note,'') NOT LIKE '%${M}%')::int AS sales,
+        (SELECT COUNT(*) FROM stock_outcome WHERE branch_id = ANY($2::int[]) AND note LIKE '%[SEED]%')::int AS other_seed`, [cid, branches])).rows[0];
+    if (own.products || own.sales) {
+      console.log(`  своих данных: товаров ${own.products}, продаж ${own.sales}${own.other_seed ? ` (из них ${own.other_seed} — другой тестовый набор [SEED])` : ''} — не трогаются, сид ляжет рядом`);
+    }
     if (!branches.length) { console.log('Нет ни одного филиала — сначала создайте филиал в админке.'); process.exitCode = 1; return; }
     if (!users.length) { console.log('Нет ни одного сотрудника (кроме админа) — продажи не на кого записать.'); process.exitCode = 1; return; }
 
