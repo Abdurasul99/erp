@@ -16,13 +16,14 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const chance = (p) => Math.random() < p;
 const tsAgo = (daysAgo, hour) => new Date(Date.now() - daysAgo * 86400000 - (24 - (hour ?? rnd(9, 21))) * 3600000);
 
-async function clean() {
-  await pool.query(`DELETE FROM cash_income  WHERE description LIKE '%${M}%'`);
-  await pool.query(`DELETE FROM cash_expense WHERE description LIKE '%${M}%'`);
-  await pool.query(`DELETE FROM complaints   WHERE description LIKE '%${M}%'`);
-  await pool.query(`DELETE FROM tasks        WHERE description LIKE '%${M}%' OR title LIKE '%${M}%'`);
-  await pool.query(`DELETE FROM stock_outcome WHERE note LIKE '%${M}%'`);
-  await pool.query(`DELETE FROM customers    WHERE note LIKE '%${M}%'`);
+// Только своя компания: та же метка [SEED] стоит и у сида других компаний (seed_company.js).
+async function clean(company, branches) {
+  await pool.query(`DELETE FROM cash_income  WHERE branch_id = ANY($1::int[]) AND description LIKE '%${M}%'`, [branches]);
+  await pool.query(`DELETE FROM cash_expense WHERE branch_id = ANY($1::int[]) AND description LIKE '%${M}%'`, [branches]);
+  await pool.query(`DELETE FROM complaints   WHERE company_id = $1 AND description LIKE '%${M}%'`, [company]);
+  await pool.query(`DELETE FROM tasks        WHERE company_id = $1 AND (description LIKE '%${M}%' OR title LIKE '%${M}%')`, [company]);
+  await pool.query(`DELETE FROM stock_outcome WHERE branch_id = ANY($1::int[]) AND note LIKE '%${M}%'`, [branches]);
+  await pool.query(`DELETE FROM customers    WHERE company_id = $1 AND note LIKE '%${M}%'`, [company]);
 }
 
 (async () => {
@@ -37,7 +38,7 @@ async function clean() {
   console.log(`company=${COMPANY} branches=${branches} products=${prods.length} createdBy=${createdBy}`);
   if (!branches.length || !prods.length) { console.log('нет филиалов/товаров с ценой'); process.exit(0); }
 
-  console.log('Чистим прежний сид...'); await clean();
+  console.log('Чистим прежний сид...'); await clean(COMPANY, branches);
   if (cleanOnly) { console.log('Готово (clean).'); await pool.end(); return; }
 
   // 1. Клиенты (~20) с разными источниками и ДР
