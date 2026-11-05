@@ -1,7 +1,7 @@
 import React, { useContext, useState, useEffect, useRef, createContext } from 'react';
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { AuthContext } from '../App.jsx';
-import { getUserSections, NAV_GROUPS } from './modules.js';
+import { getUserSections, resolveOwnerPath, NAV_GROUPS } from './modules.js';
 import { useTt } from './tt.js';
 import { PageHeaderContext } from './PageHeaderContext.js';
 import CommandPalette from './CommandPalette.jsx';
@@ -218,10 +218,10 @@ export default function OwnerShell() {
                   </button>
                 )}
 
-                {/* Колокольчик задач. Для учредителя/директора/менеджера это
-                    единственный вход в уведомления: своего окна задач в панели
-                    нет, поэтому клик по событию ведёт на ролевой дашборд. */}
-                <NotificationsBell variant="owner" onOpenTask={() => navigate('/owner/myboard/my-board')} />
+                {/* Колокольчик задач. Клик по событию ведёт на ролевой дашборд, а у
+                    учредителя (дашборда нет) — в «Продажи → Задачи». */}
+                <NotificationsBell variant="owner" onOpenTask={() => navigate(
+                  resolveOwnerPath(user, '/owner/myboard/my-board') || resolveOwnerPath(user, '/owner/operations/tasks') || '/owner')} />
 
                 {/* Выбор филиала — прячем на странице AI (по просьбе клиента). */}
                 {!isAiPage && (isOwner ? (
