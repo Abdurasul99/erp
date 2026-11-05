@@ -1,4 +1,7 @@
-// Тексты экранов сферы «Декор»: русский и узбекский (латиница). {name} — подстановка.
+// Тексты экранов сферы «Декор»: русский и узбекский (латиница); узбекская кириллица собирается из латиницы
+// в конце файла (cyrillic.js). {name} — подстановка.
+import { toCyrillic } from './cyrillic.js';
+
 export const TEXTS = {
   ru: {
     // ---------- общие ----------
@@ -502,3 +505,6 @@ export const TEXTS = {
     stFeatureOff: 'funksiyani admin o‘chirgan',
   },
 };
+
+// Узбекская кириллица — та же латиница, переписанная по правилам: новый текст достаточно добавить в ru и uz.
+TEXTS.uzc = Object.fromEntries(Object.entries(TEXTS.uz).map(([k, v]) => [k, toCyrillic(v)]));

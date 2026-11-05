@@ -9,7 +9,7 @@ import { useDecor, useLoad, Hero, Card, Chip, Loading, NoAccess } from '../kit.j
 import OrderCard from '../orders/OrderCard.jsx';
 
 const DAYS = 14;
-const WEEK = { ru: ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'], uz: ['yak', 'du', 'se', 'chor', 'pay', 'ju', 'sha'] };
+const WEEK = { ru: ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'], uz: ['yak', 'du', 'se', 'chor', 'pay', 'ju', 'sha'], uzc: ['як', 'ду', 'се', 'чор', 'пай', 'жу', 'ша'] };
 const wd = (ymd, lang) => WEEK[lang][new Date(`${ymd}T00:00:00Z`).getUTCDay()];
 
 export default function Booking() {

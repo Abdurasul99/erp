@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api, { TOKEN_KEY, USER_KEY, store, errText } from './api.js';
 import Icon from './icons.jsx';
-import { useT, fday, fm } from './i18n.js';
+import { useT, fday, fm, LANGS } from './i18n.js';
 import { SECTIONS, useDecor, Tile, Hero, Sheet, StatusChip } from './kit.jsx';
 
 const LABEL = id => `s_${id === 'decor' ? 'decor' : id}`;
@@ -16,12 +16,16 @@ export function useSection() {
   return SECTIONS.find(s => s !== '|' && s.path === seg)?.id || 'home';
 }
 
+// RU · UZ (латиница) · ЎЗ (кириллица)
+const LANG_LABELS = { ru: 'RU', uz: 'UZ', uzc: 'ЎЗ' };
 function LangToggle() {
   const { lang, setLang } = useT();
   return (
-    <button type="button" className="dd-lang" onClick={() => setLang(lang === 'ru' ? 'uz' : 'ru')} aria-label="RU / UZ">
-      <span className={lang === 'ru' ? 'on' : ''}>RU</span><span className={lang === 'uz' ? 'on' : ''}>UZ</span>
-    </button>
+    <div className="dd-lang" role="group" aria-label="Язык · Til · Тил">
+      {LANGS.map(l => (
+        <button key={l} type="button" className={lang === l ? 'on' : ''} aria-pressed={lang === l} onClick={() => setLang(l)}>{LANG_LABELS[l]}</button>
+      ))}
+    </div>
   );
 }
 
