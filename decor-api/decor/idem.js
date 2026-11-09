@@ -50,6 +50,7 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const EXEMPT = new Set([
   '/api/decor/calc/preview',          // предрасчёт калькулятора — только читает
   '/api/decor/auth/change-password',  // смена своего пароля — повтор безвреден, экрана пока нет
+  '/api/decor/ai/chat',               // вопрос ИИ — ничего не записывает
 ]);
 const needsKey = req => WRITE_METHODS.has(req.method) && !EXEMPT.has(req.originalUrl.split('?')[0]);
 const MISSING = { error: 'Нет ключа повторной отправки (Idempotency-Key) — действие не выполнено. Обновите страницу и повторите.', code: 'idem_missing' };

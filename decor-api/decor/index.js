@@ -45,6 +45,7 @@ module.exports = function mountDecor(app, { auth, authLimiter, JWT_SECRET }) {
   require('./reports')(ctx);     // фото и видео отчёты, одобрение → начисления
   require('./team')(ctx);        // сдельная оплата: начисления и выплаты
   require('./hints')(ctx);       // подсказки Wave Intelligence и главная
+  require('./ai')(ctx);          // ИИ-помощник Wave Intelligence: вопросы по данным компании (только чтение)
 
   // Здоровье сферы: база и обязательная защита от повторной отправки (таблица decor_idempotency, D23)
   app.get('/api/decor/health', async (req, res) => {

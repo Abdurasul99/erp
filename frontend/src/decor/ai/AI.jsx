@@ -7,6 +7,7 @@ import api from '../api.js';
 import { useT } from '../i18n.js';
 import { useDecor, useLoad, Hero, Card, Chip, Loading, NoAccess } from '../kit.jsx';
 import { hintView, SEV_TONE } from './hintText.js';
+import Chat from './Chat.jsx';
 
 const ORDER = { bad: 0, warn: 1, info: 2 };
 
@@ -28,6 +29,7 @@ export default function AI() {
   return (
     <>
       <Hero id="ai" stats={[[hints.length, t('aiStatAll')], [n('bad'), t('aiStatBad')], [n('warn'), t('aiStatWarn')]]} />
+      <Chat />
       <div className="dd-statuspick" role="tablist" style={{ marginBottom: 0 }}>
         {[['all', t('aiAll'), hints.length], ['bad', t('sev_bad'), n('bad')], ['warn', t('sev_warn'), n('warn')], ['info', t('sev_info'), n('info')]].map(([k, l, c]) => (
           <button key={k} type="button" role="tab" aria-selected={filter === k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>{l}<span>{c}</span></button>

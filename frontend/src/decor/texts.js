@@ -230,6 +230,9 @@ export const TEXTS = {
     homeCash: 'Касса', homeCashSub: 'подтверждено − выплаты − фонд', homeNoPhoto: 'Заказы без фото', homeNoPhotoSub: 'не закрыть, пока нет доказательств',
     homeHint: 'подсказка', homeAllHints: 'Все подсказки ({n})', homeToday: 'Сегодня и завтра', homeTodayN: 'заказов: {n}', homeTodayNone: 'На сегодня и завтра заказов нет',
     // ---------- Шаг 6: Wave Intelligence ----------
+    aiChatT: 'Спросите Wave Intelligence', aiChatP: 'Отвечает по данным вашей компании: заказы, бронь, склад, деньги, команда. Ничего не меняет в системе.',
+    aiPh: 'Например: какие заказы на этой неделе?', aiSend: 'Спросить', aiThinking: 'Думаю…', aiClear: 'Новый разговор',
+    aiQ1: 'Какие заказы на этой неделе?', aiQ2: 'Каких вещей не хватает на ближайшие даты?', aiQ3: 'Кто из команды должен сдать деньги?', aiQ4: 'Что срочно сделать сегодня?',
     aiStatAll: 'подсказок', aiStatBad: 'срочно', aiStatWarn: 'важно', aiAll: 'Все', aiMoreConflicts: 'И ещё конфликтов брони: {n}', sev_bad: 'срочно', sev_warn: 'важно', sev_info: 'к сведению',
     hAllGoodT: 'Всё под контролем', hAllGoodP: 'Конфликтов брони, несданных денег и пропущенных фото нет.', hGoOrders: 'Открыть заказы',
     hConflictT: 'Не хватает «{item}» на {date}', hConflictP: 'Забронировано {need} шт, есть {have}. Аренда у другой студии на {short} шт или замена в дизайне.',
@@ -473,6 +476,9 @@ export const TEXTS = {
     homeCash: 'Kassa', homeCashSub: 'tasdiqlangan − to‘lovlar − fond', homeNoPhoto: 'Fotosiz buyurtmalar', homeNoPhotoSub: 'dalil bo‘lmaguncha yopilmaydi',
     homeHint: 'maslahat', homeAllHints: 'Barcha maslahatlar ({n})', homeToday: 'Bugun va ertaga', homeTodayN: 'buyurtmalar: {n}', homeTodayNone: 'Bugun va ertaga buyurtma yo‘q',
     // ---------- 6-qadam: Wave Intelligence ----------
+    aiChatT: 'Wave Intelligence’dan so‘rang', aiChatP: 'Kompaniyangiz ma’lumotlari bo‘yicha javob beradi: buyurtmalar, bron, ombor, pul, jamoa. Tizimda hech narsani o‘zgartirmaydi.',
+    aiPh: 'Masalan: shu haftada qanday buyurtmalar bor?', aiSend: 'So‘rash', aiThinking: 'O‘ylayapman…', aiClear: 'Yangi suhbat',
+    aiQ1: 'Shu haftada qanday buyurtmalar bor?', aiQ2: 'Yaqin sanalarga qaysi buyumlar yetishmaydi?', aiQ3: 'Jamoadan kim pul topshirishi kerak?', aiQ4: 'Bugun nimani shoshilinch qilish kerak?',
     aiStatAll: 'maslahat', aiStatBad: 'shoshilinch', aiStatWarn: 'muhim', aiAll: 'Hammasi', aiMoreConflicts: 'Yana bron ziddiyatlari: {n}', sev_bad: 'shoshilinch', sev_warn: 'muhim', sev_info: 'ma’lumot uchun',
     hAllGoodT: 'Hammasi nazoratda', hAllGoodP: 'Bron ziddiyatlari, topshirilmagan pul va yetishmagan fotolar yo‘q.', hGoOrders: 'Buyurtmalarni ochish',
     hConflictT: '{date} kuni «{item}» yetishmaydi', hConflictP: '{need} dona bron qilingan, bor {have}. Boshqa studiyadan {short} dona ijara yoki dizaynda almashtirish.',

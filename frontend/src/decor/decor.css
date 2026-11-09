@@ -365,3 +365,15 @@
 .dd-hist-btn { border: 0; padding: 0; background: none; text-align: left; color: inherit; width: 100%; cursor: pointer; border-radius: 14px; }
 .dd-hist-btn:hover .dd-hist-row { border-color: var(--muted); }
 @media (max-width: 640px) { .dd-sortsel { flex: 1 1 100%; } }
+
+/* ИИ-помощник Wave Intelligence: чат на экране подсказок */
+.dd-aichat h3 { margin: 6px 0 4px; font-size: 18px; }
+.dd-aichat-sugg { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dd-aichat-sugg .dd-btn { white-space: normal; text-align: left; }
+.dd-aichat-log { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; margin-top: 12px; padding-right: 2px; }
+.dd-aimsg { max-width: 85%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; font-size: 14px; }
+.dd-aimsg.user { align-self: flex-end; background: var(--blue); color: #fff; border-bottom-right-radius: 6px; }
+.dd-aimsg.assistant { align-self: flex-start; background: var(--surface2); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
+.dd-aimsg.busy { color: var(--muted); }
+.dd-aichat-form { display: flex; gap: 8px; margin-top: 12px; }
+@media (max-width: 640px) { .dd-aimsg { max-width: 92%; } .dd-aichat-form .dd-btn { padding: 10px 12px; } }
