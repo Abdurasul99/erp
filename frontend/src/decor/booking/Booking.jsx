@@ -5,7 +5,7 @@ import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api.js';
 import { useT, fday, fdd, localYmd, addDays } from '../i18n.js';
-import { useDecor, useLoad, Hero, Card, Chip, Loading, NoAccess } from '../kit.jsx';
+import { useLoad, Hero, Card, Chip, Loading, NoAccess } from '../kit.jsx';
 import OrderCard from '../orders/OrderCard.jsx';
 
 const DAYS = 14;
@@ -14,7 +14,6 @@ const wd = (ymd, lang) => WEEK[lang][new Date(`${ymd}T00:00:00Z`).getUTCDay()];
 
 export default function Booking() {
   const { t, lang } = useT();
-  const { can } = useDecor();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
   const fromParam = params.get('from') || '';
@@ -35,10 +34,8 @@ export default function Booking() {
   const orderNo = o => <button key={o.id} type="button" className="dd-btn ghost sm" onClick={() => openCard(o.id)}>{o.no}</button>;
   return (
     <>
-      <Hero id="booking" stats={stats} acts={[
-        ...(can('create_order') ? [{ label: t('oNewInCalc'), onClick: () => nav('/decor/calc') }] : []),
-        { label: t('t_decor'), onClick: () => nav('/decor/warehouse') },
-      ]} />
+      {/* Без кнопок «Новый заказ в калькуляторе» и «Склад» (владелец, 09.11.2026): оба раздела — в доке */}
+      <Hero id="booking" stats={stats} />
 
       {b.conflicts.length > 0 && (
         <Card className="alert">
@@ -106,16 +103,18 @@ export default function Booking() {
           <button type="button" className="dd-btn ghost sm" onClick={() => go({ from: addDays(from, 7) })}>{t('later')}</button>
           <span className="dd-note">{t('period', { from: fdd(b.days[0]), to: fdd(b.days[b.days.length - 1]) })}</span>
         </div>
-        <div className="dd-tw" style={{ marginTop: 10 }}>
+        {/* Своя прокрутка в обе стороны: строка дат закреплена сверху, вещь и «Есть» — слева (иначе при
+            прокрутке вниз по 75 вещам даты уезжали вместе со страницей) */}
+        <div className="dd-tw dd-calwrap" style={{ marginTop: 10 }}>
           <table className="dd-cal">
             <thead><tr>
-              <th className="name">{t('colItem')}</th><th>{t('colTotal')}</th>
+              <th className="name">{t('colItem')}</th><th className="total">{t('colTotal')}</th>
               {b.days.map(d => <th key={d} className={d === today ? 'today' : ''}>{fdd(d)}<br /><span style={{ fontWeight: 500 }}>{wd(d, lang)}</span></th>)}
             </tr></thead>
             <tbody>{b.items.map(it => (
               <tr key={it.id}>
                 <td className="name">{it.name}</td>
-                <td className="num" style={{ textAlign: 'center', fontWeight: 800 }}>{it.stock}</td>
+                <td className="num total" style={{ textAlign: 'center', fontWeight: 800 }}>{it.stock}</td>
                 {it.cells.map(c => {
                   const used = c.reserved + c.not_returned;
                   return (

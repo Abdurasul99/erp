@@ -52,9 +52,11 @@ module.exports = function makeAccess({ pool, auth, SPHERE }) {
     : res.status(403).json({ error: `Нет полномочия: ${actions.map(a => ACTION_LABELS[a]).join(' или ')}`, code: 'no_permission', actions }));
   const need = (req, ...actions) => { if (!actions.some(a => has(req, a))) fail(403, `Нет полномочия: ${actions.map(a => ACTION_LABELS[a]).join(' или ')}`, { code: 'no_permission', actions }); };
   const ownerOnly = (req, res, next) => (req.decor.isOwner ? next() : res.status(403).json({ error: 'Только учредитель', code: 'owner_only' }));
+  // Строже ownerOnly: только сам учредитель, без ген. директора (управление панелью — решение владельца 09.11.2026)
+  const founderOnly = (req, res, next) => (req.user.role === 'founder' ? next() : res.status(403).json({ error: 'Только учредитель', code: 'founder_only' }));
   const feature = key => (req, res, next) => (req.decor.features.has(key) ? next()
     : res.status(403).json({ error: `Функция «${FEATURE_LABELS[key] || key}» не включена для компании`, code: 'feature_off', feature: key }));
 
-  return { A, can, need, has, ownerOnly, feature };
+  return { A, can, need, has, ownerOnly, founderOnly, feature };
 };
 module.exports.ACTION_LABELS = ACTION_LABELS;

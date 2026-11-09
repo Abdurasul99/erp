@@ -2,7 +2,7 @@
 // Денежные подсказки — только тем, кто видит деньги; конфликты брони и «не вернулось» — всем.
 const F = require('./formulas');
 const { makeView } = require('./views');
-const { wrap, todayYmd } = require('./common');
+const { wrap, fail, todayYmd } = require('./common');
 
 // severity: bad — срочно, warn — важно, info — к сведению
 function buildHints(req, data, m) {
@@ -83,14 +83,22 @@ module.exports = ({ app, A, feature, loadModel }) => {
     res.json(buildHints(req, data, m));
   }));
 
-  // Главная: цифры, главная проблема, «сегодня и завтра»
+  // Главная: цифры, главная проблема, «сегодня и завтра».
+  // Период карточки заказов выбирает сам пользователь: ?from=YYYY-MM-DD&to=YYYY-MM-DD (по умолчанию — 7 дней с сегодня;
+  // раньше было зашито «на 7 дней», владелец 09.11.2026). Считаются заказы с датой мероприятия в периоде, кроме лидов.
   app.get('/api/decor/home', A(), wrap(async (req, res) => {
     const today = todayYmd();
+    const ymd = (v, name) => (v === undefined || v === '' ? null
+      : /^\d{4}-\d{2}-\d{2}$/.test(String(v)) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? String(v) : fail(400, `Неверная дата «${name}»`));
+    const from = ymd(req.query.from, 'с') || today;
+    const to = ymd(req.query.to, 'по') || F.addDays(from, 6);
+    if (to < from) fail(400, 'Дата «по» раньше даты «с»', { code: 'bad_period' });
+    if (to > F.addDays(from, 366)) fail(400, 'Период — не больше года', { code: 'bad_period' });
     const { data, m } = await loadModel(req);
     const v = makeView(req, data, m);
     const has = a => req.decor.perms.has(a);
     const money = has('see_finance') || has('confirm_money');
-    const week = data.orders.filter(o => F.isActive(o) && o.event_date >= today && o.event_date <= F.addDays(today, 7));
+    const inPeriod = data.orders.filter(o => o.status !== 'lead' && o.event_date >= from && o.event_date <= to);
     const closedOrders = data.orders.filter(o => o.status === 'closed');
     const closed = closedOrders.map(o => m.orderCost(o));
     const hints = req.decor.features.has('decor-ai') ? buildHints(req, data, m) : [];
@@ -102,8 +110,11 @@ module.exports = ({ app, A, feature, loadModel }) => {
     if (intel.kind === 'pm_debt') intel.total_usd = hints.filter(h => h.kind === 'pm_debt').reduce((a, h) => a + h.amount_usd, 0);
     res.json({
       today,
+      period: { from, to },
       kpi: {
-        week_orders: week.length,
+        period_orders: inPeriod.length,
+        period_active: inPeriod.filter(F.isActive).length,
+        period_closed: inPeriod.filter(o => o.status === 'closed').length,
         pending_reports: data.orders.reduce((a, o) => a + o.reports.filter(r => r.status === 'pending').length, 0),
         ...(money ? { pm_debt_usd: data.employees.reduce((a, e) => a + m.pmDebt(e.id), 0), cash_usd: m.cashBox(), fund_remaining_usd: m.fund().remaining } : {}),
         evidence_missing_orders: data.orders.filter(o => !['lead', 'closed'].includes(o.status) && m.evidenceStatus(o).some(e => e.blocking && e.applicable && !e.ok)).length,

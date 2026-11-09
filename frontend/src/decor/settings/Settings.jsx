@@ -1,7 +1,7 @@
 // Настройки: «Доказательства» (требования к фото/видео по этапам, лимиты файлов, место под файлы — учредитель),
 // «Полномочия» (должность × действие; меняет учредитель, у учредителя и ген. директора — всё), «Нормы расчёта» (курс,
 // дней на объекте, транспорт, расходники, постоянные расходы, заказов в месяц — «менять настройки»; закрытые заказы не
-// меняются — у них снимок), «Панель» (какие разделы видны в нижнем меню — учредитель). Каждое сохранение — с ключом повтора.
+// меняются — у них снимок), «Панель» (какие разделы видны в нижнем меню — видит и меняет только учредитель). Каждое сохранение — с ключом повтора.
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api from '../api.js';
@@ -16,7 +16,10 @@ export default function Settings() {
   const [params, setParams] = useSearchParams();
   const owner = me.is_owner;
   const edit = owner || can('edit_settings');
-  const tabs = [['evidence', t('stTabEvidence')], ...(edit ? [['perms', t('stTabPerms')]] : []), ...(edit || can('see_finance') ? [['norms', t('stTabNorms')]] : []), ['panel', t('stTabPanel')]];
+  // «Панель» — только учредителю, без ген. директора (сервер — founderOnly): остальным выключенные
+  // тумблеры показывали настройку, которую не тронуть (владелец, 09.11.2026).
+  const founder = me.user.role === 'founder';
+  const tabs = [['evidence', t('stTabEvidence')], ...(edit ? [['perms', t('stTabPerms')]] : []), ...(edit || can('see_finance') ? [['norms', t('stTabNorms')]] : []), ...(founder ? [['panel', t('stTabPanel')]] : [])];
   const tab = tabs.some(x => x[0] === params.get('tab')) ? params.get('tab') : 'evidence';
   return (
     <>
@@ -199,7 +202,7 @@ function PanelTab() {
   };
   return (
     <Card>
-      <div className="dd-row dd-between"><h3>{t('stPanelTitle')}</h3>{!me.is_owner && <Chip tone="gray">{t('stOwnerOnly')}</Chip>}</div>
+      <div className="dd-row dd-between"><h3>{t('stPanelTitle')}</h3></div>
       <p className="dd-note" style={{ marginTop: 4 }}>{t('stPanelNote')}</p>
       <div className="dd-lines" style={{ marginTop: 10 }}>
         {PANEL.map(id => {

@@ -1,12 +1,34 @@
-// Главная (как в прототипе): приветствие, 4 цифры (заказы на 7 дней, деньги у ПМ, отчёты на одобрении, прибыль закрытых /
+// Главная (как в прототипе): приветствие, 4 цифры (заказы за выбранный период, деньги у ПМ, отчёты на одобрении, прибыль закрытых /
 // касса / заказы без фото — по полномочиям), карточка Wave Intelligence с главной проблемой (конфликт брони → не вернулось →
 // несданные деньги → не хватает фото → всё под контролем), «сегодня и завтра», отделы.
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api.js';
-import { useT, fm, fday, ftoday } from '../i18n.js';
+import { useT, fm, fday, fdm, ftoday, localYmd, addDays } from '../i18n.js';
 import { SECTIONS, useDecor, useLoad, Card, Chip, StatusChip, Tile, Loading } from '../kit.jsx';
 import { hintView } from '../ai/hintText.js';
+
+// Период карточки заказов выбирает сам пользователь (владелец, 09.11.2026: было зашито «на 7 дней»).
+// 7 / 14 / 30 дней — с сегодняшнего дня, «этот месяц» — с 1-го по последнее число, «свой» — любые две даты.
+// Выбор запоминается на устройстве.
+const PERIOD_KEY = 'decor_home_period';
+const PRESETS = [['7', 'homeP7'], ['14', 'homeP14'], ['30', 'homeP30'], ['month', 'homePMonth'], ['custom', 'homePCustom']];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function rangeOf(p, today) {
+  if (p.key === 'month') {
+    const [y, m] = today.split('-').map(Number);
+    return [`${today.slice(0, 7)}-01`, localYmd(new Date(y, m, 0))];
+  }
+  if (p.key === 'custom') return [p.from, p.to];
+  return [today, addDays(today, Number(p.key) - 1)];
+}
+function loadPeriod(today) {
+  try {
+    const p = JSON.parse(localStorage.getItem(PERIOD_KEY));
+    if (p && PRESETS.some(x => x[0] === p.key) && (p.key !== 'custom' || (DATE_RE.test(p.from) && DATE_RE.test(p.to) && p.from <= p.to))) return p;
+  } catch { /* хранилище недоступно или испорчено */ }
+  return { key: '7', from: today, to: addDays(today, 6) };
+}
 
 const visible = (s, me) => s !== '|' && (!s.feature || me.features.includes(s.feature)) && !(me.panel_off || []).includes(s.id);
 
@@ -14,11 +36,15 @@ export default function Home() {
   const { t, lang } = useT();
   const { me } = useDecor();
   const nav = useNavigate();
-  const [h, err, reload] = useLoad(() => api.get('/home').then(r => r.data), []);
+  const today = localYmd();
+  const [period, setPeriod] = useState(() => loadPeriod(today));
+  const [from, to] = rangeOf(period, today);
+  const choose = p => { setPeriod(p); try { localStorage.setItem(PERIOD_KEY, JSON.stringify(p)); } catch { /* только на сессию */ } };
+  const [h, err, reload] = useLoad(() => api.get('/home', { params: { from, to } }).then(r => r.data), [from, to]);
   const name = me.user.first_name || me.user.username;
   const k = h?.kpi || {};
   const kpis = h ? [
-    [t('homeWeek'), k.week_orders, t('homeWeekSub'), null, '/decor/orders'],
+    [t('homeOrders'), k.period_orders, `${from === to ? fdm(from, lang) : `${fdm(from, lang)} – ${fdm(to, lang)}`} · ${t('homeOrdersSub', { a: k.period_active ?? 0, c: k.period_closed ?? 0 })}`, null, '/decor/orders'],
     ...(k.pm_debt_usd !== undefined ? [[t('homeDebt'), fm(k.pm_debt_usd), t('homeDebtSub'), k.pm_debt_usd > 0 ? 'var(--warn)' : null, '/decor/finance?tab=money']] : []),
     [t('homeReports'), k.pending_reports, t('homeReportsSub'), k.pending_reports > 0 ? 'var(--blue)' : null, '/decor/reports'],
     ...(k.closed_profit_usd !== undefined ? [[t('homeProfit'), fm(k.closed_profit_usd), t('homeProfitSub', { sum: fm(k.closed_shortage_usd || 0) }), null, '/decor/finance?tab=costs']]
@@ -31,6 +57,22 @@ export default function Home() {
       <div className="dd-greet">
         <h1>{t('hello', { name })}</h1>
         <p><span className="dd-dot" />{ftoday(h?.today || new Date().toISOString().slice(0, 10), lang)} · {me.user.company_name}</p>
+      </div>
+      <div className="dd-period">
+        <div className="dd-statuspick" role="tablist" aria-label={t('homePeriod')}>
+          {PRESETS.map(([key, label]) => (
+            <button key={key} type="button" role="tab" aria-selected={period.key === key} className={period.key === key ? 'on' : ''}
+              onClick={() => choose(key === 'custom' ? { key, from, to } : { key })}>{t(label)}</button>
+          ))}
+        </div>
+        {period.key === 'custom' && (
+          <div className="dd-row dd-period-dates">
+            <label>{t('homeFrom')} <input className="dd-inp" type="date" value={period.from} max={period.to}
+              onChange={e => DATE_RE.test(e.target.value) && e.target.value <= period.to && choose({ ...period, from: e.target.value })} /></label>
+            <label>{t('homeTo')} <input className="dd-inp" type="date" value={period.to} min={period.from}
+              onChange={e => DATE_RE.test(e.target.value) && e.target.value >= period.from && choose({ ...period, to: e.target.value })} /></label>
+          </div>
+        )}
       </div>
       {!h ? <Loading err={err} retry={reload} /> : <>
         <div className="dd-grid dd-g4">

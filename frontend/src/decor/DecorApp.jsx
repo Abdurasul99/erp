@@ -5,6 +5,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import api, { TOKEN_KEY, store } from './api.js';
 import { DecorCtx, useToast, Loading, Hero, NoAccess, section } from './kit.jsx';
 import { TopBar, Dock, Login, Tools, logoutNow } from './shell.jsx';
+import { UpdateBanner } from './update.jsx';
 import Home from './home/Home.jsx';
 import Warehouse from './warehouse/Warehouse.jsx';
 import Calc from './calc/Calc.jsx';
@@ -42,6 +43,7 @@ function Shell() {
     <DecorCtx.Provider value={ctx}>
       <div className="dd">
         <TopBar hints={hints} />
+        <UpdateBanner />
         <main className="dd-page">
           <Routes>
             <Route index element={<Home />} />

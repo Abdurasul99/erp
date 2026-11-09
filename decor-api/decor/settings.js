@@ -7,7 +7,7 @@ const NUM_COLS = `rate_uzs::float8 AS rate_uzs, transport_usd::float8 AS transpo
   target_usd::float8 AS target_usd, repair_uzs::float8 AS repair_uzs, other_fixed_usd::float8 AS other_fixed_usd,
   expected_orders, days_on_site, panel_off`;
 
-module.exports = ({ app, pool, A, can, has, ownerOnly, audit, txFor }) => {
+module.exports = ({ app, pool, A, can, has, ownerOnly, founderOnly, audit, txFor }) => {
   const read = async cid => (await pool.query(`SELECT ${NUM_COLS} FROM decor_settings WHERE company_id=$1`, [cid])).rows[0]
     || fail(409, 'Настройки компании не созданы');
 
@@ -46,7 +46,7 @@ module.exports = ({ app, pool, A, can, has, ownerOnly, audit, txFor }) => {
   }));
 
   // «Управление панелью»: выключенные разделы пропадают из нижнего меню у всех. Меняет только учредитель.
-  app.put('/api/decor/settings/panel', A(ownerOnly), wrap(async (req, res) => {
+  app.put('/api/decor/settings/panel', A(founderOnly), wrap(async (req, res) => {
     const list = Array.isArray(req.body?.panel_off) ? [...new Set(req.body.panel_off)] : fail(400, 'panel_off — список разделов');
     for (const k of list) oneOf(k, PANEL_SECTIONS, 'Раздел');
     await txFor(req)(c => c.query('UPDATE decor_settings SET panel_off=$1, updated_by=$2, updated_at=NOW() WHERE company_id=$3', [list, req.user.id, req.decor.cid])

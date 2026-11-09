@@ -37,7 +37,20 @@ export default function Calc() {
   const [created, setCreated] = useState(null);
   const actions = useActions();                 // ключ повтора для «Подтвердить»: тот же, пока сервер не ответил
   const busy = !!actions.busy;
-  const [employees] = useLoad(() => api.get('/employees').then(r => r.data), []);
+  const [employees, , reloadEmployees] = useLoad(() => api.get('/employees').then(r => r.data), []);
+  // Новый человек прямо из калькулятора — тем, кто заводит сотрудников (раздел «Команда» могут выключить в панели)
+  const people = useActions();
+  const [np, setNp] = useState(null);           // { name, level } — форма открыта
+  const addPerson = async () => {
+    const body = { name: np.name.trim(), level: np.level };
+    try {
+      const r = await people.run(`emp:${body.level}:${body.name}`, cfg => api.post('/employees', body, cfg));
+      if (!r) return;
+      await reloadEmployees();
+      setC(c => ({ ...c, team: [...c.team, r.data.id] }));
+      setNp(null); toast(t('personAdded', { name: body.name }));
+    } catch (e) { toast(errText(e, t('error')), 'bad'); }
+  };
   const [settings] = useLoad(() => (fin ? api.get('/settings').then(r => r.data) : Promise.resolve(null)), [fin]);
   const [avail, , reloadAvail] = useLoad(() => api.get('/availability', { params: { date: C.event_date, ...(C.order_id ? { order_id: C.order_id } : {}) } }).then(r => r.data), [C.event_date, C.order_id]);
   const set = patch => setC(c => ({ ...c, ...patch }));
@@ -159,7 +172,19 @@ export default function Calc() {
                     onClick={() => set({ team: C.team.includes(e.id) ? C.team.filter(x => x !== e.id) : [...C.team, e.id] })}>
                     {e.name}<small>{t(`l_${e.level}`)}</small></button>
                 ))}
+                {can('edit_settings') && !np && <button type="button" className="add" onClick={() => setNp({ name: '', level: 'trainee' })}>＋ {t('personNew')}</button>}
               </div>
+              {np && (
+                <div className="dd-row dd-newperson">
+                  <input className="dd-inp" autoFocus value={np.name} maxLength={120} placeholder={t('personName')} aria-label={t('personName')}
+                    onChange={e => setNp({ ...np, name: e.target.value })} onKeyDown={e => e.key === 'Enter' && np.name.trim() && addPerson()} />
+                  <select className="dd-inp" value={np.level} aria-label={t('personLevel')} onChange={e => setNp({ ...np, level: e.target.value })}>
+                    <option value="trainee">{t('l_trainee')}</option><option value="pm">{t('l_pm')}</option>
+                  </select>
+                  <button type="button" className="dd-btn sm" disabled={!np.name.trim() || !!people.busy} onClick={addPerson}>{t('personAdd')}</button>
+                  <button type="button" className="dd-btn ghost sm" onClick={() => setNp(null)}>{t('cancel')}</button>
+                </div>
+              )}
               {!C.team.length && <span className="dd-note">{t('teamNone')}</span>}
             </div>
           </Card>

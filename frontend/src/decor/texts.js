@@ -30,6 +30,7 @@ export const TEXTS = {
     t_settings: 'Настройки', d_settings: 'Требования к фото и видео · файлы · полномочия, нормы и панель',
     // должности и уровни
     r_founder: 'Учредитель', r_gen_dir: 'Ген. директор', r_cashier: 'Кассир', r_warehouse: 'Кладовщик', r_pm: 'Проект-менеджер',
+    personNew: 'Новый человек', personName: 'Имя и фамилия', personLevel: 'Уровень', personAdd: 'Добавить в команду', personAdded: '{name} — в команде',
     l_pm: 'ПМ', l_trainee: 'Ученик', l_cashier: 'Кассир', l_storekeeper: 'Кладовщик',
     // статусы
     st_lead: 'Лид', st_design: 'Дизайн', st_prepay: 'Предоплата', st_booked: 'Забронирован', st_install: 'Монтаж',
@@ -225,9 +226,12 @@ export const TEXTS = {
     stUsage: 'Сколько места занимают файлы', stUsagePhotos: 'Фото: {n} шт', stUsageVideos: 'Видео: {n} шт', stUsageTotal: 'Всего', stRefresh: 'Обновить',
     stMoreSoon: 'Полномочия, нормы расчёта и панель — Шаг 6', stMoreSoonNote: 'Эти настройки уже работают на сервере; экран для них — на следующем шаге.',
     // ---------- Шаг 6: главная ----------
-    homeWeek: 'Заказы на 7 дней', homeWeekSub: 'в работе и в брони', homeDebt: 'Деньги у ПМ', homeDebtSub: 'не подтверждено кассой',
+    homeOrders: 'Заказы за период', homeOrdersSub: 'в работе {a} · закрыто {c}', homePeriod: 'Период',
+    homeP7: '7 дней', homeP14: '14 дней', homeP30: '30 дней', homePMonth: 'Этот месяц', homePCustom: 'Свой период', homeFrom: 'с', homeTo: 'по',
+    homeDebt: 'Деньги у ПМ', homeDebtSub: 'не подтверждено кассой',
     homeReports: 'Отчёты ждут одобрения', homeReportsSub: 'фото и видео', homeProfit: 'Прибыль закрытых', homeProfitSub: 'недостача {sum}',
     homeCash: 'Касса', homeCashSub: 'подтверждено − выплаты − фонд', homeNoPhoto: 'Заказы без фото', homeNoPhotoSub: 'не закрыть, пока нет доказательств',
+    updateReady: 'Вышло обновление — обновите страницу, чтобы работать в новой версии', updateBtn: 'Обновить',
     homeHint: 'подсказка', homeAllHints: 'Все подсказки ({n})', homeToday: 'Сегодня и завтра', homeTodayN: 'заказов: {n}', homeTodayNone: 'На сегодня и завтра заказов нет',
     // ---------- Шаг 6: Wave Intelligence ----------
     aiChatT: 'Спросите Wave Intelligence', aiChatP: 'Отвечает по данным вашей компании: заказы, бронь, склад, деньги, команда. Ничего не меняет в системе.',
@@ -288,6 +292,7 @@ export const TEXTS = {
     t_ai: 'Wave Intelligence', d_ai: 'Ma’lumotlaringiz bo‘yicha maslahatlar',
     t_settings: 'Sozlamalar', d_settings: 'Foto va videoga talablar · fayllar · vakolatlar, me’yorlar va panel',
     r_founder: 'Ta’sischi', r_gen_dir: 'Bosh direktor', r_cashier: 'Kassir', r_warehouse: 'Omborchi', r_pm: 'Loyiha menejeri',
+    personNew: 'Yangi odam', personName: 'Ism va familiya', personLevel: 'Daraja', personAdd: 'Jamoaga qo‘shish', personAdded: '{name} — jamoada',
     l_pm: 'PM', l_trainee: 'Shogird', l_cashier: 'Kassir', l_storekeeper: 'Omborchi',
     st_lead: 'Lid', st_design: 'Dizayn', st_prepay: 'Oldindan to‘lov', st_booked: 'Bron qilingan', st_install: 'Montaj',
     st_acceptance: 'Qabul', st_dismantle: 'Demontaj', st_closed: 'Yopilgan',
@@ -471,9 +476,12 @@ export const TEXTS = {
     stUsage: 'Fayllar qancha joy egallaydi', stUsagePhotos: 'Foto: {n} ta', stUsageVideos: 'Video: {n} ta', stUsageTotal: 'Jami', stRefresh: 'Yangilash',
     stMoreSoon: 'Vakolatlar, hisob me’yorlari va panel — 6-qadam', stMoreSoonNote: 'Bu sozlamalar serverda allaqachon ishlaydi; ular uchun ekran keyingi qadamda.',
     // ---------- 6-qadam: bosh sahifa ----------
-    homeWeek: '7 kunlik buyurtmalar', homeWeekSub: 'ishda va bronda', homeDebt: 'PMlardagi pul', homeDebtSub: 'kassa tasdiqlamagan',
+    homeOrders: 'Davrdagi buyurtmalar', homeOrdersSub: 'ishda {a} · yopilgan {c}', homePeriod: 'Davr',
+    homeP7: '7 kun', homeP14: '14 kun', homeP30: '30 kun', homePMonth: 'Shu oy', homePCustom: 'O‘z davri', homeFrom: 'dan', homeTo: 'gacha',
+    homeDebt: 'PMlardagi pul', homeDebtSub: 'kassa tasdiqlamagan',
     homeReports: 'Tasdiq kutayotgan hisobotlar', homeReportsSub: 'foto va video', homeProfit: 'Yopilganlar foydasi', homeProfitSub: 'kamomad {sum}',
     homeCash: 'Kassa', homeCashSub: 'tasdiqlangan − to‘lovlar − fond', homeNoPhoto: 'Fotosiz buyurtmalar', homeNoPhotoSub: 'dalil bo‘lmaguncha yopilmaydi',
+    updateReady: 'Yangilanish chiqdi — yangi versiyada ishlash uchun sahifani yangilang', updateBtn: 'Yangilash',
     homeHint: 'maslahat', homeAllHints: 'Barcha maslahatlar ({n})', homeToday: 'Bugun va ertaga', homeTodayN: 'buyurtmalar: {n}', homeTodayNone: 'Bugun va ertaga buyurtma yo‘q',
     // ---------- 6-qadam: Wave Intelligence ----------
     aiChatT: 'Wave Intelligence’dan so‘rang', aiChatP: 'Kompaniyangiz ma’lumotlari bo‘yicha javob beradi: buyurtmalar, bron, ombor, pul, jamoa. Tizimda hech narsani o‘zgartirmaydi.',

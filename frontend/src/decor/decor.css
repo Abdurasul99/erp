@@ -267,7 +267,15 @@
 .dd-cal { border-collapse: separate !important; border-spacing: 3px; min-width: 900px; }
 .dd-cal th { border: 0 !important; text-align: center !important; padding: 4px !important; font-size: 11px !important; }
 .dd-cal td { border: 0 !important; padding: 0 !important; }
-.dd-cal td.name, .dd-cal th.name { position: sticky; left: 0; background: #fff; z-index: 1; text-align: left !important; padding-right: 10px !important; white-space: nowrap; font-weight: 700; }
+.dd-cal td.name, .dd-cal th.name { position: sticky; left: 0; background: #fff; z-index: 1; text-align: left !important; padding-right: 10px !important; font-weight: 700;
+  width: var(--cal-name); min-width: var(--cal-name); max-width: var(--cal-name); overflow-wrap: anywhere;
+  box-shadow: 3px 0 0 #fff, -3px 0 0 #fff; }   /* закрыть зазор таблицы (border-spacing): иначе в нём просвечивают ячейки */
+/* Таблица прокручивается сама (и вниз, и вбок): даты — закреплены сверху, вещь и «Есть» — слева */
+.dd-calwrap { --cal-name: 180px; --cal-total: 46px; max-height: min(72vh, 680px); overflow: auto; overscroll-behavior: contain; }
+.dd-cal td.total, .dd-cal th.total { position: sticky; left: calc(var(--cal-name) + 3px); background: #fff; z-index: 1;
+  width: var(--cal-total); min-width: var(--cal-total); box-shadow: 3px 0 0 #fff, 9px 0 6px -6px rgba(17, 24, 39, .18); }
+.dd-cal thead th { position: sticky; top: 0; background: #fff; z-index: 2; box-shadow: 0 3px 0 #fff, 0 -3px 0 #fff; }
+.dd-cal thead th.name, .dd-cal thead th.total { z-index: 3; }
 .dd-cal th.today { color: var(--blue); }
 .dd-cell { border-radius: 8px; text-align: center; font-size: 12px; font-weight: 800; padding: 7px 2px; background: var(--surface2); color: var(--faint); min-width: 40px; }
 .dd-cell.some { background: #E3ECFF; color: var(--blue); } .dd-cell.full { background: var(--warnbg); color: var(--warn); } .dd-cell.over { background: var(--badbg); color: var(--bad); }
@@ -278,7 +286,8 @@
   .dd-drawer h2 { font-size: 21px; }
   .dd-facts { grid-template-columns: 1fr 1fr; }
   .dd-cal { min-width: 0; }
-  .dd-cal td.name, .dd-cal th.name { white-space: normal; min-width: 92px; max-width: 112px; font-size: 12px; line-height: 1.25; }
+  .dd-cal td.name, .dd-cal th.name { white-space: normal; font-size: 12px; line-height: 1.25; }
+  .dd-calwrap { --cal-name: 104px; --cal-total: 40px; max-height: 64vh; }
   .dd-drawer .dd-tabs { flex-wrap: wrap; }   /* все пять вкладок карточки видны без прокрутки */
   .dd-drawer .dd-tab { padding: 6px 12px; min-height: 38px; }
 }
@@ -377,3 +386,21 @@
 .dd-aimsg.busy { color: var(--muted); }
 .dd-aichat-form { display: flex; gap: 8px; margin-top: 12px; }
 @media (max-width: 640px) { .dd-aimsg { max-width: 92%; } .dd-aichat-form .dd-btn { padding: 10px 12px; } }
+
+/* Главная: выбор периода карточки заказов */
+.dd-period { display: grid; gap: 8px; margin-bottom: 14px; }
+.dd-period .dd-statuspick { flex-wrap: wrap; overflow: visible; }   /* все варианты видны, без прокрутки ряда */
+.dd-period-dates { gap: 10px; flex-wrap: wrap; }
+.dd-period-dates label { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; color: var(--muted); }
+.dd-period-dates .dd-inp { width: auto; min-width: 150px; }
+
+/* Плашка «Вышло обновление» под верхней панелью */
+.dd-update { position: sticky; top: 64px; z-index: 30; margin: 8px auto 0; width: min(1200px, calc(100% - 24px)); display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px 10px 16px; border-radius: 14px; background: #173361; color: #fff; font-weight: 700; font-size: 14px; box-shadow: 0 10px 30px -12px rgba(23, 51, 97, .6); }
+.dd-update .dd-btn { background: #fff; color: #173361; flex-shrink: 0; }
+
+/* Калькулятор: новый человек прямо в команде */
+.dd-teampick button.add { border-style: dashed; color: var(--blue); background: transparent; }
+.dd-newperson { gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.dd-newperson .dd-inp { flex: 1 1 180px; width: auto; }
+.dd-newperson select.dd-inp { flex: 0 1 140px; }
