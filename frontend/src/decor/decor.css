@@ -404,3 +404,7 @@
 .dd-newperson { gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .dd-newperson .dd-inp { flex: 1 1 180px; width: auto; }
 .dd-newperson select.dd-inp { flex: 0 1 140px; }
+
+/* Дизайны (D26): состав в списке — не больше двух строк; выбор дизайна в калькуляторе */
+.dd-design-lines { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
+.dd-designpick { margin-top: 12px; gap: 8px; }

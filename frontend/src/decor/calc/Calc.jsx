@@ -32,6 +32,9 @@ export default function Calc() {
   const KEY = `decor_calc_${me.user.id}`;
   const [C, setC] = useState(() => { try { return { ...emptyCalc(), ...JSON.parse(store.get(KEY) || '{}') }; } catch { return emptyCalc(); } });
   const [pick, setPick] = useState({ item: '', qty: '' });
+  // Готовые дизайны со склада (D26): дизайн добавляет все свои вещи разом, недостающее добавляется вещами сверху
+  const [designs] = useLoad(() => api.get('/designs').then(r => r.data).catch(() => []), []);
+  const [dsel, setDsel] = useState('');
   const qtyRef = useRef(null);   // после выбора вещи — сразу количество
   const [preview, setPreview] = useState(null);
   const [created, setCreated] = useState(null);
@@ -100,6 +103,24 @@ export default function Calc() {
     const ex = C.lines.find(l => l.item_id === id);
     set({ lines: ex ? C.lines.map(l => (l.item_id === id ? { ...l, qty: l.qty + q } : l)) : [...C.lines, { item_id: id, qty: q }] });
     setPick({ item: '', qty: '' });
+  };
+  const addDesign = () => {
+    const d = (designs || []).find(x => String(x.id) === String(dsel));
+    if (!d) return;
+    const avail = new Map(items.map(i => [i.id, i]));
+    const take = d.lines.filter(l => l.item_active && avail.has(l.item_id));
+    const merged = take.reduce((acc, l) => {
+      const ex = acc.find(x => x.item_id === l.item_id);
+      return ex ? acc.map(x => (x.item_id === l.item_id ? { ...x, qty: (Number(x.qty) || 0) + l.qty } : x)) : [...acc, { item_id: l.item_id, qty: l.qty }];
+    }, C.lines);
+    set({ lines: merged });
+    setDsel('');
+    // Чего не хватает на даты заказа — сразу словами; строки с нехваткой калькулятор подсветит сам
+    const short = merged.filter(l => take.some(x => x.item_id === l.item_id) && Number(l.qty) > (avail.get(l.item_id)?.free ?? 0))
+      .map(l => avail.get(l.item_id)?.name).filter(Boolean);
+    const skipped = d.lines.length - take.length;
+    toast([t('designAdded', { name: d.name, n: take.length }), skipped ? t('designSkipped', { n: skipped }) : '',
+      short.length ? t('designShort', { items: short.join(', ') }) : ''].filter(Boolean).join(' · '), short.length ? 'bad' : undefined);
   };
   const setLineQty = (id, q) => set({ lines: C.lines.map(l => (l.item_id === id ? { ...l, qty: q === '' ? '' : Math.max(1, Number(q)) } : l)) });
   const cleanLines = C.lines.filter(l => Number(l.qty) > 0).map(l => ({ item_id: l.item_id, qty: Number(l.qty) }));
@@ -192,6 +213,15 @@ export default function Calc() {
           <Card>
             <div className="dd-row dd-between"><h3>{t('designItems')}</h3><Chip tone="blue">{t('period', { from: fdd2(period.from), to: fdd2(period.to) })}</Chip></div>
             <p className="dd-note" style={{ marginTop: 4 }}>{t('freeHint', { period: fperiod(period, lang) })}</p>
+            {designs?.length > 0 && (
+              <div className="dd-row dd-designpick">
+                <div style={{ flex: '2 1 220px', minWidth: 0 }}>
+                  <ItemPick id="c_design" items={designs.map(d => ({ id: d.id, name: d.name, note: t('designPieces', { n: d.lines.length, pcs: d.pieces }) }))}
+                    value={dsel} placeholder={t('pickDesign')} onChange={v => setDsel(v === '' ? '' : String(v))} />
+                </div>
+                <button type="button" className="dd-btn ghost" disabled={!dsel} onClick={addDesign}><Icon name="plus" size={16} /> {t('addDesign')}</button>
+              </div>
+            )}
             <div className="dd-row" style={{ margin: '12px 0' }}>
               <div style={{ flex: '2 1 220px', minWidth: 0 }}>
                 <ItemPick id="c_pick" items={items.map(it => ({ id: it.id, name: it.name, note: it.free > 0 ? t('freeOpt', { n: it.free }) : t('freeNone'), tone: it.free > 0 ? '' : 'bad' }))}

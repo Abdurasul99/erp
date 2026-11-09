@@ -45,7 +45,7 @@ test.after(async () => { await stack?.stop(); });
 
 test('миграции D00–D24 применяются на PostgreSQL 16 по списку из apply_decor_migrations.sh', async () => {
   assert.deepEqual(stack.migrations, ['D00_core_contract.sql', 'D10_decor_domain.sql', 'D20_late_return.sql',
-    'D21_returned_after_close.sql', 'D22_company_delete.sql', 'D23_idempotency.sql', 'D24_evidence_fund.sql', 'D25_stock_journal.sql']);
+    'D21_returned_after_close.sql', 'D22_company_delete.sql', 'D23_idempotency.sql', 'D24_evidence_fund.sql', 'D25_stock_journal.sql', 'D26_designs.sql']);
   const r = await call('GET', '/api/decor/health');
   assert.equal(r.status, 200);
   assert.equal(r.data.status, 'ok');

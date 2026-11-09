@@ -14,9 +14,10 @@ test('D25 на базе с данными: остаток вещей — пер�
   const old = await startStack({ migrate: false });
   try {
     const files = migrationOrder();
-    assert.equal(files.at(-1), 'D25_stock_journal.sql', 'D25 — последняя в apply_decor_migrations.sh');
+    const d25 = files.indexOf('D25_stock_journal.sql');
+    assert.ok(d25 > 0, 'D25 — в apply_decor_migrations.sh');
     const apply = async file => { const c = await old.pool.connect(); try { await c.query('BEGIN'); await c.query(fs.readFileSync(path.join(SQL_DIR, file), 'utf8')); await c.query('COMMIT'); } finally { c.release(); } };
-    for (const file of files.slice(0, -1)) await apply(file);
+    for (const file of files.slice(0, d25)) await apply(file);   // база, какой она была до D25
     // Компания, как её завёл старый код: 10 действий × 3 должности, две вещи с остатком
     const [{ id: cid }] = (await old.pool.query("INSERT INTO companies (name) VALUES ('Old') RETURNING id")).rows;
     await old.pool.query('INSERT INTO decor_settings (company_id) VALUES ($1)', [cid]);

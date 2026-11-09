@@ -9,6 +9,7 @@ import { useT, fm2, fday, fdd } from '../i18n.js';
 import { useDecor, useLoad, useActions, Hero, Tabs, Card, Chip, StatusChip, Stepper, Sheet, Loading, Empty, NoAccess } from '../kit.jsx';
 import { EvidencePicker, evForm, evidenceError, useEvidenceReady, dropFiles } from '../evidence.jsx';
 import { StockTab } from './Stock.jsx';
+import { DesignsTab } from './Designs.jsx';
 
 // Шапка заказа в карточках склада
 export function OrderHead({ o, right }) {
@@ -95,9 +96,11 @@ export default function Warehouse() {
         ['requests', t('tabRequests'), counts.requests || null],
         ['onsite', t('tabOnSite'), counts.onsite || null],
         ['stock', t('tabStock')],
+        ['designs', t('tabDesigns')],
       ]} />
 
       {tab === 'stock' && (items ? <StockTab items={items} reload={reloadItems} /> : <Loading err={itemsErr} retry={reloadItems} />)}
+      {tab === 'designs' && (items ? <DesignsTab items={items} /> : <Loading err={itemsErr} retry={reloadItems} />)}
 
       {tab === 'requests' && (!wh.requests.length ? <Empty>{t('noRequests')}</Empty> : wh.requests.map(o => (
         <Card key={o.id} id={`dd-o-requests-${o.id}`} className={focus === o.id ? 'dd-anchor-hl' : ''}>

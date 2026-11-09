@@ -5,6 +5,7 @@ const CONSTRAINT_MESSAGES = {
   users_username_key: 'Логин уже занят',
   one_founder_per_company: 'У компании уже есть учредитель',
   decor_items_name_uq: 'Вещь с таким названием уже есть',
+  decor_designs_name: 'Дизайн с таким названием уже есть',
   decor_items_qty_bought_check: '«Куплено» не может стать меньше 0',
   decor_orders_company_id_no_key: 'Заказ с таким номером уже есть',
   decor_order_lines_order_id_item_id_key: 'Эта вещь уже есть в дизайне',

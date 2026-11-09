@@ -38,6 +38,7 @@ module.exports = function mountDecor(app, { auth, authLimiter, JWT_SECRET }) {
   require('./settings')(ctx);    // нормы и курс, полномочия, ставки, управление панелью
   require('./staff')(ctx);       // сотрудники и их входы
   require('./items')(ctx);       // декор: цена, ресурс, износ, остатки
+  require('./designs')(ctx);     // готовые дизайны: состав вещей с количествами (D26)
   Object.assign(ctx, require('./evidence')(ctx));   // доказательства (фото/видео): требования, проверка, «добавить» (D24)
   require('./orders')(ctx);      // заказы, канбан, карточка, статусы и закрытие, калькулятор
   require('./warehouse')(ctx);   // заявки на сборку, выдача и возвраты, бронь, свободно на дату
