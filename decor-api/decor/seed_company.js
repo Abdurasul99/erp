@@ -1,7 +1,7 @@
 // Начальные данные новой компании сферы «Декор». Вызывается общей админкой (sphere_admin.js, SEEDS.decor)
 // внутри транзакции создания компании, а также демо-сидом. Повторный вызов ничего не дублирует.
 const FEATURES = require('./features');
-const { ACTIONS, DEFAULT_PERMISSIONS, DEFAULT_RATES, POSITIONS, DEFAULT_EVIDENCE } = require('./defaults');
+const { ACTIONS, DEFAULT_PERMISSIONS, DEFAULT_RATES, POSITIONS, DEFAULT_EVIDENCE, DEFAULT_VALUES } = require('./defaults');
 
 module.exports = async function seedCompany(c, companyId) {
   // Настройки — значения по умолчанию из таблицы (курс, нормы, N дней на объекте и т.д.)
@@ -26,6 +26,11 @@ module.exports = async function seedCompany(c, companyId) {
     await c.query(
       `INSERT INTO decor_evidence_rules (company_id, stage, min_photos, need_video, shortage_note) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT DO NOTHING`, [companyId, stage, r.min_photos, r.need_video, r.shortage_note]);
+  }
+  // «Кадрият» (D27): шесть ценностей с названиями, тексты пустые — пишет учредитель
+  for (const v of DEFAULT_VALUES) {
+    await c.query('INSERT INTO decor_values (company_id, position, title_uz, title_ru) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',
+      [companyId, v.position, v.title_uz, v.title_ru]);
   }
   for (const f of FEATURES.filter(x => x.tier === 'basic')) {
     await c.query(

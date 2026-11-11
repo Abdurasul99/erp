@@ -53,7 +53,7 @@ test('новая компания: «вести склад» в матрице �
   assert.ok(p.actions.includes('manage_items'));
   assert.deepEqual([p.matrix.warehouse.manage_items, p.matrix.pm.manage_items, p.matrix.cashier.manage_items], [true, false, false]);
   const [{ n }] = await q('SELECT count(*)::int n FROM decor_permissions WHERE company_id=$1', [U.founder.companyId]);
-  assert.equal(n, 33, '3 должности × 11 действий');
+  assert.equal(n, 45, '3 должности × 15 действий');
   const me = ok(await call('GET', '/api/decor/auth/me', U.founder.token));
   assert.ok(me.permissions.includes('manage_items'), 'учредитель может всё');
 });

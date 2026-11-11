@@ -16,6 +16,8 @@ import Team from './team/Team.jsx';
 import Settings from './settings/Settings.jsx';
 import Reports from './reports/Reports.jsx';
 import AI from './ai/AI.jsx';
+import Clients from './clients/Clients.jsx';
+import Manage from './manage/Manage.jsx';
 import './decor.css';
 
 // Раздел с функцией компании: выключена админом Wave — баннер и пояснение вместо экрана
@@ -52,6 +54,8 @@ function Shell() {
             <Route path="warehouse" element={<Guard id="decor"><Warehouse /></Guard>} />
             <Route path="orders" element={<Guard id="orders"><Orders /></Guard>} />
             <Route path="booking" element={<Guard id="booking"><Booking /></Guard>} />
+            <Route path="clients" element={<Guard id="clients"><Clients /></Guard>} />
+            <Route path="manage" element={<Guard id="manage"><Manage /></Guard>} />
             <Route path="finance" element={<Guard id="finance"><Finance /></Guard>} />
             <Route path="team" element={<Guard id="team"><Team /></Guard>} />
             <Route path="settings" element={<Guard id="settings"><Settings /></Guard>} />

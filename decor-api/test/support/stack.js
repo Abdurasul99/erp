@@ -55,6 +55,7 @@ async function applyMigrations(pool) {
 async function startStack({ jwtSecret = 'decor-test-secret-0123456789abcdef-long', migrate = true } = {}) {
   const uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'decor-uploads-'));
   process.env.DECOR_UPLOADS_DIR = uploadsDir;      // uploads.js читает его при подключении
+  if (!process.env.DECOR_AUTOTASKS) process.env.DECOR_AUTOTASKS = 'off';   // автозадачи по часам — тесты запускают их сами
 
   const db = new PGlite();
   const dbPort = await freePort();

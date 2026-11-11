@@ -5,14 +5,26 @@ const { makeView } = require('./views');
 const { STATUSES, ORDER_TYPES } = require('./defaults');
 const { wrap, fail, idParam, toInt, todayYmd, isoDate, money, intIn, text, oneOf } = require('./common');
 
-module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, idem, lockOrder, loadModel }) => {
+module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, idem, lockOrder, loadModel, linkClient, clientRef }) => {
   const FEAT = feature('decor-orders');
 
   // Полная карточка заказа после изменения (свежие данные)
   async function cardOf(req, id) {
     const { data, m } = await loadModel(req);
     const o = data.orders.find(x => x.id === id) || fail(404, 'Заказ не найден');
-    return makeView(req, data, m).card(o);
+    const card = makeView(req, data, m).card(o);
+    // Клиент заказа (D28) — тем, кто видит клиентов (оформляет заказы)
+    if (has(req, 'create_order')) {
+      const { rows: [r] } = await pool.query('SELECT client_id FROM decor_orders WHERE id=$1 AND company_id=$2', [id, req.decor.cid]);
+      card.client_ref = await clientRef(pool, req.decor.cid, r?.client_id);
+    }
+    return card;
+  }
+  // Заказ ↔ клиент по телефону (или выбранный client_id); нет клиента с таким телефоном — создаётся (clients.js)
+  async function bindClient(c, req, orderId, fields) {
+    const clientId = await linkClient(c, req, fields);
+    await c.query('UPDATE decor_orders SET client_id=$1 WHERE id=$2 AND company_id=$3', [clientId, orderId, req.decor.cid]);
+    return clientId;
   }
 
   // ---------- Проверка входных данных ----------
@@ -86,6 +98,7 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
         VALUES ($1,(SELECT id FROM branches WHERE company_id=$1 ORDER BY id LIMIT 1),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
       [req.decor.cid, n.no, client, text(b.phone, 40), text(b.address, 300), eventDate, type, status, n.transport_usd, n.consumables_uzs, text(b.note, 2000), req.user.id]);
       await saveTeam(c, req.decor.cid, o.id, team);
+      await bindClient(c, req, o.id, { client_id: b.client_id, name: client, phone: b.phone, address: b.address });
       return o.id;
     });
     audit(req, 'create', 'decor_order', id, null, { client, event_date: eventDate, status });
@@ -109,7 +122,12 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
       if (b.note !== undefined) set('note', text(b.note, 2000));
       if (sets.length) { vals.push(id); await c.query(`UPDATE decor_orders SET ${sets.join(', ')}, updated_at=NOW() WHERE id=$${vals.length}`, vals); }
       if (team) await saveTeam(c, req.decor.cid, id, team);
-      if (!sets.length && !team) fail(400, 'Нет полей для изменения');
+      const relink = b.client_id !== undefined || b.phone !== undefined;
+      if (!sets.length && !team && !relink) fail(400, 'Нет полей для изменения');
+      if (relink) {
+        const { rows: [cur] } = await c.query('SELECT client, phone, address FROM decor_orders WHERE id=$1', [id]);
+        await bindClient(c, req, id, { client_id: b.client_id, name: cur.client, phone: cur.phone, address: cur.address });
+      }
     });
     audit(req, 'update', 'decor_order', id, null, b);
     res.json(await cardOf(req, id));
@@ -199,6 +217,7 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
       input.client = text(b.client, 160) || fail(400, 'Клиент обязателен');
       input.phone = text(b.phone, 40);
       input.address = text(b.address, 300);
+      input.client_id = b.client_id;
       if (input.price_usd <= 0) fail(400, 'Укажите цену клиенту');
       if (input.prepay_usd > input.price_usd) fail(400, 'Предоплата больше цены');
     }
@@ -254,6 +273,7 @@ module.exports = ({ app, pool, A, can, need, has, feature, audit, tx, txFor, ide
       }
       await saveTeam(c, cid, orderId, input.team);
       await saveLines(c, cid, orderId, input.lines);
+      await bindClient(c, req, orderId, { client_id: input.client_id, name: input.client, phone: input.phone, address: input.address });
       if (input.prepay_usd > 0) {
         await c.query(`INSERT INTO decor_payments (company_id, order_id, amount_usd, kind, status, created_by, confirmed_at, confirmed_by)
           VALUES ($1,$2,$3,'prepay','confirmed',$4,NOW(),$4)`, [cid, orderId, input.prepay_usd, req.user.id]);

@@ -1,5 +1,6 @@
 // Подсказка Wave Intelligence → заголовок, текст, тон и переход (тексты на RU/UZ; сервер отдаёт код и параметры).
 import { fm, fm2, fday } from '../i18n.js';
+import { taskTitle } from '../manage/taskText.js';
 
 export const SEV_TONE = { bad: 'bad', warn: 'warn', info: 'blue', ok: 'ok' };
 
@@ -40,6 +41,9 @@ export function hintView(t, lang, h) {
     case 'fund_negative': return {
       title: t('hFundT', { sum: fm2(h.amount_usd) }), text: t('hFundP', { spent: fm2(h.spent_usd), acc: fm2(h.accumulated_usd) }),
       to: '/decor/finance?tab=fund', action: t('hGoFund') };
+    case 'tasks_overdue': return {
+      title: t('hTasksT', { n: h.count }), text: (h.tasks || []).map(x => taskTitle(t, lang, x)).join(' · '),
+      to: '/decor/manage', action: t('hGoTasks') };
     default: return { title: t('hAllGoodT'), text: t('hAllGoodP'), to: '/decor/orders', action: t('hGoOrders') };
   }
 }

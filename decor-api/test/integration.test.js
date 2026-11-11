@@ -45,7 +45,8 @@ test.after(async () => { await stack?.stop(); });
 
 test('миграции D00–D24 применяются на PostgreSQL 16 по списку из apply_decor_migrations.sh', async () => {
   assert.deepEqual(stack.migrations, ['D00_core_contract.sql', 'D10_decor_domain.sql', 'D20_late_return.sql',
-    'D21_returned_after_close.sql', 'D22_company_delete.sql', 'D23_idempotency.sql', 'D24_evidence_fund.sql', 'D25_stock_journal.sql', 'D26_designs.sql']);
+    'D21_returned_after_close.sql', 'D22_company_delete.sql', 'D23_idempotency.sql', 'D24_evidence_fund.sql', 'D25_stock_journal.sql', 'D26_designs.sql',
+    'D27_values.sql', 'D28_clients.sql', 'D29_tasks.sql', 'D30_standards.sql']);
   const r = await call('GET', '/api/decor/health');
   assert.equal(r.status, 200);
   assert.equal(r.data.status, 'ok');
@@ -63,7 +64,7 @@ test('create-company: компания, филиал, учредитель и н
   const cid = founder.companyId;
   assert.equal(await count('SELECT count(*) n FROM branches WHERE company_id=$1', [cid]), 1);
   assert.equal(await count("SELECT count(*) n FROM users WHERE company_id=$1 AND role='founder'", [cid]), 1);
-  assert.equal(await count('SELECT count(*) n FROM decor_permissions WHERE company_id=$1', [cid]), 33, '3 должности × 11 действий');
+  assert.equal(await count('SELECT count(*) n FROM decor_permissions WHERE company_id=$1', [cid]), 45, '3 должности × 15 действий');
   assert.equal(await count('SELECT count(*) n FROM company_features WHERE company_id=$1 AND enabled', [cid]), 6);
   assert.equal(await count('SELECT count(*) n FROM decor_settings WHERE company_id=$1', [cid]), 1);
   assert.equal(await count('SELECT count(*) n FROM decor_evidence_rules WHERE company_id=$1', [cid]), 6);
@@ -89,7 +90,7 @@ test('вход учредителя и «кто я»', async () => {
   assert.equal(me.status, 200);
   assert.equal(me.data.user.company_name, 'Dora Decor');
   assert.equal(me.data.is_owner, true);
-  assert.equal(me.data.permissions.length, 11);
+  assert.equal(me.data.permissions.length, 15);
 });
 
 test('чужие токены не проходят: без токена, токен Wave (другой секрет), без сферы, другой сферы', async () => {

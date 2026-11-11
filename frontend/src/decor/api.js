@@ -3,6 +3,7 @@ import axios from 'axios';
 
 export const TOKEN_KEY = 'decor_token';
 export const USER_KEY = 'decor_user';
+export const COMPANY_KEY = 'decor_company';   // после выхода остаётся: «Кадрият» на странице входа — своей компании
 export const store = {
   get: k => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* недоступно */ } },

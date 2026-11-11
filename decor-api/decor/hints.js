@@ -77,10 +77,17 @@ function buildHints(req, data, m) {
   return out;
 }
 
-module.exports = ({ app, A, feature, loadModel }) => {
+// Просроченные задачи пользователя (свои или все — у учредителя) — одной подсказкой, первыми из «важно»
+const taskHint = t => (t && t.overdue > 0 ? { kind: 'tasks_overdue', severity: 'warn', count: t.overdue,
+  tasks: t.overdue_list.map(x => ({ id: x.id, title: x.title, due_date: x.due_date, assignee: x.assignee?.name || null, source: x.source,
+    auto_kind: x.auto_kind, client: x.client?.name || null, relative: x.relative?.name || null, event_date: x.event_date })) } : null);
+
+module.exports = ({ app, A, feature, loadModel, taskSummary }) => {
+  const tasksOf = req => (taskSummary ? taskSummary(req) : Promise.resolve(null));
   app.get('/api/decor/hints', A(feature('decor-ai')), wrap(async (req, res) => {
     const { data, m } = await loadModel(req);
-    res.json(buildHints(req, data, m));
+    const th = taskHint(await tasksOf(req));
+    res.json(th ? [...buildHints(req, data, m), th] : buildHints(req, data, m));
   }));
 
   // Главная: цифры, главная проблема, «сегодня и завтра».
@@ -101,10 +108,12 @@ module.exports = ({ app, A, feature, loadModel }) => {
     const inPeriod = data.orders.filter(o => o.status !== 'lead' && o.event_date >= from && o.event_date <= to);
     const closedOrders = data.orders.filter(o => o.status === 'closed');
     const closed = closedOrders.map(o => m.orderCost(o));
-    const hints = req.decor.features.has('decor-ai') ? buildHints(req, data, m) : [];
-    // Главная проблема: конфликт брони → не вернулось с объекта → несданные деньги → не хватает фото → фонд в минусе → всё под контролем
+    const tasks = await tasksOf(req);
+    const th = taskHint(tasks);
+    const hints = req.decor.features.has('decor-ai') ? [...buildHints(req, data, m), ...(th ? [th] : [])] : [];
+    // Главная проблема: конфликт брони → не вернулось с объекта → просроченные задачи → несданные деньги → не хватает фото → фонд в минусе → всё под контролем
     const intel = hints.find(h => h.kind === 'conflict') || hints.find(h => h.kind === 'not_returned')
-      || hints.find(h => h.kind === 'pm_debt') || hints.find(h => h.kind === 'evidence_missing') || hints.find(h => h.kind === 'fund_negative')
+      || hints.find(h => h.kind === 'tasks_overdue') || hints.find(h => h.kind === 'pm_debt') || hints.find(h => h.kind === 'evidence_missing') || hints.find(h => h.kind === 'fund_negative')
       || { kind: 'all_good', severity: 'ok' };
     if (intel.kind === 'evidence_missing') intel.orders = hints.filter(h => h.kind === 'evidence_missing').length;
     if (intel.kind === 'pm_debt') intel.total_usd = hints.filter(h => h.kind === 'pm_debt').reduce((a, h) => a + h.amount_usd, 0);
@@ -123,6 +132,7 @@ module.exports = ({ app, A, feature, loadModel }) => {
       },
       intel,
       hints_count: hints.length,
+      tasks,      // D29: { mine_open, overdue, overdue_list } — карточка задач на Главной (видна и без подсказок AI)
       today_tomorrow: data.orders.filter(o => F.isActive(o) && (o.event_date === today || o.event_date === F.addDays(today, 1))).map(v.summary),
     });
   }));

@@ -8,6 +8,7 @@ import api from '../api.js';
 import Icon from '../icons.jsx';
 import { useT, fm, fm2, fsum, fday, fperiod } from '../i18n.js';
 import { useDecor, useLoad, useActions, Tabs, Card, Chip, StatusChip, Loading, numIn } from '../kit.jsx';
+import WorksTab from './Works.jsx';
 import { EvidencePicker, EvidenceStatus, EvidenceSheet, Thumb, evForm, evidenceError, useEvidenceReady, useEvidenceRules, dropFiles, gapOf, ruleOf, missingText } from '../evidence.jsx';
 
 export const STATUSES = ['lead', 'design', 'prepay', 'booked', 'install', 'acceptance', 'dismantle', 'closed'];
@@ -44,7 +45,7 @@ export default function OrderCard({ id, onClose, onChanged }) {
   };
 
   const tabs = [['overview', t('tabOverview')], ['decor', t('tabDecor')], ...(can('see_finance') ? [['cost', t('tabCost')]] : []),
-    ['money', t('tabMoney')], ['reports', t('tabReports'), o?.reports?.length || null]];
+    ['money', t('tabMoney')], ['reports', t('tabReports'), o?.reports?.length || null], ['works', t('tabWorks')]];
   const idx = o ? STATUSES.indexOf(o.status) : -1;
   return (
     <div className="dd-scrim" onClick={onClose}>
@@ -61,6 +62,7 @@ export default function OrderCard({ id, onClose, onChanged }) {
           {tab === 'cost' && <CostTab o={o} busy={busy} act={act} actions={actions} />}
           {tab === 'money' && <MoneyTab o={o} busy={busy} act={act} actions={actions} />}
           {tab === 'reports' && <ReportsTab o={o} busy={busy} act={act} actions={actions} />}
+          {tab === 'works' && <WorksTab o={o} onChanged={onChanged} />}
           {addEv && <AddEvidenceSheet o={o} stage={addEv} busy={busy} act={act} actions={actions} onClose={() => setAddEv(null)} />}
         </>}
       </aside>
@@ -77,7 +79,9 @@ export default function OrderCard({ id, onClose, onChanged }) {
     return <>
       <Card>
         <div className="dd-facts">
-          <div><div className="dd-eyebrow">{t('fClient')}</div><b>{o.client}</b><div className="dd-note">{o.phone || '—'}</div></div>
+          <div><div className="dd-eyebrow">{t('fClient')}</div><b>{o.client}</b><div className="dd-note">{o.phone || '—'}</div>
+            {o.client_ref && <button type="button" className="dd-chip-btn" onClick={() => nav(`/decor/clients?open=${o.client_ref.id}`)}>
+              {t(o.client_ref.kind === 'repeat' ? 'clKindRepeat' : 'clKindNew')} · {t('clOrdersN', { n: o.client_ref.orders })} →</button>}</div>
           <div><div className="dd-eyebrow">{t('fAddress')}</div><b>{o.address || '—'}</b></div>
           <div><div className="dd-eyebrow">{t('fDate')}</div><b>{fday(o.event_date, lang)}</b><div className="dd-note">{fperiod(o.period, lang)}</div></div>
           <div><div className="dd-eyebrow">{t('fTypeTeam')}</div><b>{t(o.type === 'big' ? 'bigShort' : 'smallShort')}</b><div className="dd-note">{o.team.map(p => p.name).join(' + ') || '—'}</div></div>

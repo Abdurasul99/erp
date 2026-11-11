@@ -7,6 +7,7 @@ import Icon from '../icons.jsx';
 import { useT, fm, fday, localYmd, addDays } from '../i18n.js';
 import { useDecor, useLoad, useActions, Hero, Chip, Sheet, Loading, NoAccess, DateInput } from '../kit.jsx';
 import OrderCard, { STATUSES, useStatusCounts } from './OrderCard.jsx';
+import { ClientHint } from '../clients/Clients.jsx';
 
 function OCard({ o, onOpen }) {
   const { t, lang } = useT();
@@ -102,8 +103,9 @@ function LeadSheet({ onClose, onCreated }) {
       <button type="button" className="dd-btn ghost lg" onClick={onClose}>{t('cancel')}</button>
       <button type="button" className="dd-btn lg" disabled={!!actions.busy || !f.client.trim()} onClick={create}><Icon name="check" size={18} /> {t('leadCreate')}</button>
     </>}>
+      <div className="dd-field"><label htmlFor="ld_p">{t('phone')}</label><input id="ld_p" className="dd-inp" inputMode="tel" value={f.phone} placeholder="+998" onChange={e => set({ phone: e.target.value })} />
+        <ClientHint phone={f.phone} onFound={c => setF(x => ({ ...x, client: x.client.trim() ? x.client : c.name }))} /></div>
       <div className="dd-field"><label htmlFor="ld_c">{t('client')}</label><input id="ld_c" className="dd-inp" value={f.client} placeholder={t('clientPh')} onChange={e => set({ client: e.target.value })} /></div>
-      <div className="dd-field"><label htmlFor="ld_p">{t('phone')}</label><input id="ld_p" className="dd-inp" inputMode="tel" value={f.phone} placeholder="+998" onChange={e => set({ phone: e.target.value })} /></div>
       <div className="dd-form">
         <div className="dd-field"><label htmlFor="ld_d">{t('date')}</label><DateInput id="ld_d" value={f.event_date} onChange={v => set({ event_date: v })} /></div>
         <div className="dd-field"><label htmlFor="ld_t">{t('type')}</label>

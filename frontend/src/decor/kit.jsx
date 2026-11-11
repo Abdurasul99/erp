@@ -8,7 +8,7 @@ import { newKey } from './api.js';
 // ---------- Разделы (нижний док) ----------
 // g — градиент раздела: Заказы — розовый, Калькулятор — оранжевый, Бронь и Склад — голубой, Финансы — зелёный,
 // Команда — фиолетовый, Отчёты и AI — индиго, Настройки — серый, Главная — синий.
-// feature — функция компании (выключает админ Wave); step — на каком шаге появится экран.
+// feature — функция компании (выключает админ Wave); perm — раздел виден только с этим полномочием; step — на каком шаге появится экран.
 export const SECTIONS = [
   { id: 'home', g: 'blue', i: 'home', path: '' },
   { id: 'tools', g: 'rainbow', i: 'grid', path: 'tools' },
@@ -17,6 +17,9 @@ export const SECTIONS = [
   { id: 'calc', g: 'orange', i: 'calc', path: 'calc', feature: 'decor-orders' },
   { id: 'booking', g: 'cyan', i: 'cal', path: 'booking', feature: 'decor-orders', step: 4 },
   { id: 'decor', g: 'cyan', i: 'box', path: 'warehouse', feature: 'decor-warehouse' },
+  // Обновление 2 (D28–D30): клиенты — тем, кто оформляет заказы (телефоны и дни рождения); «Управление» — задачи и стандарты работ
+  { id: 'clients', g: 'pink', i: 'contact', path: 'clients', feature: 'decor-orders', perm: 'create_order' },
+  { id: 'manage', g: 'indigo', i: 'matrix', path: 'manage' },
   { id: 'finance', g: 'green', i: 'wallet', path: 'finance', feature: 'decor-finance', step: 5 },
   { id: 'team', g: 'purple', i: 'users', path: 'team', feature: 'decor-team', step: 5 },
   { id: 'reports', g: 'indigo', i: 'camera', path: 'reports', feature: 'decor-reports', step: 6 },

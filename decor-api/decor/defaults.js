@@ -9,6 +9,10 @@ const ACTIONS = [
   'create_order', 'change_status', 'handle_decor', 'take_money', 'confirm_money',
   'upload_report', 'approve_report', 'pay_team', 'see_finance', 'edit_settings',
   'manage_items',   // D25: заводить вещи, название, архив, приход, списание, инвентаризация (цена и ресурс — edit_settings)
+  'edit_values',    // D27: менять «Кадрият» (ценности компании)
+  'assign_tasks',   // D29: ставить задачи другим (себе может поставить каждый)
+  'accept_tasks',   // D29: принимать выполненные задачи (статус «готово»)
+  'edit_standards', // D30: создавать и менять стандарты работ
 ];
 // Учредитель и ген. директор могут всё; их полномочия не хранятся и не выключаются
 const OWNERS = ['founder', 'gen_dir'];
@@ -39,7 +43,22 @@ const DEFAULT_EVIDENCE = {
 const PRICE_MODES = ['average', 'replace', 'keep'];
 
 // Разделы нижней панели, которые учредитель может выключить («Управление панелью»); Главная и Настройки — всегда
-const PANEL_SECTIONS = ['tools', 'orders', 'calc', 'booking', 'decor', 'finance', 'team', 'reports', 'ai'];
+const PANEL_SECTIONS = ['tools', 'orders', 'calc', 'booking', 'decor', 'clients', 'manage', 'finance', 'team', 'reports', 'ai'];
+
+// «Кадрият» (D27): шесть ценностей — названия заводятся сразу, тексты пишет учредитель
+const DEFAULT_VALUES = [
+  { position: 1, title_uz: 'Mardlik', title_ru: 'Смелость' },
+  { position: 2, title_uz: 'Stabillik', title_ru: 'Стабильность' },
+  { position: 3, title_uz: 'Yangilikka tayyor bo‘lish', title_ru: 'Готовность к новому' },
+  { position: 4, title_uz: 'Halollik', title_ru: 'Честность' },
+  { position: 5, title_uz: 'Adolatlilik', title_ru: 'Справедливость' },
+  { position: 6, title_uz: 'Natijaviylik', title_ru: 'Результативность' },
+];
+// Клиенты (D28): откуда пришёл клиент; кем приходится родственник (nephew — племянник или племянница)
+const CLIENT_SOURCES = ['instagram', 'recommendation', 'repeat', 'other'];
+const RELATIONS = ['son', 'daughter', 'brother', 'sister', 'nephew', 'other'];
+// Задачи (D29): канбан
+const TASK_STATUSES = ['new', 'in_progress', 'review', 'done'];
 
 // Полномочия по умолчанию: «кассир — оформление, деньги, подтверждение; кладовщик — склад;
 // ПМ — статусы, приём денег, отчёты» (ТЗ и прототип). Учредитель меняет их сам в Настройках.
@@ -58,4 +77,5 @@ const DEFAULT_RATES = {
 module.exports = {
   STATUSES, ACTIONS, OWNERS, POSITIONS, LEVELS, ORDER_TYPES, MOVE_TYPES, PAYMENT_KINDS, REPORT_STAGES, PANEL_SECTIONS,
   EVIDENCE_STAGES, DEFAULT_EVIDENCE, PRICE_MODES, DEFAULT_PERMISSIONS, DEFAULT_RATES,
+  DEFAULT_VALUES, CLIENT_SOURCES, RELATIONS, TASK_STATUSES,
 };

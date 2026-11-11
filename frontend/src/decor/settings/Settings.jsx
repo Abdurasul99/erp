@@ -9,6 +9,7 @@ import Icon from '../icons.jsx';
 import { useT, fm2 } from '../i18n.js';
 import { SECTIONS, useDecor, useLoad, useActions, Hero, Tabs, Card, Chip, Stepper, Loading, NoAccess, numIn } from '../kit.jsx';
 import { EV_STAGES, useEvidenceRules, setRulesCache, needText, evidenceError, mb } from '../evidence.jsx';
+import { ValuesEditor } from '../values.jsx';
 
 export default function Settings() {
   const { t } = useT();
@@ -19,7 +20,8 @@ export default function Settings() {
   // «Панель» — только учредителю, без ген. директора (сервер — founderOnly): остальным выключенные
   // тумблеры показывали настройку, которую не тронуть (владелец, 09.11.2026).
   const founder = me.user.role === 'founder';
-  const tabs = [['evidence', t('stTabEvidence')], ...(edit ? [['perms', t('stTabPerms')]] : []), ...(edit || can('see_finance') ? [['norms', t('stTabNorms')]] : []), ...(founder ? [['panel', t('stTabPanel')]] : [])];
+  const tabs = [['evidence', t('stTabEvidence')], ...(edit ? [['perms', t('stTabPerms')]] : []), ...(edit || can('see_finance') ? [['norms', t('stTabNorms')]] : []), ...(founder ? [['panel', t('stTabPanel')]] : []),
+    ...(can('edit_values') ? [['values', t('stTabValues')]] : [])];
   const tab = tabs.some(x => x[0] === params.get('tab')) ? params.get('tab') : 'evidence';
   return (
     <>
@@ -29,6 +31,7 @@ export default function Settings() {
       {tab === 'perms' && <PermsTab />}
       {tab === 'norms' && <NormsTab />}
       {tab === 'panel' && <PanelTab />}
+      {tab === 'values' && <ValuesEditor />}
     </>
   );
 }
@@ -189,7 +192,7 @@ function NormsTab() {
 }
 
 // ---------- Панель: какие разделы видны в нижнем меню у всех ----------
-const PANEL = ['tools', 'orders', 'calc', 'booking', 'decor', 'finance', 'team', 'reports', 'ai'];
+const PANEL = ['tools', 'orders', 'calc', 'booking', 'decor', 'clients', 'manage', 'finance', 'team', 'reports', 'ai'];
 function PanelTab() {
   const { t } = useT();
   const { me, reloadMe } = useDecor();

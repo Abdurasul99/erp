@@ -9,6 +9,7 @@ import api, { errText, store } from '../api.js';
 import Icon from '../icons.jsx';
 import { useT, fm, fm2, fsum, fday, fperiod, localYmd, addDays } from '../i18n.js';
 import { useDecor, useLoad, useActions, Hero, Card, Chip, Stepper, DateInput, ItemPick, numIn } from '../kit.jsx';
+import { ClientHint } from '../clients/Clients.jsx';
 
 const emptyCalc = () => ({ client: '', phone: '', address: '', event_date: addDays(localYmd(), 3), type: 'big', team: [], lines: [], rented: '', price: '', prepay: '' });
 
@@ -180,7 +181,8 @@ export default function Calc() {
             <h3>{t('clientDate')}</h3>
             <div className="dd-form" style={{ marginTop: 12 }}>
               <div className="dd-field"><label htmlFor="c_client">{t('client')}</label><input id="c_client" className="dd-inp" value={C.client} placeholder={t('clientPh')} onChange={e => set({ client: e.target.value })} /></div>
-              <div className="dd-field"><label htmlFor="c_phone">{t('phone')}</label><input id="c_phone" className="dd-inp" inputMode="tel" value={C.phone} placeholder="+998" onChange={e => set({ phone: e.target.value })} /></div>
+              <div className="dd-field"><label htmlFor="c_phone">{t('phone')}</label><input id="c_phone" className="dd-inp" inputMode="tel" value={C.phone} placeholder="+998" onChange={e => set({ phone: e.target.value })} />
+                <ClientHint phone={C.phone} onFound={c => setC(x => ({ ...x, client: x.client.trim() ? x.client : c.name, address: x.address.trim() ? x.address : (c.address || '') }))} /></div>
               <div className="dd-field"><label htmlFor="c_addr">{t('address')}</label><input id="c_addr" className="dd-inp" value={C.address} onChange={e => set({ address: e.target.value })} /></div>
               <div className="dd-field"><label htmlFor="c_date">{t('date')}</label><DateInput id="c_date" value={C.event_date} onChange={v => set({ event_date: v })} /></div>
               <div className="dd-field"><label htmlFor="c_type">{t('type')}</label>

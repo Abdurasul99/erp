@@ -1,14 +1,15 @@
 // Оболочка «Декора» как в Wave: вход, верхняя панель (поиск Ctrl K), нижний плавающий док, «Инструменты». Главная — home/Home.jsx.
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import api, { TOKEN_KEY, USER_KEY, store, errText } from './api.js';
+import api, { TOKEN_KEY, USER_KEY, COMPANY_KEY, store, errText } from './api.js';
+import { ValuesBar } from './values.jsx';
 import Icon from './icons.jsx';
 import { useT, fday, fm, LANGS } from './i18n.js';
 import { SECTIONS, useDecor, Tile, Hero, Sheet, StatusChip } from './kit.jsx';
 
 const LABEL = id => `s_${id === 'decor' ? 'decor' : id}`;
 const visible = (s, me) => s !== '|' && (!s.feature || me.features.includes(s.feature))
-  && !(me.panel_off || []).includes(s.id);
+  && (!s.perm || me.permissions.includes(s.perm)) && !(me.panel_off || []).includes(s.id);
 // Текущий раздел по адресу /decor/<path>
 export function useSection() {
   const loc = useLocation();
@@ -157,16 +158,21 @@ export function Login() {
   const [f, setF] = useState({ username: '', password: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // «Кадрият» на странице входа (ТЗ обновление 2): ценности компании, из которой уже входили на этом устройстве
+  const [values, setValues] = useState(null);
+  const loadValues = () => api.get('/public/values', { params: { company: store.get(COMPANY_KEY) || undefined } }).then(r => setValues(r.data.values)).catch(() => {});
+  useEffect(() => { loadValues(); }, []);
   const submit = async e => {
     e.preventDefault(); setErr(''); setBusy(true);
     try {
       const { data } = await api.post('/auth/login', f);
-      store.set(TOKEN_KEY, data.token); store.set(USER_KEY, JSON.stringify(data.user));
+      store.set(TOKEN_KEY, data.token); store.set(USER_KEY, JSON.stringify(data.user)); store.set(COMPANY_KEY, String(data.user.company_id));
       window.location.href = '/decor';
     } catch (ex) { setErr(errText(ex, t('error'))); setBusy(false); }
   };
   return (
     <div className="dd dd-login">
+      <div className="dd-login-col">
       <form className="dd-card" onSubmit={submit}>
         <div className="dd-row dd-between"><div className="dd-logo">D</div><LangToggle /></div>
         <div><h2 style={{ fontSize: 22, fontWeight: 900 }}>{t('loginTitle')}</h2><div className="dd-sub">Wave · {t('sphereName')}</div></div>
@@ -177,6 +183,8 @@ export function Login() {
         {err && <div className="dd-err">{err}</div>}
         <button type="submit" className="dd-btn lg" disabled={busy || !f.username || !f.password}>{t('enter')}</button>
       </form>
+      <ValuesBar values={values} refresh={loadValues} />
+      </div>
     </div>
   );
 }

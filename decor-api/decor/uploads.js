@@ -70,13 +70,18 @@ async function checkSizes(db, req) {
   }
 }
 
-// Описание файлов в базе: owner = { report_id } или { evidence_id }
+// Описание файлов в базе: owner = { report_id } | { evidence_id } | { step_done_id } (отметка шага, D30) | { standard_id } (образец, D30).
+// Возвращает id сохранённых файлов по порядку.
 async function saveFiles(c, req, owner) {
+  const ids = [];
   for (const f of req.files || []) {
-    await c.query(`INSERT INTO decor_report_files (company_id, report_id, evidence_id, kind, file_name, original_name, mime, size_bytes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [req.decor.cid, owner.report_id || null, owner.evidence_id || null,
+    const { rows: [r] } = await c.query(`INSERT INTO decor_report_files (company_id, report_id, evidence_id, step_done_id, standard_id, kind, file_name, original_name, mime, size_bytes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [req.decor.cid, owner.report_id || null, owner.evidence_id || null,
+      owner.step_done_id || null, owner.standard_id || null,
       /^image\//.test(f.mimetype) ? 'image' : 'video', path.basename(f.path), fileName(f), f.mimetype, f.size]);
+    ids.push(r.id);
   }
+  return ids;
 }
 
 // Сколько места занимают файлы компании (Настройки)

@@ -7,6 +7,8 @@ import api from '../api.js';
 import { useT, fm, fday, fdm, ftoday, localYmd, addDays } from '../i18n.js';
 import { SECTIONS, useDecor, useLoad, Card, Chip, StatusChip, Tile, Loading } from '../kit.jsx';
 import { hintView } from '../ai/hintText.js';
+import { ValuesBar, useValues } from '../values.jsx';
+import { taskTitle } from '../manage/taskText.js';
 
 // Период карточки заказов выбирает сам пользователь (владелец, 09.11.2026: было зашито «на 7 дней»).
 // 7 / 14 / 30 дней — с сегодняшнего дня, «этот месяц» — с 1-го по последнее число, «свой» — любые две даты.
@@ -30,13 +32,15 @@ function loadPeriod(today) {
   return { key: '7', from: today, to: addDays(today, 6) };
 }
 
-const visible = (s, me) => s !== '|' && (!s.feature || me.features.includes(s.feature)) && !(me.panel_off || []).includes(s.id);
+const visible = (s, me) => s !== '|' && (!s.feature || me.features.includes(s.feature)) && (!s.perm || me.permissions.includes(s.perm))
+  && !(me.panel_off || []).includes(s.id);
 
 export default function Home() {
   const { t, lang } = useT();
   const { me } = useDecor();
   const nav = useNavigate();
   const today = localYmd();
+  const [values, reloadValues] = useValues();
   const [period, setPeriod] = useState(() => loadPeriod(today));
   const [from, to] = rangeOf(period, today);
   const choose = p => { setPeriod(p); try { localStorage.setItem(PERIOD_KEY, JSON.stringify(p)); } catch { /* только на сессию */ } };
@@ -54,6 +58,7 @@ export default function Home() {
   const intel = h ? hintView(t, lang, h.intel) : null;
   return (
     <>
+      <ValuesBar values={values} refresh={reloadValues} />
       <div className="dd-greet">
         <h1>{t('hello', { name })}</h1>
         <p><span className="dd-dot" />{ftoday(h?.today || new Date().toISOString().slice(0, 10), lang)} · {me.user.company_name}</p>
@@ -82,6 +87,28 @@ export default function Home() {
             </button>
           ))}
         </div>
+        {h.tasks && (h.tasks.overdue > 0 || h.tasks.mine_open > 0) && (
+          <Card className={`dd-hometasks ${h.tasks.overdue ? 'bad' : ''}`}>
+            <div className="dd-row dd-between">
+              <h3>{t('homeTasks')}</h3>
+              <div className="dd-row" style={{ gap: 6 }}>
+                {h.tasks.overdue > 0 && <Chip tone="bad">{t('homeTasksOverdue', { n: h.tasks.overdue })}</Chip>}
+                <Chip tone="gray">{t('homeTasksMine', { n: h.tasks.mine_open })}</Chip>
+              </div>
+            </div>
+            {h.tasks.overdue_list.length > 0 && (
+              <div className="dd-lines" style={{ gridTemplateColumns: 'none' }}>
+                {h.tasks.overdue_list.map(x => (
+                  <button key={x.id} type="button" className="dd-line dd-line-btn" onClick={() => nav(`/decor/manage?open=${x.id}`)}>
+                    <div className="dd-line-head"><b>{taskTitle(t, lang, x)}</b><Chip tone="bad">{t('tkDueWas', { date: fdm(x.due_date, lang) })}</Chip></div>
+                    {x.assignee && <div className="dd-sub">{x.assignee.name}</div>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button type="button" className="dd-link" style={{ justifySelf: 'start' }} onClick={() => nav('/decor/manage')}>{t('homeTasksGo')} →</button>
+          </Card>
+        )}
         <div className="dd-grid dd-g2" style={{ alignItems: 'stretch' }}>
           <Card className="dd-intel">
             <div className="dd-eyebrow">✦ Wave Intelligence · {t('homeHint')}</div>

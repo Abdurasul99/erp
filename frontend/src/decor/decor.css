@@ -408,3 +408,83 @@
 /* Дизайны (D26): состав в списке — не больше двух строк; выбор дизайна в калькуляторе */
 .dd-design-lines { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
 .dd-designpick { margin-top: 12px; gap: 8px; }
+
+/* ---------- Обновление 2: Кадрият, задачи (матрица, канбан), чек-листы работ, клиенты ---------- */
+.dd-link { background: none; border: 0; padding: 6px 0; color: var(--blue); font-weight: 800; cursor: pointer; text-align: left; }
+.dd-textarea { resize: vertical; min-height: 64px; line-height: 1.45; }
+.dd-toggle { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 8px 14px; font-weight: 800; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; cursor: pointer; }
+.dd-toggle.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.dd-chip-btn { margin-top: 6px; border: 0; border-radius: 999px; padding: 4px 10px; background: var(--bluebg); color: var(--blue); font-weight: 800; font-size: 12px; cursor: pointer; }
+
+/* Кадрият: 6 кнопок — на компьютере в ряд, на телефоне 2 колонки по 3 */
+.dd-values { display: grid; gap: 8px; margin-bottom: 16px; }
+.dd-values-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.dd-value { border: 0; border-radius: 16px; padding: 12px 10px; min-height: 54px; background: var(--g-indigo); color: #fff; font-weight: 800; line-height: 1.2;
+  box-shadow: 0 6px 16px rgba(74,92,224,.18); cursor: pointer; }
+.dd-value:hover { filter: brightness(1.08); }
+.dd-value-text { white-space: pre-line; font-size: 16px; line-height: 1.6; }
+.dd-login-col { width: min(400px, 100%); display: grid; gap: 14px; }
+.dd-login-col > .dd-card { width: 100%; }
+.dd-login .dd-values-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .dd-values-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .dd-values-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dd-value { min-height: 60px; font-size: 15px; } }
+
+/* Задачи на Главной */
+.dd-hometasks { display: grid; gap: 10px; margin-bottom: 16px; }
+.dd-hometasks.bad { box-shadow: inset 4px 0 0 var(--bad), 0 1px 2px rgba(16,24,40,.04), 0 4px 18px rgba(16,24,40,.04); }
+
+/* Карточка задачи: «ручка» слева (пальцем тащат за неё), просроченная — красная полоса */
+.dd-task { position: relative; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 10px 10px 10px 4px; display: flex; gap: 4px;
+  cursor: grab; user-select: none; text-align: left; }
+.dd-task:hover { border-color: var(--muted); }
+.dd-task.overdue { box-shadow: inset 3px 0 0 var(--bad); }
+.dd-task.dragging { opacity: .4; }
+.dd-task-grip { flex: 0 0 28px; display: grid; place-items: center; color: var(--faint); touch-action: none; cursor: grab; border-radius: 8px; min-height: 40px; }
+.dd-task-body { min-width: 0; display: grid; gap: 6px; }
+.dd-task-body b { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+.dd-task-meta { display: flex; gap: 6px 10px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+.dd-task-meta .bad { color: var(--bad); font-weight: 800; }
+.dd-task-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(-20%, -50%); max-width: 260px; background: var(--ink); color: #fff;
+  padding: 10px 14px; border-radius: 12px; font-weight: 800; box-shadow: 0 12px 30px rgba(15,23,41,.3); }
+
+/* Матрица Эйзенхауэра 2×2 */
+.dd-matrix { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.dd-quad { border-radius: 18px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 180px; border: 2px solid transparent; transition: border-color .15s, background .15s; }
+.dd-quad h4 { font-size: 14px; font-weight: 900; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.dd-quad.q1 { background: var(--badbg); } .dd-quad.q2 { background: var(--bluebg); } .dd-quad.q3 { background: var(--warnbg); } .dd-quad.q4 { background: var(--surface2); }
+.dd-quad.over, .dd-col.over { border-color: var(--blue); background: #E3EBFF; }
+.dd-statuspick button.over { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(47,107,255,.25); }
+.dd-quad-empty { text-align: center; padding: 18px 6px; }
+@media (max-width: 640px) {
+  .dd-matrix { gap: 8px; }
+  .dd-quad { padding: 8px; min-height: 140px; border-radius: 14px; }
+  .dd-quad h4 { font-size: 12px; }
+  .dd-quad .dd-sub { font-size: 11px; }
+  .dd-task { padding: 8px 8px 8px 2px; }
+  .dd-task-grip { flex-basis: 24px; }
+  .dd-task-body b { font-size: 13px; }
+}
+
+/* Чек-лист работ заказа: крупные карточки шагов */
+.dd-progress { height: 8px; border-radius: 999px; background: var(--surface2); overflow: hidden; margin: 10px 0; }
+.dd-progress span { display: block; height: 100%; background: var(--g-green); border-radius: 999px; transition: width .2s; }
+.dd-stepcards { display: grid; gap: 10px; }
+.dd-stepcard { border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: grid; gap: 10px; background: #fff; }
+.dd-stepcard.next { border: 2px solid var(--blue); box-shadow: 0 6px 20px rgba(47,107,255,.12); }
+.dd-stepcard.done { background: var(--okbg); border-color: transparent; }
+.dd-stepcard.locked { opacity: .6; }
+.dd-stepcard-head { display: flex; gap: 12px; align-items: flex-start; }
+.dd-stepno { flex: 0 0 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 900; background: var(--surface2); color: var(--muted); }
+.dd-stepcard.next .dd-stepno { background: var(--blue); color: #fff; }
+.dd-stepcard.done .dd-stepno { background: var(--ok); color: #fff; }
+.dd-steptext { font-size: 16px; font-weight: 700; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; margin-bottom: 4px; }
+@media (max-width: 640px) { .dd-stepcard .dd-btn.lg { flex: 1 1 45%; } .dd-steptext { font-size: 17px; } }
+
+/* Клиент по телефону в калькуляторе и новом лиде */
+.dd-clhint { font-size: 13px; margin-top: 4px; }
+.dd-clhint.found { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--fg); font-weight: 700; }
+/* Перетаскивание задачи: док и верхняя панель не перехватывают бросок, текст не выделяется */
+.dd.dd-dragging .dd-dockwrap, .dd.dd-dragging .dd-top { pointer-events: none; }
+.dd.dd-dragging .dd-dockwrap { opacity: .25; transition: opacity .15s; }
+.dd.dd-dragging { user-select: none; -webkit-user-select: none; cursor: grabbing; }
+.dd a.dd-btn { text-decoration: none; }
