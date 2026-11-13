@@ -1,0 +1,1117 @@
+{
+ "source": "Склад остатка (2).xlsx",
+ "date": "2026-11-12",
+ "note": "Цена — цена продажи (в файле «Цена сб»); количество — остаток на складе",
+ "categories": {
+  "tools": {
+   "ru": "Инструменты",
+   "uz": "Asboblar"
+  },
+  "kitchen": {
+   "ru": "Для кухни",
+   "uz": "Oshxona uchun"
+  },
+  "home": {
+   "ru": "Для дома",
+   "uz": "Uy uchun"
+  },
+  "beauty": {
+   "ru": "Красота и здоровье",
+   "uz": "Go‘zallik va salomatlik"
+  },
+  "auto": {
+   "ru": "Для авто",
+   "uz": "Avtomobil uchun"
+  },
+  "light": {
+   "ru": "Свет и электроника",
+   "uz": "Yoritish va elektronika"
+  },
+  "garden": {
+   "ru": "Сад, дача, отдых",
+   "uz": "Bog‘, dala hovli, dam olish"
+  }
+ },
+ "items": [
+  {
+   "code": 1,
+   "name_ru": "Пилка для ступней (пемза)",
+   "name_uz": "Oyoq tovoni uchun pemza",
+   "category": "beauty",
+   "name_original": "пилка для ступней (пемза)",
+   "unit": "шт",
+   "price": 25000,
+   "qty": 4
+  },
+  {
+   "code": 2,
+   "name_ru": "Ручная точилка для ножей",
+   "name_uz": "Pichoq charxlagich (qo‘lda)",
+   "category": "kitchen",
+   "name_original": "Ручная точилка для ножей",
+   "unit": "шт",
+   "price": 12000,
+   "qty": 2
+  },
+  {
+   "code": 3,
+   "name_ru": "Резка для металла — белая",
+   "name_uz": "Metall kesgich — oq",
+   "category": "tools",
+   "name_original": "Резка для металла 1 ок",
+   "unit": "шт",
+   "price": 95000,
+   "qty": 0
+  },
+  {
+   "code": 4,
+   "name_ru": "Резка для металла — чёрная",
+   "name_uz": "Metall kesgich — qora",
+   "category": "tools",
+   "name_original": "Резка для металла 2 кора",
+   "unit": "шт",
+   "price": 85000,
+   "qty": 184
+  },
+  {
+   "code": 5,
+   "name_ru": "Сушилка для белья",
+   "name_uz": "Kir quritgich",
+   "category": "home",
+   "name_original": "Сушилка для белья",
+   "unit": "шт",
+   "price": 185000,
+   "qty": 13
+  },
+  {
+   "code": 6,
+   "name_ru": "Резка для металла — жёлтая",
+   "name_uz": "Metall kesgich — sariq",
+   "category": "tools",
+   "name_original": "Резка для металла 3 сарик",
+   "unit": "шт",
+   "price": 85000,
+   "qty": 5
+  },
+  {
+   "code": 7,
+   "name_ru": "Насадка-пила на шуруповёрт",
+   "name_uz": "Shurupyovertga arra moslama",
+   "category": "tools",
+   "name_original": "Насадка пила на шуруповёрт",
+   "unit": "шт",
+   "price": 38000,
+   "qty": 114
+  },
+  {
+   "code": 8,
+   "name_ru": "Герметик",
+   "name_uz": "Germetik",
+   "category": "tools",
+   "name_original": "Герметик",
+   "unit": "шт",
+   "price": 50000,
+   "qty": 287
+  },
+  {
+   "code": 10,
+   "name_ru": "Тактический фонарь",
+   "name_uz": "Taktik fonar",
+   "category": "light",
+   "name_original": "Токтический фонарь",
+   "unit": "шт",
+   "price": 86000,
+   "qty": 203
+  },
+  {
+   "code": 11,
+   "name_ru": "Шторки для авто",
+   "name_uz": "Avtomobil pardalari",
+   "category": "auto",
+   "name_original": "Шторы для авто",
+   "unit": "шт",
+   "price": 70000,
+   "qty": 1
+  },
+  {
+   "code": 12,
+   "name_ru": "Зонт для авто",
+   "name_uz": "Avtomobil soyaboni",
+   "category": "auto",
+   "name_original": "Зонтик для авто",
+   "unit": "шт",
+   "price": 50000,
+   "qty": 18
+  },
+  {
+   "code": 13,
+   "name_ru": "Электрическая отвёртка 1 (с кейсом)",
+   "name_uz": "Elektr otvyortka 1 (keys bilan)",
+   "category": "tools",
+   "name_original": "Электрическая отвёрта 1 с кейсом",
+   "unit": "шт",
+   "price": 152700,
+   "qty": 0
+  },
+  {
+   "code": 14,
+   "name_ru": "Электрическая отвёртка 2 (в коробке)",
+   "name_uz": "Elektr otvyortka 2 (qutida)",
+   "category": "tools",
+   "name_original": "Электрическая отвёрта 2 в коробке",
+   "unit": "шт",
+   "price": 127000,
+   "qty": 12
+  },
+  {
+   "code": 15,
+   "name_ru": "Кондиционер Arctic Air",
+   "name_uz": "Arctic Air konditsioneri",
+   "category": "home",
+   "name_original": "Кондиционер Артик Эир",
+   "unit": "шт",
+   "price": 57150,
+   "qty": 0
+  },
+  {
+   "code": 16,
+   "name_ru": "Пила на болгарку",
+   "name_uz": "Bolgarkaga arra",
+   "category": "tools",
+   "name_original": "Пила на болгарку",
+   "unit": "шт",
+   "price": 101000,
+   "qty": 7
+  },
+  {
+   "code": 17,
+   "name_ru": "Соковыжималка",
+   "name_uz": "Sharbat siqgich",
+   "category": "kitchen",
+   "name_original": "Соковыжималка",
+   "unit": "шт",
+   "price": 125000,
+   "qty": 55
+  },
+  {
+   "code": 18,
+   "name_ru": "Портативная мини-стиральная машина",
+   "name_uz": "Ko‘chma mini kir yuvish mashinasi",
+   "category": "home",
+   "name_original": "Портативная мини стирсальная машина",
+   "unit": "шт",
+   "price": 250000,
+   "qty": 0
+  },
+  {
+   "code": 19,
+   "name_ru": "Детский набор для творчества",
+   "name_uz": "Bolalar ijodiy to‘plami",
+   "category": "home",
+   "name_original": "Детский набор арт",
+   "unit": "шт",
+   "price": 95000,
+   "qty": 0
+  },
+  {
+   "code": 20,
+   "name_ru": "Кухонный набор",
+   "name_uz": "Oshxona to‘plami",
+   "category": "kitchen",
+   "name_original": "Кухонный набор",
+   "unit": "шт",
+   "price": 160000,
+   "qty": 8
+  },
+  {
+   "code": 21,
+   "name_ru": "Треугольная швабра с отжимом",
+   "name_uz": "Siqgichli uchburchak shvabra",
+   "category": "home",
+   "name_original": "Трёхугольная швабра с отжимом",
+   "unit": "шт",
+   "price": 35000,
+   "qty": 100
+  },
+  {
+   "code": 22,
+   "name_ru": "Чинни Румин",
+   "name_uz": "Chinni Rumin",
+   "category": "kitchen",
+   "name_original": "Чинни Румин",
+   "unit": "шт",
+   "price": 57060,
+   "qty": 0
+  },
+  {
+   "code": 23,
+   "name_ru": "Аккумуляторная мойка",
+   "name_uz": "Akkumulyatorli yuvish moslamasi",
+   "category": "auto",
+   "name_original": "Акумуляторная мойка",
+   "unit": "шт",
+   "price": 317000,
+   "qty": 2
+  },
+  {
+   "code": 24,
+   "name_ru": "Подушка ортопедическая",
+   "name_uz": "Ortopedik yostiq",
+   "category": "beauty",
+   "name_original": "Подушка артопедическая",
+   "unit": "шт",
+   "price": 0,
+   "qty": 6
+  },
+  {
+   "code": 25,
+   "name_ru": "Триммер (электробритва)",
+   "name_uz": "Trimmer (elektr ustara)",
+   "category": "beauty",
+   "name_original": "Тример (электронная бритва",
+   "unit": "шт",
+   "price": 110000,
+   "qty": 4
+  },
+  {
+   "code": 26,
+   "name_ru": "Распылитель воды",
+   "name_uz": "Suv purkagich",
+   "category": "garden",
+   "name_original": "Распрыскиватель (воды)",
+   "unit": "шт",
+   "price": 42000,
+   "qty": 127
+  },
+  {
+   "code": 27,
+   "name_ru": "Реноватор (насадка)",
+   "name_uz": "Renovator (moslama)",
+   "category": "tools",
+   "name_original": "Реноватор (насадка)",
+   "unit": "шт",
+   "price": 95000,
+   "qty": 0
+  },
+  {
+   "code": 30,
+   "name_ru": "Антизасор",
+   "name_uz": "Quvur tiqilinchiga qarshi vosita",
+   "category": "home",
+   "name_original": "Антизасор",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 30
+  },
+  {
+   "code": 31,
+   "name_ru": "Вкладыши для подмышек",
+   "name_uz": "Qo‘ltiq uchun qistirmalar",
+   "category": "beauty",
+   "name_original": "Вкладки для подмышки",
+   "unit": "шт",
+   "price": 4000,
+   "qty": 29
+  },
+  {
+   "code": 32,
+   "name_ru": "Электронные чётки",
+   "name_uz": "Elektron tasbeh",
+   "category": "light",
+   "name_original": "Электронный Четки",
+   "unit": "шт",
+   "price": 25000,
+   "qty": 1
+  },
+  {
+   "code": 33,
+   "name_ru": "Холодная сварка",
+   "name_uz": "Sovuq payvand",
+   "category": "tools",
+   "name_original": "Холодная сварка",
+   "unit": "шт",
+   "price": 30000,
+   "qty": 45
+  },
+  {
+   "code": 34,
+   "name_ru": "Набор инструментов (108 предметов)",
+   "name_uz": "Asboblar to‘plami (108 ta)",
+   "category": "tools",
+   "name_original": "108 инструментов",
+   "unit": "шт",
+   "price": 330000,
+   "qty": 9
+  },
+  {
+   "code": 35,
+   "name_ru": "Вакууматор",
+   "name_uz": "Vakuumlagich",
+   "category": "kitchen",
+   "name_original": "Вакуматор",
+   "unit": "шт",
+   "price": 70000,
+   "qty": 0
+  },
+  {
+   "code": 36,
+   "name_ru": "Valufix (фиксатор для пальца)",
+   "name_uz": "Valufix (barmoq uchun fiksator)",
+   "category": "beauty",
+   "name_original": "valufix (для пальца)",
+   "unit": "шт",
+   "price": 13000,
+   "qty": 85
+  },
+  {
+   "code": 37,
+   "name_ru": "Мультиотвёртка",
+   "name_uz": "Ko‘p funksiyali otvyortka",
+   "category": "tools",
+   "name_original": "мульти атвёртка",
+   "unit": "шт",
+   "price": 50400,
+   "qty": 0
+  },
+  {
+   "code": 38,
+   "name_ru": "Надувное кресло Intex",
+   "name_uz": "Intex puflanadigan kreslo",
+   "category": "garden",
+   "name_original": "надувное кресло intex",
+   "unit": "шт",
+   "price": 303000,
+   "qty": 0
+  },
+  {
+   "code": 39,
+   "name_ru": "Москитная сетка",
+   "name_uz": "Pashshaga qarshi to‘r",
+   "category": "home",
+   "name_original": "маскитная сетка",
+   "unit": "шт",
+   "price": 90000,
+   "qty": 0
+  },
+  {
+   "code": 40,
+   "name_ru": "EZ Jet (пистолет-распылитель)",
+   "name_uz": "EZ Jet (purkagich to‘pponcha)",
+   "category": "garden",
+   "name_original": "EZ Jet (пистолет распрыскательный)",
+   "unit": "шт",
+   "price": 37950,
+   "qty": 0
+  },
+  {
+   "code": 41,
+   "name_ru": "Ночник «Медуза»",
+   "name_uz": "«Meduza» tungi chirog‘i",
+   "category": "light",
+   "name_original": "медуза ночник",
+   "unit": "шт",
+   "price": 130000,
+   "qty": 0
+  },
+  {
+   "code": 42,
+   "name_ru": "Смарт-лампа",
+   "name_uz": "Smart lampa",
+   "category": "light",
+   "name_original": "смарт лампа",
+   "unit": "шт",
+   "price": 120000,
+   "qty": 8
+  },
+  {
+   "code": 43,
+   "name_ru": "Электрический насос",
+   "name_uz": "Elektr nasos",
+   "category": "home",
+   "name_original": "электрический насос",
+   "unit": "шт",
+   "price": 56925,
+   "qty": 0
+  },
+  {
+   "code": 44,
+   "name_ru": "Вентилятор-увлажнитель",
+   "name_uz": "Namlagichli ventilyator",
+   "category": "home",
+   "name_original": "вентилятор увлажнитель",
+   "unit": "шт",
+   "price": 82200,
+   "qty": 0
+  },
+  {
+   "code": 45,
+   "name_ru": "Проектор «Космонавт»",
+   "name_uz": "«Kosmonavt» proyektori",
+   "category": "light",
+   "name_original": "Космонафт проектор",
+   "unit": "шт",
+   "price": 105000,
+   "qty": 21
+  },
+  {
+   "code": 46,
+   "name_ru": "Дверная москитная сетка 120×210",
+   "name_uz": "Eshik uchun pashshaga qarshi to‘r 120×210",
+   "category": "home",
+   "name_original": "дверная маскитная сетка 120x210",
+   "unit": "шт",
+   "price": 30000,
+   "qty": 18
+  },
+  {
+   "code": 47,
+   "name_ru": "Силиконовые перчатки",
+   "name_uz": "Silikon qo‘lqoplar",
+   "category": "kitchen",
+   "name_original": "селеконовые перчатки",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 0
+  },
+  {
+   "code": 48,
+   "name_ru": "Подставки для стиральной машины",
+   "name_uz": "Kir yuvish mashinasi uchun tagliklar",
+   "category": "home",
+   "name_original": "подставки для стиралки",
+   "unit": "шт",
+   "price": 15000,
+   "qty": 2
+  },
+  {
+   "code": 49,
+   "name_ru": "Grean Steak",
+   "name_uz": "Grean Steak",
+   "category": "home",
+   "name_original": "grean steak",
+   "unit": "шт",
+   "price": 8000,
+   "qty": 7
+  },
+  {
+   "code": 50,
+   "name_ru": "Мини-камера A9",
+   "name_uz": "A9 mini kamera",
+   "category": "light",
+   "name_original": "мини камера А9",
+   "unit": "шт",
+   "price": 85000,
+   "qty": 31
+  },
+  {
+   "code": 51,
+   "name_ru": "Складная сумка",
+   "name_uz": "Buklanadigan sumka",
+   "category": "home",
+   "name_original": "складная сумка",
+   "unit": "шт",
+   "price": 60000,
+   "qty": 0
+  },
+  {
+   "code": 52,
+   "name_ru": "Полка над стиральной машиной",
+   "name_uz": "Kir yuvish mashinasi ustidagi javon",
+   "category": "home",
+   "name_original": "полка над стипалкой",
+   "unit": "шт",
+   "price": 135000,
+   "qty": 35
+  },
+  {
+   "code": 53,
+   "name_ru": "Светильник настенный",
+   "name_uz": "Devor chirog‘i",
+   "category": "light",
+   "name_original": "светильник настенный",
+   "unit": "шт",
+   "price": 45000,
+   "qty": 6
+  },
+  {
+   "code": 54,
+   "name_ru": "Массажный акупунктурный коврик",
+   "name_uz": "Akupunktur massaj gilamchasi",
+   "category": "beauty",
+   "name_original": "массажный акупунктурный коврик",
+   "unit": "шт",
+   "price": 130000,
+   "qty": 0
+  },
+  {
+   "code": 55,
+   "name_ru": "Электрическая помпа для воды",
+   "name_uz": "Suv uchun elektr pompa",
+   "category": "kitchen",
+   "name_original": "электрическая помпа",
+   "unit": "шт",
+   "price": 28000,
+   "qty": 4
+  },
+  {
+   "code": 56,
+   "name_ru": "Афганский казан 5 л",
+   "name_uz": "Afg‘on qozoni 5 l",
+   "category": "kitchen",
+   "name_original": "Авган казан 5л",
+   "unit": "шт",
+   "price": 196230,
+   "qty": 0
+  },
+  {
+   "code": 57,
+   "name_ru": "Афганский казан 8 л",
+   "name_uz": "Afg‘on qozoni 8 l",
+   "category": "kitchen",
+   "name_original": "Авган казан 8л",
+   "unit": "шт",
+   "price": 215220,
+   "qty": 0
+  },
+  {
+   "code": 58,
+   "name_ru": "Афганский казан 10 л",
+   "name_uz": "Afg‘on qozoni 10 l",
+   "category": "kitchen",
+   "name_original": "Авган казан 10л",
+   "unit": "шт",
+   "price": 259530,
+   "qty": 0
+  },
+  {
+   "code": 59,
+   "name_ru": "Смарт-лампа G11",
+   "name_uz": "G11 smart lampa",
+   "category": "light",
+   "name_original": "смарт лампа g11",
+   "unit": "шт",
+   "price": 140000,
+   "qty": 0
+  },
+  {
+   "code": 60,
+   "name_ru": "Серая лента",
+   "name_uz": "Kulrang lenta",
+   "category": "tools",
+   "name_original": "серая лента",
+   "unit": "шт",
+   "price": 23500,
+   "qty": 4
+  },
+  {
+   "code": 61,
+   "name_ru": "Насадка на косу",
+   "name_uz": "Trimmer (o‘roq) uchun moslama",
+   "category": "garden",
+   "name_original": "насадка на косу",
+   "unit": "шт",
+   "price": 45000,
+   "qty": 5
+  },
+  {
+   "code": 62,
+   "name_ru": "Набор сковородок (3 шт.)",
+   "name_uz": "Tovalar to‘plami (3 ta)",
+   "category": "kitchen",
+   "name_original": "набор сковородок 3 шт",
+   "unit": "шт",
+   "price": 215000,
+   "qty": 1
+  },
+  {
+   "code": 63,
+   "name_ru": "Полка для обуви",
+   "name_uz": "Poyabzal javoni",
+   "category": "home",
+   "name_original": "полка для обуви",
+   "unit": "шт",
+   "price": 90000,
+   "qty": 21
+  },
+  {
+   "code": 64,
+   "name_ru": "Тонометр (на русском)",
+   "name_uz": "Tonometr (rus tilida)",
+   "category": "beauty",
+   "name_original": "танометр рус",
+   "unit": "шт",
+   "price": 150000,
+   "qty": 0
+  },
+  {
+   "code": 65,
+   "name_ru": "Отпариватель",
+   "name_uz": "Kiyim bug‘latgich",
+   "category": "home",
+   "name_original": "отпариватель",
+   "unit": "шт",
+   "price": 164060,
+   "qty": 5
+  },
+  {
+   "code": 66,
+   "name_ru": "Набор ножей Zepter",
+   "name_uz": "Zepter pichoqlar to‘plami",
+   "category": "kitchen",
+   "name_original": "набор ножей зептор",
+   "unit": "шт",
+   "price": 49000,
+   "qty": 0
+  },
+  {
+   "code": 67,
+   "name_ru": "Складной стул",
+   "name_uz": "Buklanadigan stul",
+   "category": "garden",
+   "name_original": "складной стул",
+   "unit": "шт",
+   "price": 60000,
+   "qty": 3
+  },
+  {
+   "code": 68,
+   "name_ru": "Аккумуляторная цепная мини-пила",
+   "name_uz": "Akkumulyatorli zanjirli mini arra",
+   "category": "tools",
+   "name_original": "аккумуляторная цепная мини пила",
+   "unit": "шт",
+   "price": 280000,
+   "qty": 2
+  },
+  {
+   "code": 69,
+   "name_ru": "Аккумуляторная мойка (1 аккумулятор)",
+   "name_uz": "Akkumulyatorli yuvish moslamasi (1 akkumulyator)",
+   "category": "auto",
+   "name_original": "акумуляторная мойка 1 аккум",
+   "unit": "шт",
+   "price": 253000,
+   "qty": 7
+  },
+  {
+   "code": 70,
+   "name_ru": "Нож №1",
+   "name_uz": "Pichoq №1",
+   "category": "kitchen",
+   "name_original": "Нож №1",
+   "unit": "шт",
+   "price": 35000,
+   "qty": 86
+  },
+  {
+   "code": 71,
+   "name_ru": "Помада «Ботокс»",
+   "name_uz": "«Botoks» pomadasi",
+   "category": "beauty",
+   "name_original": "помада ботекс",
+   "unit": "шт",
+   "price": 7000,
+   "qty": 26
+  },
+  {
+   "code": 72,
+   "name_ru": "Робот-пылесос",
+   "name_uz": "Robot changyutgich",
+   "category": "home",
+   "name_original": "робот пылесос",
+   "unit": "шт",
+   "price": 179000,
+   "qty": 0
+  },
+  {
+   "code": 73,
+   "name_ru": "Защитная маска",
+   "name_uz": "Himoya niqobi",
+   "category": "tools",
+   "name_original": "защитная маска",
+   "unit": "шт",
+   "price": 19005,
+   "qty": 55
+  },
+  {
+   "code": 74,
+   "name_ru": "Нож №2",
+   "name_uz": "Pichoq №2",
+   "category": "kitchen",
+   "name_original": "Нож №2",
+   "unit": "шт",
+   "price": 32000,
+   "qty": 784
+  },
+  {
+   "code": 75,
+   "name_ru": "Воск для мебели",
+   "name_uz": "Mebel uchun mum",
+   "category": "home",
+   "name_original": "воск для мебели",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 45
+  },
+  {
+   "code": 76,
+   "name_ru": "Активатор клёва",
+   "name_uz": "Baliq ovi uchun aktivator",
+   "category": "garden",
+   "name_original": "актеватор клева",
+   "unit": "шт",
+   "price": 8000,
+   "qty": 8
+  },
+  {
+   "code": 77,
+   "name_ru": "Монокуляр",
+   "name_uz": "Monokulyar",
+   "category": "garden",
+   "name_original": "монокуляр",
+   "unit": "шт",
+   "price": 140000,
+   "qty": 29
+  },
+  {
+   "code": 78,
+   "name_ru": "Карандаш для бровей",
+   "name_uz": "Qosh qalami",
+   "category": "beauty",
+   "name_original": "карандаш для бровей",
+   "unit": "шт",
+   "price": 4000,
+   "qty": 0
+  },
+  {
+   "code": 79,
+   "name_ru": "Кристальный ночник",
+   "name_uz": "Kristall tungi chirog‘",
+   "category": "light",
+   "name_original": "Кристальный ночник",
+   "unit": "шт",
+   "price": 45000,
+   "qty": 39
+  },
+  {
+   "code": 80,
+   "name_ru": "Тонометр (на английском)",
+   "name_uz": "Tonometr (ingliz tilida)",
+   "category": "beauty",
+   "name_original": "танометр англ",
+   "unit": "шт",
+   "price": 126000,
+   "qty": 0
+  },
+  {
+   "code": 81,
+   "name_ru": "Набор для перемещения мебели",
+   "name_uz": "Mebel ko‘chirish to‘plami",
+   "category": "home",
+   "name_original": "Набор для перемещения мебели",
+   "unit": "шт",
+   "price": 44625,
+   "qty": 63
+  },
+  {
+   "code": 82,
+   "name_ru": "Дровокол",
+   "name_uz": "O‘tin yorgich",
+   "category": "garden",
+   "name_original": "дровокол",
+   "unit": "шт",
+   "price": 58650,
+   "qty": 48
+  },
+  {
+   "code": 83,
+   "name_ru": "Набор пилинг-губок",
+   "name_uz": "Piling gubkalar to‘plami",
+   "category": "beauty",
+   "name_original": "набор пиллинг губок",
+   "unit": "шт",
+   "price": 4000,
+   "qty": 0
+  },
+  {
+   "code": 84,
+   "name_ru": "Нож №3",
+   "name_uz": "Pichoq №3",
+   "category": "kitchen",
+   "name_original": "Нож №3",
+   "unit": "шт",
+   "price": 29000,
+   "qty": 38
+  },
+  {
+   "code": 85,
+   "name_ru": "Нож №4",
+   "name_uz": "Pichoq №4",
+   "category": "kitchen",
+   "name_original": "Нож №4",
+   "unit": "шт",
+   "price": 22000,
+   "qty": 0
+  },
+  {
+   "code": 86,
+   "name_ru": "Нож №5",
+   "name_uz": "Pichoq №5",
+   "category": "kitchen",
+   "name_original": "Нож №5",
+   "unit": "шт",
+   "price": 45000,
+   "qty": 0
+  },
+  {
+   "code": 87,
+   "name_ru": "Антидождь",
+   "name_uz": "Yomg‘irga qarshi vosita",
+   "category": "auto",
+   "name_original": "Антидождь",
+   "unit": "шт",
+   "price": 28000,
+   "qty": 14
+  },
+  {
+   "code": 88,
+   "name_ru": "Слуховой аппарат",
+   "name_uz": "Eshitish apparati",
+   "category": "beauty",
+   "name_original": "Слуховой аппарат",
+   "unit": "шт",
+   "price": 85000,
+   "qty": 3
+  },
+  {
+   "code": 89,
+   "name_ru": "Zip Sox (компрессионные носки)",
+   "name_uz": "Zip Sox (kompression paypoq)",
+   "category": "beauty",
+   "name_original": "Zip sox",
+   "unit": "шт",
+   "price": 30000,
+   "qty": 32
+  },
+  {
+   "code": 90,
+   "name_ru": "Расчёска-выпрямитель",
+   "name_uz": "To‘g‘rilovchi taroq",
+   "category": "beauty",
+   "name_original": "Расчёска выпрямитель",
+   "unit": "шт",
+   "price": 45000,
+   "qty": 22
+  },
+  {
+   "code": 91,
+   "name_ru": "Самонагревающиеся наколенники",
+   "name_uz": "O‘zi isiydigan tizzaliklar",
+   "category": "beauty",
+   "name_original": "самонагревающийся наколенники",
+   "unit": "шт",
+   "price": 28000,
+   "qty": 394
+  },
+  {
+   "code": 92,
+   "name_ru": "Саморассасывающиеся патчи от морщин",
+   "name_uz": "Ajinlarga qarshi so‘riluvchi patchlar",
+   "category": "beauty",
+   "name_original": "саморассасывающиеся патчи от морщин",
+   "unit": "шт",
+   "price": 35000,
+   "qty": 36
+  },
+  {
+   "code": 93,
+   "name_ru": "Гирлянда 50 м",
+   "name_uz": "Gulchambar chiroq 50 m",
+   "category": "light",
+   "name_original": "гирлянда 50m",
+   "unit": "шт",
+   "price": 77000,
+   "qty": 19
+  },
+  {
+   "code": 94,
+   "name_ru": "Гирлянда 10 м",
+   "name_uz": "Gulchambar chiroq 10 m",
+   "category": "light",
+   "name_original": "гирлянда 10m",
+   "unit": "шт",
+   "price": 50000,
+   "qty": 41
+  },
+  {
+   "code": 95,
+   "name_ru": "Обогреватель",
+   "name_uz": "Isitgich",
+   "category": "home",
+   "name_original": "обогреватель",
+   "unit": "шт",
+   "price": 140000,
+   "qty": 0
+  },
+  {
+   "code": 96,
+   "name_ru": "Наушники + повербанк",
+   "name_uz": "Quloqchin + powerbank",
+   "category": "light",
+   "name_original": "наушники + повербанк",
+   "unit": "шт",
+   "price": 60000,
+   "qty": 4
+  },
+  {
+   "code": 97,
+   "name_ru": "Подушка для шеи",
+   "name_uz": "Bo‘yin yostig‘i",
+   "category": "beauty",
+   "name_original": "Подушка для шеи",
+   "unit": "шт",
+   "price": 60000,
+   "qty": 0
+  },
+  {
+   "code": 98,
+   "name_ru": "Термос с датчиком температуры",
+   "name_uz": "Harorat datchikli termos",
+   "category": "kitchen",
+   "name_original": "термос с датчиком",
+   "unit": "шт",
+   "price": 24000,
+   "qty": 29
+  },
+  {
+   "code": 99,
+   "name_ru": "Швейная машина",
+   "name_uz": "Tikuv mashinasi",
+   "category": "home",
+   "name_original": "швейная машина",
+   "unit": "шт",
+   "price": 100000,
+   "qty": 5
+  },
+  {
+   "code": 100,
+   "name_ru": "Крем для чистки обуви",
+   "name_uz": "Poyabzal tozalash kremi",
+   "category": "home",
+   "name_original": "крем для чистки обуви",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 2
+  },
+  {
+   "code": 101,
+   "name_ru": "Патчи для растяжки глаз",
+   "name_uz": "Ko‘z uchun patchlar",
+   "category": "beauty",
+   "name_original": "патчи для растяжки глаз",
+   "unit": "шт",
+   "price": 15000,
+   "qty": 38
+  },
+  {
+   "code": 102,
+   "name_ru": "Ортез для колена с фиксатором",
+   "name_uz": "Fiksatorli tizza ortezi",
+   "category": "beauty",
+   "name_original": "отрез для колена с фиксатором",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 10
+  },
+  {
+   "code": 103,
+   "name_ru": "Пресс-магнит",
+   "name_uz": "Press-magnit",
+   "category": "beauty",
+   "name_original": "прес магнит",
+   "unit": "шт",
+   "price": 25000,
+   "qty": 2
+  },
+  {
+   "code": 104,
+   "name_ru": "Овощерезка",
+   "name_uz": "Sabzavot to‘g‘ragich",
+   "category": "kitchen",
+   "name_original": "овошорезка",
+   "unit": "шт",
+   "price": 51000,
+   "qty": 39
+  },
+  {
+   "code": 105,
+   "name_ru": "Швабра круглая",
+   "name_uz": "Dumaloq shvabra",
+   "category": "home",
+   "name_original": "швабра круглая",
+   "unit": "шт",
+   "price": 20000,
+   "qty": 3
+  },
+  {
+   "code": 106,
+   "name_ru": "Измельчитель 3,8 л",
+   "name_uz": "Maydalagich 3,8 l",
+   "category": "kitchen",
+   "name_original": "Измельчитель 3,8L",
+   "unit": "шт",
+   "price": 97500,
+   "qty": 1
+  },
+  {
+   "code": 107,
+   "name_ru": "Измельчитель 2,5 л",
+   "name_uz": "Maydalagich 2,5 l",
+   "category": "kitchen",
+   "name_original": "Измельчитель 2,5L",
+   "unit": "шт",
+   "price": 97500,
+   "qty": 1
+  },
+  {
+   "code": 108,
+   "name_ru": "Пластыри от боли (12 шт.)",
+   "name_uz": "Og‘riqqa qarshi plastirlar (12 ta)",
+   "category": "beauty",
+   "name_original": "Пластыри от боли (12 шт)",
+   "unit": "шт",
+   "price": 15000,
+   "qty": 28
+  },
+  {
+   "code": 109,
+   "name_ru": "Тканевая маска",
+   "name_uz": "Matoli niqob",
+   "category": "beauty",
+   "name_original": "тканевая маска",
+   "unit": "шт",
+   "price": 75000,
+   "qty": 3
+  },
+  {
+   "code": 110,
+   "name_ru": "Средство от грибка",
+   "name_uz": "Zamburug‘ga qarshi vosita",
+   "category": "beauty",
+   "name_original": "Cредства от грибка",
+   "unit": "шт",
+   "price": 50000,
+   "qty": 0
+  },
+  {
+   "code": 111,
+   "name_ru": "Прикуриватель-зарядка 9",
+   "name_uz": "Prikurivatel-zaryadlovchi 9",
+   "category": "auto",
+   "name_original": "Прикуритель зарядка-9",
+   "unit": "шт",
+   "price": 0,
+   "qty": 9
+  }
+ ]
+}

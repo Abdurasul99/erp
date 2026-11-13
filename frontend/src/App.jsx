@@ -15,7 +15,10 @@ const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
 const EventsShell = lazy(() => import('./events/EventsShell.jsx'));
 const Storefront = lazy(() => import('./store/Storefront.jsx'));
 const DecorApp = lazy(() => import('./decor/DecorApp.jsx'));
+// Витрины других компаний: /shop/<адрес> (товары для дома и т.п., 2026-11-13) — отдельно от ART Store (/store)
+const ShopFront = lazy(() => import('./shop/ShopFront.jsx'));
 import { isPublicStorefrontPath } from './store/storeRouting.mjs';
+import { isShopPath } from './shop/shopRouting.mjs';
 import { getLang, setLang } from './i18n.js';
 import { TaskInboxProvider } from './hooks/useTaskInbox.jsx';
 import api from './api.js';
@@ -443,6 +446,20 @@ function DecorStandaloneApp() {
   );
 }
 
+// Витрина /shop/<адрес>: публичная, без входа Wave
+function ShopStandaloneApp() {
+  return (
+    <BrowserRouter>
+      <Suspense fallback={null}>
+        <Routes>
+          <Route path="/shop/:slug" element={<ShopFront />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+}
+
 export function isDecorPath(pathname = '') {
   return pathname === '/decor' || pathname.startsWith('/decor/');
 }
@@ -450,5 +467,6 @@ export function isDecorPath(pathname = '') {
 export default function App() {
   const pathname = typeof window === 'undefined' ? '/' : window.location.pathname;
   if (isDecorPath(pathname)) return <DecorStandaloneApp />;
+  if (isShopPath(pathname)) return <ShopStandaloneApp />;
   return isPublicStorefrontPath(pathname) ? <PublicStorefrontApp /> : <ErpApp />;
 }

@@ -11782,23 +11782,55 @@ async function getStoreCompany() {
   return _storeCompanyCache;
 }
 
+// ─── Витрины других компаний: mywarehouse.uz/shop/<store_slug> (2026-11-13) ───
+// Адрес — companies.store_slug, профиль — companies.store_profile (title, tagline, phone, address, hours, telegram,
+// instagram, hide_out_of_stock). Товар с нулевым остатком на такой витрине не показывается (если не выключено),
+// остаток наружу — не больше 20 («осталось 3» / «в наличии»), закупочные цены не отдаются никогда.
+const _shopCache = new Map();   // slug → { at, store } на минуту
+async function getShop(slug) {
+  const key = String(slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(key)) return null;
+  const hit = _shopCache.get(key);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit.store;
+  let store = null;
+  try {
+    const c = await pool.query('SELECT id, name, store_profile FROM companies WHERE lower(store_slug) = $1 AND COALESCE(is_enabled, true) LIMIT 1', [key]);
+    if (c.rows[0]) {
+      const b = await pool.query('SELECT id FROM branches WHERE company_id=$1 ORDER BY id LIMIT 1', [c.rows[0].id]);
+      store = { id: c.rows[0].id, branch_id: b.rows[0]?.id || null, name: c.rows[0].name, profile: c.rows[0].store_profile || {}, slug: key };
+    }
+  } catch (e) { if (e.code !== '42703') throw e; }   // колонок витрины ещё нет — витрин нет
+  _shopCache.set(key, { at: Date.now(), store });
+  if (_shopCache.size > 500) _shopCache.clear();
+  return store;
+}
+const shopProfile = st => {
+  const pr = st.profile || {};
+  const pick = k => (typeof pr[k] === 'string' && pr[k].trim() ? pr[k].trim().slice(0, 300) : null);
+  return { slug: st.slug, title: pick('title') || st.name, tagline: pick('tagline'), tagline_uz: pick('tagline_uz'),
+    phone: pick('phone'), address: pick('address'), address_uz: pick('address_uz'), hours: pick('hours'), telegram: pick('telegram'), instagram: pick('instagram') };
+};
+
 app.get('/api/store/catalog', async (req, res) => {
   try {
-    const store = await getStoreCompany();
-    if (!store) return res.status(503).json({ error: 'store not configured' });
+    const shop = req.query.shop;
+    const store = shop ? await getShop(shop) : await getStoreCompany();
+    if (!store) return res.status(shop ? 404 : 503).json({ error: shop ? 'shop not found' : 'store not configured' });
+    const hideZero = shop ? store.profile?.hide_out_of_stock !== false : false;
     const { rows } = await pool.query(`
       SELECT p.id, p.name_ru, p.name_uz, p.price_sell, p.photo_url, p.brand, p.unit, p.color_size,
-             c.name_ru AS cat_name_ru, pt.name_ru AS type_name_ru,
-             COALESCE(ps.quantity, 0) AS stock
+             p.category_id, c.name_ru AS cat_name_ru, c.name_uz AS cat_name_uz, pt.name_ru AS type_name_ru,
+             ${shop ? 'LEAST(COALESCE(ps.quantity, 0), 20)' : 'COALESCE(ps.quantity, 0)'} AS stock
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN product_types pt ON p.type_id = pt.id
       LEFT JOIN (SELECT product_id, SUM(quantity) AS quantity FROM product_stock GROUP BY product_id) ps
         ON ps.product_id = p.id
       WHERE p.company_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0
+        ${hideZero ? 'AND COALESCE(ps.quantity, 0) > 0' : ''}
       ORDER BY (p.photo_url IS NULL), p.name_ru
-      LIMIT 300`, [store.id]);
-    res.json({ company: STORE_COMPANY_NAME, products: rows });
+      LIMIT ${shop ? 1000 : 300}`, [store.id]);
+    res.json(shop ? { company: store.name, shop: shopProfile(store), products: rows } : { company: STORE_COMPANY_NAME, products: rows });
   } catch (e) { console.error('store/catalog err', e); res.status(500).json({ error: 'catalog unavailable' }); }
 });
 
@@ -11815,8 +11847,9 @@ function storeOrderAllowed(ip) {
 
 app.post('/api/store/order', async (req, res) => {
   try {
-    const store = await getStoreCompany();
-    if (!store) return res.status(503).json({ error: 'store not configured' });
+    const shop = req.body?.shop || req.query.shop;
+    const store = shop ? await getShop(shop) : await getStoreCompany();
+    if (!store) return res.status(shop ? 404 : 503).json({ error: shop ? 'shop not found' : 'store not configured' });
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || '?';
     if (!storeOrderAllowed(ip)) return res.status(429).json({ error: 'Слишком много заявок. Попробуйте позже.' });
 
@@ -11830,7 +11863,9 @@ app.post('/api/store/order', async (req, res) => {
     // Цены НЕ доверяем клиенту — пересчитываем по базе по id товаров.
     const ids = items.map(i => parseInt(i.id)).filter(Number.isFinite);
     const priceQ = ids.length
-      ? await pool.query('SELECT id, name_ru, price_sell FROM products WHERE company_id=$1 AND id = ANY($2::int[]) AND deleted_at IS NULL', [store.id, ids])
+      ? await pool.query(`SELECT p.id, p.name_ru, p.price_sell,
+            (SELECT COALESCE(SUM(quantity), 0) FROM product_stock WHERE product_id = p.id) AS stock
+          FROM products p WHERE p.company_id=$1 AND p.id = ANY($2::int[]) AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0`, [store.id, ids])
       : { rows: [] };
     const byId = {}; priceQ.rows.forEach(r => { byId[r.id] = r; });
     let total = 0;
@@ -11838,7 +11873,12 @@ app.post('/api/store/order', async (req, res) => {
     for (const it of items) {
       const p = byId[parseInt(it.id)];
       if (!p) continue; // чужой/несуществующий товар молча пропускаем
-      const qty = Math.min(99, Math.max(1, parseInt(it.qty) || 1));
+      let qty = Math.min(99, Math.max(1, parseInt(it.qty) || 1));
+      if (shop) {   // витрина /shop: закончился — пропускаем, больше остатка — не больше остатка
+        const left = Math.floor(parseFloat(p.stock) || 0);
+        if (left <= 0) continue;
+        qty = Math.min(qty, left);
+      }
       total += qty * parseFloat(p.price_sell || 0);
       lines.push(`${p.name_ru} × ${qty}`);
     }
@@ -14620,6 +14660,10 @@ async function ensureSchema() {
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS logo_url TEXT`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS hr_criteria jsonb DEFAULT '{}'::jsonb`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN NOT NULL DEFAULT true`);
+    // Витрина компании /shop/<store_slug> (2026-11-13): адрес и профиль (название, телефон, самовывоз)
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS store_slug VARCHAR(40)`);
+    await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS store_profile jsonb`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS companies_store_slug ON companies (lower(store_slug)) WHERE store_slug IS NOT NULL`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bhi_daily (
         company_id     INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
