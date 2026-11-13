@@ -11804,6 +11804,23 @@ async function getShop(slug) {
   if (_shopCache.size > 500) _shopCache.clear();
   return store;
 }
+// Колонки витрины у товаров есть? (ensureSchema добавляет; если старт прошёл без неё — добавим здесь один раз)
+let _shopColsP = null;
+function shopCols() {
+  if (!_shopColsP) {
+    _shopColsP = (async () => {
+      const { rows } = await pool.query(`SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_name = 'products' AND column_name IN ('gallery', 'description_ru', 'description_uz', 'shop_hidden')`);
+      if (rows[0].n === 4) return true;
+      await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS gallery text[]');
+      await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS description_ru text');
+      await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS description_uz text');
+      await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS shop_hidden boolean NOT NULL DEFAULT false');
+      return true;
+    })().catch(e => { console.error('shop columns', e.message); _shopColsP = null; return false; });
+  }
+  return _shopColsP;
+}
 const shopProfile = st => {
   const pr = st.profile || {};
   const pick = k => (typeof pr[k] === 'string' && pr[k].trim() ? pr[k].trim().slice(0, 300) : null);
@@ -11817,8 +11834,10 @@ app.get('/api/store/catalog', async (req, res) => {
     const store = shop ? await getShop(shop) : await getStoreCompany();
     if (!store) return res.status(shop ? 404 : 503).json({ error: shop ? 'shop not found' : 'store not configured' });
     const hideZero = shop ? store.profile?.hide_out_of_stock !== false : false;
+    const ext = shop ? await shopCols() : false;
     const { rows } = await pool.query(`
       SELECT p.id, p.name_ru, p.name_uz, p.price_sell, p.photo_url, p.brand, p.unit, p.color_size,
+             ${ext ? 'p.gallery, p.description_ru, p.description_uz,' : ''}
              p.category_id, c.name_ru AS cat_name_ru, c.name_uz AS cat_name_uz, pt.name_ru AS type_name_ru,
              ${shop ? 'LEAST(COALESCE(ps.quantity, 0), 20)' : 'COALESCE(ps.quantity, 0)'} AS stock
       FROM products p
@@ -11828,6 +11847,7 @@ app.get('/api/store/catalog', async (req, res) => {
         ON ps.product_id = p.id
       WHERE p.company_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0
         ${hideZero ? 'AND COALESCE(ps.quantity, 0) > 0' : ''}
+        ${ext ? 'AND NOT p.shop_hidden' : ''}
       ORDER BY (p.photo_url IS NULL), p.name_ru
       LIMIT ${shop ? 1000 : 300}`, [store.id]);
     res.json(shop ? { company: store.name, shop: shopProfile(store), products: rows } : { company: STORE_COMPANY_NAME, products: rows });
@@ -11865,7 +11885,8 @@ app.post('/api/store/order', async (req, res) => {
     const priceQ = ids.length
       ? await pool.query(`SELECT p.id, p.name_ru, p.price_sell,
             (SELECT COALESCE(SUM(quantity), 0) FROM product_stock WHERE product_id = p.id) AS stock
-          FROM products p WHERE p.company_id=$1 AND p.id = ANY($2::int[]) AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0`, [store.id, ids])
+          FROM products p WHERE p.company_id=$1 AND p.id = ANY($2::int[]) AND p.deleted_at IS NULL AND COALESCE(p.price_sell, 0) > 0
+            ${shop && (await shopCols()) ? 'AND NOT p.shop_hidden' : ''}`, [store.id, ids])
       : { rows: [] };
     const byId = {}; priceQ.rows.forEach(r => { byId[r.id] = r; });
     let total = 0;
@@ -11893,6 +11914,170 @@ app.post('/api/store/order', async (req, res) => {
     res.json({ ok: true, order_id: rows[0].id, total });
   } catch (e) { console.error('store/order err', e); res.status(500).json({ error: 'Не удалось отправить заявку. Попробуйте позже.' }); }
 });
+
+// ─── Админка интернет-магазина (2026-11-13): панель → «Интернет-магазин», у кассира и склада — «Товары магазина» ───
+// Товары компании с фото (до 8: первое — главное, photo_url; остальные — gallery), описанием RU/UZ, ценой, категорией
+// и видимостью на сайте. «На склад» — приход с закупкой 0 на филиал сотрудника (касса не трогается — товар уже есть).
+// Настройки витрины (адрес /shop/<slug>, название, телефон, самовывоз) — учредитель и директор.
+const SHOP_ADMIN_ROLES = ['founder', 'director', 'manager', 'cashier', 'warehouse'];
+const SHOP_SETTINGS_ROLES = ['founder', 'director'];
+const SHOP_PROFILE_LIMITS = { title: 120, tagline: 200, tagline_uz: 200, phone: 40, address: 300, address_uz: 300, hours: 120, telegram: 100, instagram: 100 };
+const shopPhoto = u => (typeof u === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(u) ? u : null);
+const shopText = (v, max) => { const t = v == null ? '' : String(v).trim(); return t ? t.slice(0, max) : null; };
+class ShopErr extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+const shopWrap = fn => async (req, res) => {
+  try { await fn(req, res); } catch (e) {
+    if (e instanceof ShopErr) return res.status(e.status).json({ error: e.message });
+    if (e.code === '23505') return res.status(409).json({ error: 'Этот адрес витрины уже занят — выберите другой' });
+    console.error('shop-admin err', e);
+    res.status(500).json({ error: 'Не удалось выполнить — попробуйте ещё раз' });
+  }
+};
+async function shopBranch(db, user) {
+  if (user.branch_id) return user.branch_id;
+  const { rows: [b] } = await db.query('SELECT id FROM branches WHERE company_id=$1 ORDER BY id LIMIT 1', [user.company_id]);
+  if (!b) throw new ShopErr(400, 'У компании нет филиала — заведите его в настройках');
+  return b.id;
+}
+const SHOP_PRODUCT_COLS = `p.id, p.name_ru, p.name_uz, p.price_sell::float8 AS price_sell, p.photo_url, p.unit, p.category_id,
+  p.gallery, p.description_ru, p.description_uz, p.shop_hidden, p.created_at,
+  COALESCE((SELECT SUM(quantity) FROM product_stock WHERE product_id = p.id), 0)::float8 AS stock`;
+async function shopAdminState(req) {
+  if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
+  const cid = req.user.company_id;
+  const { rows: [co] } = await pool.query('SELECT name, store_slug, store_profile FROM companies WHERE id=$1', [cid]);
+  const { rows: categories } = await pool.query('SELECT id, name_ru, name_uz FROM categories ORDER BY name_ru');
+  const { rows: products } = await pool.query(`SELECT ${SHOP_PRODUCT_COLS} FROM products p
+    WHERE p.company_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC NULLS LAST, p.id DESC LIMIT 3000`, [cid]);
+  return { company: co?.name || null, shop: co?.store_slug ? { slug: co.store_slug, ...(co.store_profile || {}) } : null,
+    can_settings: SHOP_SETTINGS_ROLES.includes(req.user.role), categories, products };
+}
+const shopOne = async (req, id) => (await pool.query(`SELECT ${SHOP_PRODUCT_COLS} FROM products p WHERE p.id=$1 AND p.company_id=$2`, [id, req.user.company_id])).rows[0];
+async function shopProductInput(b, partial) {
+  const out = {};
+  const has = k => Object.prototype.hasOwnProperty.call(b, k);
+  if (!partial || has('name_ru')) { out.name_ru = shopText(b.name_ru, 200); if (!out.name_ru) throw new ShopErr(400, 'Название товара обязательно'); }
+  if (has('name_uz')) out.name_uz = shopText(b.name_uz, 200);
+  if (!partial || has('price_sell')) {
+    const n = Number(String(b.price_sell ?? '').replace(/\s/g, '').replace(',', '.'));
+    if (b.price_sell === '' || b.price_sell == null || !Number.isFinite(n) || n < 0 || n > 1e12) throw new ShopErr(400, 'Цена: число не меньше 0');
+    out.price_sell = Math.round(n * 100) / 100;
+  }
+  if (has('category_id')) {
+    const c = b.category_id ? parseInt(b.category_id, 10) : null;
+    if (c && !(await pool.query('SELECT 1 FROM categories WHERE id=$1', [c])).rowCount) throw new ShopErr(400, 'Категория не найдена');
+    out.category_id = c;
+  }
+  if (has('unit')) out.unit = shopText(b.unit, 32) || 'шт';
+  if (has('description_ru')) out.description_ru = shopText(b.description_ru, 4000);
+  if (has('description_uz')) out.description_uz = shopText(b.description_uz, 4000);
+  if (has('shop_hidden')) out.shop_hidden = b.shop_hidden === true;
+  if (has('photos')) {
+    if (!Array.isArray(b.photos) || b.photos.length > 8) throw new ShopErr(400, 'Фото — не больше 8');
+    const list = b.photos.map(shopPhoto);
+    if (list.some(x => !x)) throw new ShopErr(400, 'Фото: загрузите файл кнопкой «Добавить фото»');
+    out.photo_url = list[0] || null;
+    out.gallery = list.slice(1);
+  }
+  return out;
+}
+function shopQty(v, label) {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100000) throw new ShopErr(400, `${label}: целое число от 0 до 100 000`);
+  return n;
+}
+async function shopIncome(c, req, productId, qty) {
+  const branchId = await shopBranch(c, req.user);
+  await c.query(`INSERT INTO stock_income (product_id, quantity, price, note, created_by, branch_id, payment_status, paid_amount, payment_method, currency)
+    VALUES ($1,$2,0,$3,$4,$5,'paid',0,'cash','UZS')`, [productId, qty, 'Добавлено в админке интернет-магазина', req.user.id, branchId]);
+  await c.query(`INSERT INTO product_stock (product_id, branch_id, quantity) VALUES ($1,$2,$3)
+    ON CONFLICT (product_id, branch_id) DO UPDATE SET quantity = product_stock.quantity + EXCLUDED.quantity, updated_at = NOW()`, [productId, branchId, qty]);
+}
+
+// Подключён ли магазин (кассиру и складу — показывать ли «Товары магазина» в доке)
+app.get('/api/shop-admin/status', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
+  let slug = null;
+  try { slug = (await pool.query('SELECT store_slug FROM companies WHERE id=$1', [req.user.company_id])).rows[0]?.store_slug || null; }
+  catch (e) { if (e.code !== '42703') throw e; }
+  res.json({ shop: slug });
+}));
+
+app.get('/api/shop-admin', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => res.json(await shopAdminState(req))));
+
+app.post('/api/shop-admin/products', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
+  if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
+  const f = await shopProductInput(req.body || {}, false);
+  const qty = shopQty(req.body?.qty, 'Количество');
+  const c = await pool.connect();
+  let id;
+  try {
+    await c.query('BEGIN');
+    const branchId = await shopBranch(c, req.user);
+    if (!f.name_uz) f.name_uz = f.name_ru;      // как POST /api/products
+    const cols = Object.keys(f);
+    id = (await c.query(`INSERT INTO products (company_id, branch_id, ${cols.join(', ')}) VALUES ($1, $2, ${cols.map((_, i) => '$' + (i + 3)).join(', ')}) RETURNING id`,
+      [req.user.company_id, branchId, ...cols.map(k => f[k])])).rows[0].id;
+    if (qty > 0) await shopIncome(c, req, id, qty);
+    await c.query('COMMIT');
+  } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; } finally { c.release(); }
+  audit(req, 'create', 'product', id, null, { ...f, qty }, { description: 'Интернет-магазин: новый товар' });
+  res.json(await shopOne(req, id));
+}));
+
+app.put('/api/shop-admin/products/:id', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
+  if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
+  const id = parseInt(req.params.id, 10);
+  const { rows: [cur] } = await pool.query('SELECT id, company_id, name_ru, price_sell, photo_url, shop_hidden FROM products WHERE id=$1 AND deleted_at IS NULL', [Number.isFinite(id) ? id : 0]);
+  if (!cur || cur.company_id !== req.user.company_id) throw new ShopErr(404, 'Товар не найден');
+  const f = await shopProductInput(req.body || {}, true);
+  const add = shopQty(req.body?.add_qty, 'Добавить на склад');
+  const cols = Object.keys(f);
+  if (!cols.length && !add) throw new ShopErr(400, 'Нет изменений');
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    if (cols.length) await c.query(`UPDATE products SET ${cols.map((k, i) => k + ' = $' + (i + 2)).join(', ')} WHERE id = $1`, [id, ...cols.map(k => f[k])]);
+    if (add > 0) await shopIncome(c, req, id, add);
+    await c.query('COMMIT');
+  } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; } finally { c.release(); }
+  audit(req, 'update', 'product', id, { name_ru: cur.name_ru, price_sell: cur.price_sell, shop_hidden: cur.shop_hidden }, { ...f, add_qty: add },
+    { description: 'Интернет-магазин: товар изменён', is_price_change: f.price_sell !== undefined && Number(f.price_sell) !== Number(cur.price_sell) });
+  res.json(await shopOne(req, id));
+}));
+
+// Категория (в Wave категории общие для всех компаний): есть с таким названием — она же
+app.post('/api/shop-admin/categories', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
+  const ru = shopText(req.body?.name_ru, 100);
+  if (!ru) throw new ShopErr(400, 'Название категории обязательно');
+  const { rows: [ex] } = await pool.query('SELECT id, name_ru, name_uz FROM categories WHERE lower(name_ru) = lower($1) ORDER BY id LIMIT 1', [ru]);
+  if (ex) return res.json(ex);
+  const { rows: [cat] } = await pool.query('INSERT INTO categories (name_ru, name_uz) VALUES ($1, $2) RETURNING id, name_ru, name_uz', [ru, shopText(req.body?.name_uz, 100) || ru]);
+  audit(req, 'create', 'category', cat.id, null, cat, { description: 'Интернет-магазин: новая категория' });
+  res.json(cat);
+}));
+
+// Настройки витрины: адрес /shop/<slug> и профиль — учредитель и директор
+app.put('/api/shop-admin/settings', auth(SHOP_SETTINGS_ROLES), shopWrap(async (req, res) => {
+  const b = req.body || {};
+  const slug = String(b.slug || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(slug)) throw new ShopErr(400, 'Адрес: 2–40 символов — латиница, цифры и дефис');
+  if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
+  const { rows: [co] } = await pool.query('SELECT store_slug, store_profile FROM companies WHERE id=$1', [req.user.company_id]);
+  const prof = { ...(co?.store_profile || {}) };
+  for (const [k, max] of Object.entries(SHOP_PROFILE_LIMITS)) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) continue;
+    const v = shopText(b[k], max);
+    if (v) prof[k] = v; else delete prof[k];
+  }
+  if (typeof b.hide_out_of_stock === 'boolean') prof.hide_out_of_stock = b.hide_out_of_stock;
+  if (prof.hide_out_of_stock === undefined) prof.hide_out_of_stock = true;
+  await pool.query('UPDATE companies SET store_slug=$1, store_profile=$2 WHERE id=$3', [slug, prof, req.user.company_id]);
+  _shopCache.clear();
+  audit(req, 'update', 'company', req.user.company_id, { store_slug: co?.store_slug, store_profile: co?.store_profile }, { store_slug: slug, store_profile: prof },
+    { description: 'Настройки интернет-магазина' });
+  res.json(await shopAdminState(req));
+}));
 
 // Customer history (all outcomes by this customer in scope)
 app.get('/api/customers/:id/history', auth(), async (req, res) => {
@@ -14664,6 +14849,11 @@ async function ensureSchema() {
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS store_slug VARCHAR(40)`);
     await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS store_profile jsonb`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS companies_store_slug ON companies (lower(store_slug)) WHERE store_slug IS NOT NULL`);
+    // Товар на витрине (2026-11-13): галерея фото (главное — photo_url), описание RU/UZ, «скрыт с сайта»
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS gallery text[]`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS description_ru text`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS description_uz text`);
+    await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS shop_hidden boolean NOT NULL DEFAULT false`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS bhi_daily (
         company_id     INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

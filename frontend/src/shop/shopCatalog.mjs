@@ -6,13 +6,19 @@ const ICON_BY_CATEGORY = {
   'Для авто': 'car', 'Свет и электроника': 'bulb', 'Сад, дача, отдых': 'leaf',
 };
 
+const photoUrl = u => (u ? (/^https?:|^\//.test(u) ? u : `/${u}`) : null);
+
 export function normalizeProducts(rows) {
   return (Array.isArray(rows) ? rows : []).map(r => ({
     id: Number(r.id),
     name_ru: String(r.name_ru || '').trim(),
     name_uz: String(r.name_uz || '').trim(),
     price: Number(r.price_sell) || 0,
-    image: r.photo_url ? (/^https?:|^\//.test(r.photo_url) ? r.photo_url : `/${r.photo_url}`) : null,
+    image: photoUrl(r.photo_url),
+    // галерея: главное фото + дополнительные (админка магазина, до 8)
+    photos: [r.photo_url, ...(Array.isArray(r.gallery) ? r.gallery : [])].map(photoUrl).filter(Boolean),
+    description_ru: String(r.description_ru || '').trim(),
+    description_uz: String(r.description_uz || '').trim(),
     unit: r.unit || 'шт',
     stock: Math.max(0, Math.floor(Number(r.stock) || 0)),
     category: r.category_id ? { id: Number(r.category_id), name_ru: r.cat_name_ru || '', name_uz: r.cat_name_uz || '' } : null,

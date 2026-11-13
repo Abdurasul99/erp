@@ -199,6 +199,7 @@ export const SECTIONS = [
     metrics: ['deals', 'avg_check', 'revenue'],
     tools: [
       { id: 'sales-history',      title: 'История продаж',      desc: 'Все продажи · фильтры',      wired: true },
+      { id: 'online-shop',        title: 'Интернет-магазин',     desc: 'Товары на сайте · фото · цены · настройки витрины', wired: true },
       { id: 'pos',                title: 'Касса · монитор',     desc: 'Смена в реальном времени',   wired: true },
       { id: 'sales-top-products', title: 'Топ товаров',          desc: 'Лидеры по выручке · доля · по дням/часам', wired: true },
       { id: 'seller-avg-check',   title: 'Средний чек по продавцу', desc: 'Чеки · выручка · лидер · потенциал', wired: true },

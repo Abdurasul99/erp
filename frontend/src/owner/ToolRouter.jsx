@@ -92,6 +92,7 @@ import TrainingCoursesTool from './tools/TrainingCoursesTool.jsx';
 import IntegrationsTool from './tools/IntegrationsTool.jsx';
 import SecurityTool from './tools/SecurityTool.jsx';
 import ScalingTool from './tools/ScalingTool.jsx';
+import ShopAdmin from '../shop/ShopAdmin.jsx';
 
 // Wrap a legacy live component so it slots into the owner shell layout.
 function LiveWrapper({ Component, title, sub }) {
@@ -170,6 +171,7 @@ const RESOLVE = {
   },
   operations: {
     'sales-history':      { Comp: SalesHistoryTool },
+    'online-shop':        { Comp: ShopAdmin },
     pos:                  { Comp: PosTool },
     'sales-top-products': { Comp: SalesTopProductsTool },
     'seller-avg-check':   { Comp: SellerAvgCheckTool },

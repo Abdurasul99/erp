@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useMotionValue } from 'framer-motion';
 import { AuthContext } from '../App.jsx';
@@ -26,6 +26,8 @@ import CustomersManager from '../components/CustomersManager.jsx';
 import SuppliersManager from '../components/SuppliersManager.jsx';
 import OnlineOrders from '../components/OnlineOrders.jsx';
 import MyTasks from '../components/MyTasks.jsx';
+import ShopAdmin from '../shop/ShopAdmin.jsx';
+import api from '../api.js';
 
 // Staff-оболочка /desktop (кассир, складовщик — владельцев и админа сюда не пускает
 // RequireNotOwner). Wave Bento-канон: светлый Navbar + macOS-док с разделами
@@ -37,6 +39,7 @@ const SECTION_META = {
   warehouse:        { icon: 'package',  grad: ['#32ADE6', '#0A84FF'] },
   cash:             { icon: 'wallet',   grad: ['#30D158', '#00A88E'] },
   orders:           { icon: 'cart',     grad: ['#FF375F', '#FF9F0A'] },
+  shop:             { icon: 'package',  grad: ['#FF375F', '#5E5CE6'] },
   'profit-section': { icon: 'trending', grad: ['#FF6B22', '#FFB340'] },
   customers:        { icon: 'client',   grad: ['#5E5CE6', '#32ADE6'] },
   suppliers:        { icon: 'cart',     grad: ['#FF9F0A', '#FF6B22'] },
@@ -78,6 +81,15 @@ export default function Desktop() {
   const defaultSection = isAdmin ? 'admin' : isGenDir ? 'overview' : 'warehouse';
   const defaultTab     = isAdmin ? 'admin' : isGenDir ? 'overview' : 'income';
 
+  // «Товары магазина» (2026-11-13): раздел появляется, только если у компании есть интернет-магазин
+  const canShop = ['cashier', 'warehouse', 'manager'].includes(user?.role);
+  const [hasShop, setHasShop] = useState(false);
+  useEffect(() => {
+    if (!canShop) return undefined;
+    let alive = true;
+    api.get('/shop-admin/status').then(r => { if (alive) setHasShop(!!r.data?.shop); }).catch(() => {});
+    return () => { alive = false; };
+  }, [canShop]);
   const [section, setSection] = useState(defaultSection);
   const [tab, setTab] = useState(defaultTab);
 
@@ -113,6 +125,7 @@ export default function Desktop() {
         ...(canSeeCash      ? [{ key: 'cash',            label: t('cash') }] : []),
         // Заказы с интернет-магазина — кассир обрабатывает заявки на месте.
         ...(canSeeCash      ? [{ key: 'orders',          label: uz ? 'Saytdan buyurtmalar' : 'Заказы с сайта' }] : []),
+        ...(canShop && hasShop ? [{ key: 'shop',         label: uz ? 'Do‘kon mahsulotlari' : 'Товары магазина' }] : []),
         // Число в подписи не дублируем: на иконке уже есть бейдж непрочитанных.
         // Рядом стояли два разных числа (активные и новые) — это только путало.
         ...(canSeeTasks     ? [{ key: 'tasks',           label: uz ? 'Vazifalar' : 'Задачи', badge: tasksUnread }] : []),
@@ -131,7 +144,7 @@ export default function Desktop() {
       'profit-section': 'profit', users: 'users',
       'gen-users': 'gen-users', 'team-kpi': 'team-kpi',
       customers: 'customers', suppliers: 'suppliers',
-      orders: 'orders', tasks: 'tasks',
+      orders: 'orders', tasks: 'tasks', shop: 'shop',
     };
     setTab(firstTab[s] || s);
   };
@@ -158,6 +171,7 @@ export default function Desktop() {
       case 'customers': return <CustomersManager />;
       case 'suppliers': return <SuppliersManager />;
       case 'orders': return <OnlineOrders />;
+      case 'shop': return <ShopAdmin />;
       case 'tasks': return <MyTasks />;
       default: return null;
     }

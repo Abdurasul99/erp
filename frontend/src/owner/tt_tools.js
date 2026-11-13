@@ -1995,5 +1995,7 @@ export const TOOLS_UZ = {
   "vs позиций": "pozitsiyalarga nisbatan",
   "X — стабильный спрос": "X — barqaror talab",
   "Y — средние колебания": "Y — o'rtacha tebranishlar",
-  "Z — нестабильный": "Z — beqaror"
+  "Z — нестабильный": "Z — beqaror",
+  "Интернет-магазин": "Internet-do‘kon",
+  "Товары на сайте · фото · цены · настройки витрины": "Saytdagi mahsulotlar · rasmlar · narxlar · vitrina sozlamalari"
 };

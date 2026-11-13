@@ -258,16 +258,31 @@ export default function ShopFront() {
 function ProductSheet({ p, lang, t, qty, onClose, onAdd }) {
   const max = Math.max(1, Math.min(p.stock, 99) - qty);
   const [n, setN] = useState(1);
+  const [photo, setPhoto] = useState(0);            // галерея: какое фото крупно
   const name = productName(p, lang);
+  const photos = p.photos?.length ? p.photos : [];
+  const desc = (lang === 'uz' ? p.description_uz || p.description_ru : p.description_ru || p.description_uz) || '';
   return (
     <Modal onClose={onClose} label={name}>
       <button type="button" className="shp-x" onClick={onClose} aria-label={t('close')}><Icon name="close" /></button>
       <div className="shp-sheet">
-        <div className="shp-sheet-img"><ProductImage p={p} t={t} big /></div>
+        <div className="shp-sheet-media">
+          <div className="shp-sheet-img"><ProductImage p={photos.length ? { ...p, image: photos[photo] } : p} t={t} big /></div>
+          {photos.length > 1 && (
+            <div className="shp-thumbs" role="group" aria-label={name}>
+              {photos.map((u, i) => (
+                <button key={u} type="button" className={i === photo ? 'on' : ''} onClick={() => setPhoto(i)} aria-label={`${i + 1} / ${photos.length}`} aria-pressed={i === photo}>
+                  <img src={u} alt="" loading="lazy" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="shp-sheet-info">
           {p.category && <span className="shp-eyebrow">{categoryLabel(p.category, lang)}</span>}
           <h2>{name}</h2>
           <StockNote p={p} t={t} />
+          {desc && <p className="shp-desc">{desc}</p>}
           <b className="shp-price big">{formatPrice(p.price, lang)}</b>
           <span className="shp-muted">{t('perPiece')}{qty > 0 ? ` · ${t('inCart')}: ${qty}` : ''}</span>
           <div className="shp-sheet-buy">

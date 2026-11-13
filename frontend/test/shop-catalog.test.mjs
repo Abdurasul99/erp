@@ -19,6 +19,9 @@ test('товары: цена > 0, фото с ведущим /, иконка п�
   assert.equal(p[1].image, '/uploads/p/2.jpg');
   assert.equal(p[0].icon, 'bulb'); assert.equal(p[1].icon, 'kitchen'); assert.equal(p[3].icon, 'box');
   assert.equal(p[0].price, 86000); assert.equal(p[1].stock, 3);
+  const g = normalizeProducts([{ id: 9, name_ru: 'Г', price_sell: 1, photo_url: '/uploads/a.jpg', gallery: ['/uploads/b.jpg', 'uploads/c.jpg'], description_ru: ' Описание ' }])[0];
+  assert.deepEqual(g.photos, ['/uploads/a.jpg', '/uploads/b.jpg', '/uploads/c.jpg'], 'галерея: главное + дополнительные');
+  assert.equal(g.description_ru, 'Описание'); assert.equal(p[0].photos.length, 0);
 });
 
 test('категории — по числу товаров; поиск по RU и UZ, «ё» = «е»; сортировка по цене', () => {
