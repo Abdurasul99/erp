@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeProducts, categoriesOf, filterProducts, reconcileCart, cartAdd, cartSet, cartSummary, formatPrice, phoneDigits } from '../src/shop/shopCatalog.mjs';
 import { makeShopT, categoryLabel, productName } from '../src/shop/shopI18n.mjs';
-import { isShopPath } from '../src/shop/shopRouting.mjs';
+import { isShopPath, isLegacyStorePath, MAIN_SHOP_PATH } from '../src/shop/shopRouting.mjs';
 
 const rows = [
   { id: 1, name_ru: 'Тактический фонарь', name_uz: 'Taktik fonar', price_sell: '86000.00', stock: '20', category_id: 7, cat_name_ru: 'Свет и электроника', cat_name_uz: 'Yoritish va elektronika' },
@@ -54,5 +54,7 @@ test('цены, телефон, тексты и адрес витрины', () =
   const cat = { name_ru: 'Для кухни', name_uz: 'Oshxona uchun' };
   assert.deepEqual([categoryLabel(cat, 'ru'), categoryLabel(cat, 'uz'), categoryLabel(cat, 'en')], ['Для кухни', 'Oshxona uchun', 'Kitchen']);
   assert.equal(productName({ name_ru: 'Нож', name_uz: '' }, 'uz'), 'Нож');
+  assert.ok(isLegacyStorePath('/store') && isLegacyStorePath('/art-store/') && !isLegacyStorePath('/store/x') && !isLegacyStorePath('/shop/wave-market'), 'старые адреса ART Store');
+  assert.ok(isShopPath(MAIN_SHOP_PATH), 'наш магазин — адрес витрины');
   assert.ok(isShopPath('/shop/uy-market') && isShopPath('/shop/uy-market/') && !isShopPath('/shop') && !isShopPath('/store') && !isShopPath('/shop/a') && !isShopPath('/shop/x/y'));
 });

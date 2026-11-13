@@ -8,7 +8,7 @@ const path = require('path');
 const srcDir = path.join(__dirname, '..', 'src');
 
 // В проекте ДВА независимых словаря: общий для панели (src/i18n.js) и свой
-// у публичной витрины (src/store/storeI18n.mjs). Раньше сверка шла только с
+// у публичной витрины (src/shop/shopI18n.mjs; прежде — src/store, ART Store убран 2026-11-13). Раньше сверка шла только с
 // первым, и все ключи витрины числились «отсутствующими» — на фоне этих 97
 // строк шума 4 настоящие дыры (loginMin, passwordRule, birthDate,
 // birthDateHint) никто не разглядел. Теперь файл сверяется со СВОИМ словарём.
@@ -22,10 +22,10 @@ function keysOf(file) {
 
 // Третий словарь — у сферы «Декор» (src/decor/texts.js, RU и UZ): её экраны
 // сверяются с ним, а не с общим.
-const storeDir = path.join(srcDir, 'store');
+const storeDir = path.join(srcDir, 'shop');
 const decorDir = path.join(srcDir, 'decor');
 const appKeys = keysOf(path.join(srcDir, 'i18n.js'));
-const storeKeys = keysOf(path.join(storeDir, 'storeI18n.mjs'));
+const storeKeys = keysOf(path.join(storeDir, 'shopI18n.mjs'));
 const decorKeys = keysOf(path.join(decorDir, 'texts.js'));
 const dictFor = (file) => {
   if (file.startsWith(storeDir + path.sep)) return storeKeys;

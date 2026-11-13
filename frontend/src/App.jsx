@@ -13,12 +13,11 @@ const AdminShell = lazy(() => import('./admin/AdminShell.jsx'));
 // «Мероприятия» — отдельный продукт со своим сервисом и базой. С Wave у него
 // общий только вход; код интерфейса в src/events не импортирует ничего из Wave.
 const EventsShell = lazy(() => import('./events/EventsShell.jsx'));
-const Storefront = lazy(() => import('./store/Storefront.jsx'));
 const DecorApp = lazy(() => import('./decor/DecorApp.jsx'));
-// Витрины других компаний: /shop/<адрес> (товары для дома и т.п., 2026-11-13) — отдельно от ART Store (/store)
+// Интернет-магазин: витрина компании /shop/<адрес> (2026-11-13). Прежний /store (ART Store, клиент ушёл)
+// и /art-store ведут на наш магазин — MAIN_SHOP_PATH.
 const ShopFront = lazy(() => import('./shop/ShopFront.jsx'));
-import { isPublicStorefrontPath } from './store/storeRouting.mjs';
-import { isShopPath } from './shop/shopRouting.mjs';
+import { isShopPath, isLegacyStorePath, MAIN_SHOP_PATH } from './shop/shopRouting.mjs';
 import { getLang, setLang } from './i18n.js';
 import { TaskInboxProvider } from './hooks/useTaskInbox.jsx';
 import api from './api.js';
@@ -180,30 +179,6 @@ function Splash({ out = false }) {
         @media (prefers-reduced-motion: reduce) { .wv-splash * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
       `}</style>
     </div>
-  );
-}
-
-function StorefrontLoading() {
-  return (
-    <div aria-label="Загрузка ART Store" style={{
-      minHeight: '100vh', background: '#F3EFE6', color: '#171713',
-      display: 'grid', placeItems: 'center', fontFamily: "'Cormorant Garamond', serif",
-    }}>
-      <div style={{ textAlign: 'center', fontSize: 24, letterSpacing: '.12em' }}>ART Store</div>
-    </div>
-  );
-}
-
-function PublicStorefrontApp() {
-  return (
-    <BrowserRouter>
-      <Suspense fallback={<StorefrontLoading />}>
-        <Routes>
-          <Route path="/store" element={<Storefront />} />
-          <Route path="/art-store" element={<Navigate to="/store" replace />} />
-        </Routes>
-      </Suspense>
-    </BrowserRouter>
   );
 }
 
@@ -468,5 +443,9 @@ export default function App() {
   const pathname = typeof window === 'undefined' ? '/' : window.location.pathname;
   if (isDecorPath(pathname)) return <DecorStandaloneApp />;
   if (isShopPath(pathname)) return <ShopStandaloneApp />;
-  return isPublicStorefrontPath(pathname) ? <PublicStorefrontApp /> : <ErpApp />;
+  if (isLegacyStorePath(pathname)) {   // старая витрина ART Store → наш магазин (адрес не теряется в закладках и рекламе)
+    window.location.replace(MAIN_SHOP_PATH + window.location.search);
+    return null;
+  }
+  return <ErpApp />;
 }
