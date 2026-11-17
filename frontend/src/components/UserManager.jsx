@@ -106,8 +106,11 @@ export default function UserManager() {
   };
 
   const handleBlock = async (u) => {
+    // QA 2026-11-17: блокировка была в один клик без подтверждения (сотрудника сразу выкидывает
+    // из системы), а ошибка сервера глоталась — кнопка «молча ничего не делала».
+    if (!window.confirm(t(u.is_blocked ? 'confirmUnblock' : 'confirmBlock').replace('{u}', u.username))) return;
     try { await api.put(`/users/${u.id}/block`, { is_blocked: !u.is_blocked }); load(); }
-    catch {}
+    catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
   };
 
   const filtered = users.filter(u => {

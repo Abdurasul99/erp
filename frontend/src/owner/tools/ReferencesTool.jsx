@@ -161,7 +161,13 @@ export default function ReferencesTool() {
                         <td style={{ fontWeight: 700 }}>{t.name_ru}</td>
                         <td style={{ color: 'var(--text2)' }}>{t.name_uz || '—'}</td>
                         <td className="mono" style={{ textAlign: 'right' }}>{count}</td>
-                        {canEdit && (
+                        {canEdit && (user?.role !== 'admin' && (t.company_id == null || t.company_id !== user?.company_id)) && (
+                          // Общий тип платформы (company_id NULL) — у всех компаний; удаляет только свои.
+                          <td style={{ textAlign: 'right', color: 'var(--text3)', fontSize: 12 }} title={tt('Общий тип — его видят все компании, удалить нельзя')}>
+                            {tt('общий')}
+                          </td>
+                        )}
+                        {canEdit && !(user?.role !== 'admin' && (t.company_id == null || t.company_id !== user?.company_id)) && (
                           <td style={{ textAlign: 'right' }}>
                             <button className="btn btn-ghost btn-sm"
                               onClick={() => deleteType(t.id, t.name_ru)}

@@ -2,6 +2,7 @@
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, LangContext } from '../App.jsx';
 import MyTasks from '../components/MyTasks.jsx';
+import useEscape from '../components/useEscape.js';
 import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 import { t } from '../i18n.js';
 import api from '../api.js';
@@ -369,6 +370,7 @@ function SuccessScreen({ product, qty, price, discount, onNext, uz }) {
 export default function SellerView() {
   const { user, logout } = useContext(AuthContext);
   const [tasksOpen, setTasksOpen] = useState(false);
+  useEscape(tasksOpen, () => setTasksOpen(false));
   // Кружок на кнопке «Задачи» — НЕПРОЧИТАННЫЕ события, а не число активных задач:
   // активные висят у продавца постоянно, и кружок перестал бы что-либо значить.
   // Гасит его сам MyTasks при открытии шторки, по видимым задачам.

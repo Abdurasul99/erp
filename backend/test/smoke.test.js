@@ -49,7 +49,13 @@ function check(name, expectedStatuses, actual, body) {
 }
 
 async function run() {
-  const { rows: users } = await pool.query('SELECT * FROM users ORDER BY id');
+  // Все роли — из ОДНОЙ компании (первой, где есть директор) + оператор admin. Раньше бралась
+  // последняя запись каждой роли по всей базе: при нескольких компаниях кассир одной компании
+  // продавал товар другой, и тест падал «недостаточно остатка».
+  const { rows: [home] } = await pool.query("SELECT company_id FROM users WHERE role='director' AND company_id IS NOT NULL ORDER BY id LIMIT 1");
+  const { rows: users } = await pool.query(
+    "SELECT DISTINCT ON (role) * FROM users WHERE (company_id = $1 OR role = 'admin') AND NOT is_blocked ORDER BY role, id",
+    [home?.company_id ?? null]);
   const byRole = Object.fromEntries(users.map(u => [u.role, u]));
   const tk = Object.fromEntries(users.map(u => [u.role, tokenFor(u)]));
   for (const r of ['admin', 'gen_dir', 'manager', 'cashier', 'seller']) {
@@ -179,21 +185,21 @@ async function run() {
       check('  cash_income auto-created from sale', [true], cashRows.length === 1 && parseFloat(cashRows[0].amount) === 200);
     }
 
-    // Cashier outcome must be PENDING (waiting for warehouse approval)
+    // Продажа кассира проводится СРАЗУ, как у всех ролей (2026-07-27: autoApprove для всех —
+    // иначе склад не минусовался до ручного подтверждения и остатки врали).
     const cr = await request('POST', '/stock/outcome', tk.cashier, { product_id: pid, quantity: 1, price: 200 });
     check('POST /stock/outcome (cashier)', [200], cr.status, cr.body);
-    check('  cashier outcome status=pending', [true], cr.body?.status === 'pending');
-    // No cash_income should be created yet (pending)
+    check('  cashier outcome status=approved', [true], cr.body?.status === 'approved');
     if (cr.body?.id) {
-      const before = await pool.query('SELECT COUNT(*) FROM cash_income WHERE outcome_id=$1', [cr.body.id]);
-      check('  no cash on pending outcome', [true], parseInt(before.rows[0].count) === 0);
-      // Approve via warehouse (or manager)
-      const ap = await request('PUT', `/stock/outcome/${cr.body.id}/approve`, tk.manager, { action: 'approve' });
-      check('  approve outcome (manager)', [200], ap.status, ap.body);
       const after = await pool.query('SELECT amount FROM cash_income WHERE outcome_id=$1', [cr.body.id]);
-      check('  cash_income created on approve', [true], after.rows.length === 1 && parseFloat(after.rows[0].amount) === 200);
-      // Delete the outcome → cash_income should cascade
-      await request('DELETE', `/stock/outcome/${cr.body.id}`, tk.admin);
+      check('  cash_income created at once', [true], after.rows.length === 1 && parseFloat(after.rows[0].amount) === 200);
+      // Повторное подтверждение уже проведённой продажи — отказ, второй приход в кассу не создаётся
+      const ap = await request('PUT', `/stock/outcome/${cr.body.id}/approve`, tk.manager, { action: 'approve' });
+      check('  re-approve approved outcome (manager) → 400', [400], ap.status, ap.body);
+      const twice = await pool.query('SELECT COUNT(*) FROM cash_income WHERE outcome_id=$1', [cr.body.id]);
+      check('  no duplicate cash_income', [true], parseInt(twice.rows[0].count) === 1);
+      // Delete the outcome → cash_income should cascade (оператор admin к продажам доступа не имеет — удаляет менеджер)
+      await request('DELETE', `/stock/outcome/${cr.body.id}`, tk.manager);
       const gone = await pool.query('SELECT COUNT(*) FROM cash_income WHERE outcome_id=$1', [cr.body.id]);
       check('  cash_income cascaded on outcome delete', [true], parseInt(gone.rows[0].count) === 0);
     }

@@ -13,6 +13,7 @@ const rateLimit = require('express-rate-limit');
 const { TOOLS_CATALOG } = require('./toolsCatalog'); // каталог инструментов для Wave AI
 const { companyAccessError, parseCompanyEnabled } = require('./companyAccess');
 const products = require('./products');
+const { createBranchBoundary, cachedBranchCompany } = require('./branchBoundary');
 
 const { envInteger, protectAsync, jsonError } = require('./runtime');
 const { createAiClient } = require('./aiClient');
@@ -45,8 +46,8 @@ const pool = new Pool({
   statement_timeout: envInteger(process.env.DB_STATEMENT_TIMEOUT_MS, 30000),
   lock_timeout: envInteger(process.env.DB_LOCK_TIMEOUT_MS, 5000),
   idle_in_transaction_session_timeout: envInteger(process.env.DB_IDLE_TRANSACTION_TIMEOUT_MS, 30000),
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: envInteger(process.env.DB_IDLE_TIMEOUT_MS, 30000, 1000, 3600000),
+  connectionTimeoutMillis: envInteger(process.env.DB_CONNECT_TIMEOUT_MS, 5000, 500, 120000),
 });
 pool.on('error', error => console.error('PostgreSQL idle connection error', error.code || error.name));
 
@@ -405,6 +406,17 @@ app.use((req, res, next) => {
   if (denied) return res.status(denied.status).json(denied.body);
   next();
 });
+
+// ── Граница филиалов ─────────────────────────────────────────────────────
+// branch_id / from_branch_id / to_branch_id из query или тела обязан быть филиалом
+// компании пользователя, иначе 403. getBranchFilter пускает учредителя/директора на
+// любой ?branch_id, и маршрут без своего фильтра company_id отдавал чужие данные
+// (QA 2026-11-17: /api/stock/income-list). Подробности — в branchBoundary.js.
+const branchBoundary = createBranchBoundary({
+  verify: (t) => jwt.verify(t, JWT_SECRET),
+  branchCompany: cachedBranchCompany((sql, params) => pool.query(sql, params)),
+});
+app.use((req, res, next) => (req.path.startsWith('/api/') ? branchBoundary(req, res, next) : next()));
 
 // === COMPANIES ===
 app.get('/api/companies', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
@@ -8384,57 +8396,98 @@ app.post('/api/users/reset-password', auth(['admin', 'director', 'founder', 'man
   }
 });
 
-// === PRODUCT TYPES ===
-app.get('/api/types', auth(), async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM product_types ORDER BY name_ru');
-  res.json(rows);
-});
-
-app.post('/api/types', auth(['admin', 'cashier', 'warehouse']), async (req, res) => {
-  try {
-    const { name_ru, name_uz } = req.body;
-    const { rows } = await pool.query(
-      'INSERT INTO product_types (name_ru, name_uz) VALUES ($1, $2) RETURNING *',
-      [name_ru, name_uz || name_ru]
-    );
-    res.json(rows[0]);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
+// === ТИПЫ ТОВАРОВ И КАТЕГОРИИ ===
+// Справочники: ОБЩИЕ (company_id IS NULL — заведённые до 2026-11-17 и системные) + СВОИ у каждой
+// компании. Раньше таблицы были без company_id: тип/категорию, созданные кассиром одной компании,
+// видели все клиенты (на проде у зоомагазина в списке были «Pichoqlar», у Wave Market — «Корма»),
+// а удалить их было некому (только admin, которого граница данных к /api/types не пускает).
+let _taxonomyColsP = null;
+function taxonomyCols() {
+  if (!_taxonomyColsP) {
+    _taxonomyColsP = (async () => {
+      for (const t of ['product_types', 'categories']) {
+        await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS company_id integer REFERENCES companies(id) ON DELETE CASCADE`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS ${t}_company_id_idx ON ${t} (company_id)`);
+      }
+      return true;
+    })().catch(e => { console.error('taxonomy columns', e.message); _taxonomyColsP = null; throw e; });
   }
-});
-
-app.put('/api/types/:id', auth(['admin']), async (req, res) => {
-  const { name_ru, name_uz } = req.body;
+  return _taxonomyColsP;
+}
+const TAXONOMY = { product_types: 'Тип товара', categories: 'Категория' };
+const taxName = v => String(v ?? '').trim().slice(0, 100);
+// Виден ли пользователю элемент справочника: общий или своей компании.
+async function taxonomyVisible(table, user, id, db = pool) {
+  await taxonomyCols();
+  const { rowCount } = await db.query(
+    `SELECT 1 FROM ${table} WHERE id = $1 AND (company_id IS NULL OR company_id = $2)`, [id, user.company_id || null]);
+  return rowCount > 0;
+}
+async function taxonomyList(table, user) {
+  await taxonomyCols();
   const { rows } = await pool.query(
-    'UPDATE product_types SET name_ru=$1, name_uz=$2 WHERE id=$3 RETURNING *',
-    [name_ru, name_uz || name_ru, req.params.id]
-  );
-  res.json(rows[0]);
-});
+    `SELECT * FROM ${table} WHERE company_id IS NULL OR company_id = $1 ORDER BY name_ru`, [user.company_id || null]);
+  return rows;
+}
+// Создание: то же имя среди видимых (общих или своих) — вернуть существующее, а не плодить дубль.
+async function taxonomyCreate(table, user, body) {
+  await taxonomyCols();
+  const ru = taxName(body?.name_ru);
+  if (!ru) return { status: 400, body: { error: 'Название обязательно' } };
+  const own = user.company_id || null;
+  const { rows: [ex] } = await pool.query(
+    `SELECT * FROM ${table} WHERE lower(name_ru) = lower($1) AND (company_id IS NULL OR company_id = $2)
+     ORDER BY company_id NULLS FIRST, id LIMIT 1`, [ru, own]);
+  if (ex) return { status: 200, body: ex };
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO ${table} (name_ru, name_uz, company_id) VALUES ($1, $2, $3) RETURNING *`,
+    [ru, taxName(body?.name_uz) || ru, own]);
+  return { status: 200, body: row, created: true };
+}
+// Править/удалять: admin — любой; учредитель/директор/менеджер — только СВОИ (общие — нет).
+function taxonomyScopeSql(user) {
+  return user.role === 'admin' ? { sql: '', args: [] } : { sql: ' AND company_id = $2', args: [user.company_id || -1] };
+}
+async function taxonomyUpdate(table, user, id, body) {
+  await taxonomyCols();
+  const ru = taxName(body?.name_ru);
+  if (!ru) return { status: 400, body: { error: 'Название обязательно' } };
+  const sc = taxonomyScopeSql(user);
+  const { rows: [row] } = await pool.query(
+    `UPDATE ${table} SET name_ru = $${sc.args.length + 2}, name_uz = $${sc.args.length + 3} WHERE id = $1${sc.sql} RETURNING *`,
+    [id, ...sc.args, ru, taxName(body?.name_uz) || ru]);
+  return row ? { status: 200, body: row } : { status: 404, body: { error: `${TAXONOMY[table]} не найден(а) среди ваших` } };
+}
+async function taxonomyDelete(table, user, id) {
+  await taxonomyCols();
+  const sc = taxonomyScopeSql(user);
+  try {
+    const { rowCount } = await pool.query(`DELETE FROM ${table} WHERE id = $1${sc.sql}`, [id, ...sc.args]);
+    return rowCount ? { status: 200, body: { ok: true } } : { status: 404, body: { error: `${TAXONOMY[table]} не найден(а) среди ваших` } };
+  } catch (e) {
+    if (e.code === '23503') return { status: 409, body: { error: `${TAXONOMY[table]} используется в товарах — сначала смените его у товаров` } };
+    throw e;
+  }
+}
+const taxonomyRoute = fn => async (req, res) => {
+  try { const r = await fn(req); res.status(r.status).json(r.body); }
+  catch (e) { console.error('taxonomy err', e.message); res.status(500).json({ error: 'Не удалось сохранить справочник' }); }
+};
+const TAX_EDIT_ROLES = ['admin', 'founder', 'director', 'manager'];
+// Добавлять — все, кто заводит товары (раньше руководителям «+ Добавить тип» в «Справочниках» отвечал 403).
+const TAX_CREATE_ROLES = ['admin', 'founder', 'director', 'manager', 'cashier', 'warehouse'];
 
-app.delete('/api/types/:id', auth(['admin']), async (req, res) => {
-  await pool.query('DELETE FROM product_types WHERE id = $1', [req.params.id]);
-  res.json({ ok: true });
-});
+// === PRODUCT TYPES ===
+app.get('/api/types', auth(), taxonomyRoute(async req => ({ status: 200, body: await taxonomyList('product_types', req.user) })));
+app.post('/api/types', auth(TAX_CREATE_ROLES), taxonomyRoute(req => taxonomyCreate('product_types', req.user, req.body)));
+app.put('/api/types/:id', auth(TAX_EDIT_ROLES), taxonomyRoute(req => taxonomyUpdate('product_types', req.user, parseInt(req.params.id, 10) || 0, req.body)));
+app.delete('/api/types/:id', auth(TAX_EDIT_ROLES), taxonomyRoute(req => taxonomyDelete('product_types', req.user, parseInt(req.params.id, 10) || 0)));
 
 // === CATEGORIES ===
-app.get('/api/categories', auth(), async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM categories ORDER BY name_ru');
-  res.json(rows);
-});
-
-app.post('/api/categories', auth(['admin', 'cashier', 'warehouse']), async (req, res) => {
-  try {
-    const { name_ru, name_uz } = req.body;
-    const { rows } = await pool.query(
-      'INSERT INTO categories (name_ru, name_uz) VALUES ($1, $2) RETURNING *',
-      [name_ru, name_uz || name_ru]
-    );
-    res.json(rows[0]);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
+app.get('/api/categories', auth(), taxonomyRoute(async req => ({ status: 200, body: await taxonomyList('categories', req.user) })));
+app.post('/api/categories', auth(TAX_CREATE_ROLES), taxonomyRoute(req => taxonomyCreate('categories', req.user, req.body)));
+app.put('/api/categories/:id', auth(TAX_EDIT_ROLES), taxonomyRoute(req => taxonomyUpdate('categories', req.user, parseInt(req.params.id, 10) || 0, req.body)));
+app.delete('/api/categories/:id', auth(TAX_EDIT_ROLES), taxonomyRoute(req => taxonomyDelete('categories', req.user, parseInt(req.params.id, 10) || 0)));
 
 // === PRODUCTS ===
 // Catalog is company-wide: any branch sees products created by any other branch of
@@ -8643,6 +8696,13 @@ app.post('/api/products', auth(['admin', 'founder', 'director', 'manager', 'cash
     if (zones.error) return res.status(400).json({ error: zones.error });
     const zoneBad = priceZoneOrderError(zones.updates);
     if (zoneBad) return res.status(400).json({ error: zoneBad });
+    // Тип и категория — только общие или своей компании (не чужие справочники).
+    for (const [col, table] of [['type_id', 'product_types'], ['category_id', 'categories']]) {
+      const n = parseInt(req.body[col], 10);
+      if (Number.isFinite(n) && n > 0 && !(await taxonomyVisible(table, req.user, n))) {
+        return res.status(400).json({ error: `${TAXONOMY[table]} не найден(а)` });
+      }
+    }
     // Catalog scope = company, not branch. branch_id retained for legacy queries (= user's branch).
     const companyId = req.user.company_id || null;
     const branchId = getBranchFilter(req.user, req.body);
@@ -8711,6 +8771,10 @@ app.put('/api/products/:id', auth(['admin', 'founder', 'director', 'cashier', 'w
     for (const col of ['type_id', 'category_id']) {
       if (!has(col)) continue;
       const n = parseInt(b[col], 10);
+      // чужой справочник своему товару не ставится (только общие или своей компании)
+      if (Number.isFinite(n) && n > 0 && !(await taxonomyVisible(col === 'type_id' ? 'product_types' : 'categories', req.user, n))) {
+        return res.status(400).json({ error: `${col === 'type_id' ? 'Тип товара' : 'Категория'} не найден(а)` });
+      }
       push(col, Number.isFinite(n) && n > 0 ? n : null);
     }
     for (const col of ['price_buy', 'price_sell', 'min_stock', 'lead_time_days']) {
@@ -8798,15 +8862,20 @@ app.post('/api/products/generate-barcode', auth(['admin', 'cashier', 'warehouse'
 
 // === STOCK INCOME ===
 app.get('/api/stock/income-list', auth(), async (req, res) => {
+  // Приходы — только своей компании. Раньше без ?branch_id учредитель/директор получал
+  // последние 200 приходов ВСЕХ компаний платформы, а с чужим branch_id — приходы
+  // чужого филиала (QA 2026-11-17). Оператор admin к складу не допущен (граница admin).
+  if (!req.user.company_id) return res.json([]);
   const branchId = getBranchFilter(req.user, req.query);
-  const params = [];
-  let where = '';
-  if (branchId) { where = 'WHERE si.branch_id = $1'; params.push(branchId); }
+  const params = [req.user.company_id];
+  let where = 'WHERE b.company_id = $1';
+  if (branchId) { params.push(branchId); where += ` AND si.branch_id = $${params.length}`; }
   const { rows } = await pool.query(`
     SELECT si.*, p.name_ru, p.barcode, p.unit,
            u.username AS created_by_name, u.first_name AS created_by_first_name,
            u.last_name AS created_by_last_name, u.role AS created_by_role
     FROM stock_income si
+    JOIN branches b ON b.id = si.branch_id
     JOIN products p ON si.product_id = p.id
     LEFT JOIN users u ON si.created_by = u.id
     ${where}
@@ -11946,14 +12015,14 @@ async function shopAdminState(req) {
   if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
   const cid = req.user.company_id;
   const { rows: [co] } = await pool.query('SELECT name, store_slug, store_profile FROM companies WHERE id=$1', [cid]);
-  const { rows: categories } = await pool.query('SELECT id, name_ru, name_uz FROM categories ORDER BY name_ru');
+  const categories = (await taxonomyList('categories', req.user)).map(c => ({ id: c.id, name_ru: c.name_ru, name_uz: c.name_uz }));
   const { rows: products } = await pool.query(`SELECT ${SHOP_PRODUCT_COLS} FROM products p
     WHERE p.company_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC NULLS LAST, p.id DESC LIMIT 3000`, [cid]);
   return { company: co?.name || null, shop: co?.store_slug ? { slug: co.store_slug, ...(co.store_profile || {}) } : null,
     can_settings: SHOP_SETTINGS_ROLES.includes(req.user.role), categories, products };
 }
 const shopOne = async (req, id) => (await pool.query(`SELECT ${SHOP_PRODUCT_COLS} FROM products p WHERE p.id=$1 AND p.company_id=$2`, [id, req.user.company_id])).rows[0];
-async function shopProductInput(b, partial) {
+async function shopProductInput(b, partial, user) {
   const out = {};
   const has = k => Object.prototype.hasOwnProperty.call(b, k);
   if (!partial || has('name_ru')) { out.name_ru = shopText(b.name_ru, 200); if (!out.name_ru) throw new ShopErr(400, 'Название товара обязательно'); }
@@ -11965,7 +12034,7 @@ async function shopProductInput(b, partial) {
   }
   if (has('category_id')) {
     const c = b.category_id ? parseInt(b.category_id, 10) : null;
-    if (c && !(await pool.query('SELECT 1 FROM categories WHERE id=$1', [c])).rowCount) throw new ShopErr(400, 'Категория не найдена');
+    if (c && !(await taxonomyVisible('categories', user, c))) throw new ShopErr(400, 'Категория не найдена');
     out.category_id = c;
   }
   if (has('unit')) out.unit = shopText(b.unit, 32) || 'шт';
@@ -12007,7 +12076,7 @@ app.get('/api/shop-admin', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => 
 
 app.post('/api/shop-admin/products', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
   if (!(await shopCols())) throw new ShopErr(503, 'Магазин обновляется — попробуйте через минуту');
-  const f = await shopProductInput(req.body || {}, false);
+  const f = await shopProductInput(req.body || {}, false, req.user);
   const qty = shopQty(req.body?.qty, 'Количество');
   const c = await pool.connect();
   let id;
@@ -12030,7 +12099,7 @@ app.put('/api/shop-admin/products/:id', auth(SHOP_ADMIN_ROLES), shopWrap(async (
   const id = parseInt(req.params.id, 10);
   const { rows: [cur] } = await pool.query('SELECT id, company_id, name_ru, price_sell, photo_url, shop_hidden FROM products WHERE id=$1 AND deleted_at IS NULL', [Number.isFinite(id) ? id : 0]);
   if (!cur || cur.company_id !== req.user.company_id) throw new ShopErr(404, 'Товар не найден');
-  const f = await shopProductInput(req.body || {}, true);
+  const f = await shopProductInput(req.body || {}, true, req.user);
   const add = shopQty(req.body?.add_qty, 'Добавить на склад');
   const cols = Object.keys(f);
   if (!cols.length && !add) throw new ShopErr(400, 'Нет изменений');
@@ -12046,14 +12115,16 @@ app.put('/api/shop-admin/products/:id', auth(SHOP_ADMIN_ROLES), shopWrap(async (
   res.json(await shopOne(req, id));
 }));
 
-// Категория (в Wave категории общие для всех компаний): есть с таким названием — она же
+// Категория: общие + своей компании; есть с таким названием среди видимых — она же, иначе новая СВОЯ
 app.post('/api/shop-admin/categories', auth(SHOP_ADMIN_ROLES), shopWrap(async (req, res) => {
   const ru = shopText(req.body?.name_ru, 100);
   if (!ru) throw new ShopErr(400, 'Название категории обязательно');
-  const { rows: [ex] } = await pool.query('SELECT id, name_ru, name_uz FROM categories WHERE lower(name_ru) = lower($1) ORDER BY id LIMIT 1', [ru]);
-  if (ex) return res.json(ex);
-  const { rows: [cat] } = await pool.query('INSERT INTO categories (name_ru, name_uz) VALUES ($1, $2) RETURNING id, name_ru, name_uz', [ru, shopText(req.body?.name_uz, 100) || ru]);
-  audit(req, 'create', 'category', cat.id, null, cat, { description: 'Интернет-магазин: новая категория' });
+  const r = await taxonomyCreate('categories', req.user, { name_ru: ru, name_uz: shopText(req.body?.name_uz, 100) || ru });
+  if (r.status !== 200) throw new ShopErr(r.status, r.body.error);
+  const cat = { id: r.body.id, name_ru: r.body.name_ru, name_uz: r.body.name_uz };
+  if (r.created) {
+    audit(req, 'create', 'category', cat.id, null, cat, { description: 'Интернет-магазин: новая категория' });
+  }
   res.json(cat);
 }));
 

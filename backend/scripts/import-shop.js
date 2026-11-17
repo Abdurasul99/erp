@@ -69,13 +69,18 @@ async function importShop(pool, opts, log = console.log) {
     await c.query('UPDATE companies SET store_slug=$1, store_profile=$2 WHERE id=$3', [key, prof, co.id]);
     log(`Профиль: ${JSON.stringify(prof)}`);
 
-    // Категории (общие для Wave)
+    // Категории: общие (company_id NULL) + свои у компании (с 2026-11-17). Новые — СВОИ, чтобы
+    // категории магазина не появлялись в списках других клиентов.
+    await c.query('ALTER TABLE categories ADD COLUMN IF NOT EXISTS company_id integer REFERENCES companies(id) ON DELETE CASCADE');
     const catId = {};
     let catNew = 0;
     for (const [k, cat] of Object.entries(data.categories)) {
-      const { rows: [ex] } = await c.query('SELECT id FROM categories WHERE lower(name_ru)=lower($1) ORDER BY id LIMIT 1', [cat.ru]);
+      const { rows: [ex] } = await c.query(
+        'SELECT id FROM categories WHERE lower(name_ru)=lower($1) AND (company_id IS NULL OR company_id=$2) ORDER BY company_id NULLS FIRST, id LIMIT 1',
+        [cat.ru, co.id]);
       if (ex) { catId[k] = ex.id; continue; }
-      catId[k] = (await c.query('INSERT INTO categories (name_ru, name_uz) VALUES ($1,$2) RETURNING id', [cat.ru.slice(0, 100), (cat.uz || cat.ru).slice(0, 100)])).rows[0].id;
+      catId[k] = (await c.query('INSERT INTO categories (name_ru, name_uz, company_id) VALUES ($1,$2,$3) RETURNING id',
+        [cat.ru.slice(0, 100), (cat.uz || cat.ru).slice(0, 100), co.id])).rows[0].id;
       catNew++;
     }
     log(`Категорий: ${Object.keys(catId).length} (новых ${catNew})`);

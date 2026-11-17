@@ -8,6 +8,7 @@ import { fmtMoney } from '../utils.js';
 import useBarcodePrint from '../utils/useBarcodePrint.jsx';
 import { priceZone, validateThresholds, ZONE_COLORS, ZONE_HINTS } from '../utils/priceZone.js';
 import MyTasks from '../components/MyTasks.jsx';
+import useEscape from '../components/useEscape.js';
 import { useTaskInbox } from '../hooks/useTaskInbox.jsx';
 
 const S = {
@@ -1558,6 +1559,7 @@ export default function Mobile() {
   // полноэкранной шторкой — в шапке для отдельного раздела места нет.
   // Админу не показываем: серверная граница данных админа отдаёт ему 403.
   const [tasksOpen, setTasksOpen] = useState(false);
+  useEscape(tasksOpen, () => setTasksOpen(false));
   const canSeeTasks = !!user?.role && user.role !== 'admin';
   // На кнопке — непрочитанные события, а не активные задачи (активные висят
   // постоянно, и кружок горел бы всегда). Гасит его сам MyTasks при открытии.

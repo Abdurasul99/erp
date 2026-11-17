@@ -3,6 +3,7 @@ import api from '../api.js';
 import { useTranslation } from '../useTranslation.js';
 import { formatDate, fmtMoney, useMsg } from '../utils.js';
 import DebtsPanel from './DebtsPanel.jsx';
+import useEscape from './useEscape.js';
 
 export default function SuppliersManager() {
   const { t } = useTranslation();
@@ -13,6 +14,7 @@ export default function SuppliersManager() {
   const [debtsFor, setDebtsFor] = useState(null); // supplier record (we owe)
   const [form, setForm] = useState({ name: '', phone: '', email: '', contact_person: '', address: '', note: '' });
   const [err, setErr] = useState('');
+  useEscape(!!edit, () => setEdit(null));
   const [msg, setMsg, clearMsg] = useMsg();
 
   const load = async () => {

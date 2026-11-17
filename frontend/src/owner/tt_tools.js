@@ -1093,6 +1093,8 @@ export const TOOLS_UZ = {
   "Использование": "Foydalanish",
   "Использует": "Foydalanadi",
   "Используется в": "Quyidagida ishlatiladi:",
+  "общий": "umumiy",
+  "Общий тип — его видят все компании, удалить нельзя": "Umumiy tur — uni barcha kompaniyalar ko'radi, o'chirib bo'lmaydi",
   "История взаимодействий": "O'zaro aloqalar tarixi",
   "Источник клиентов не заполнен": "Mijozlar manbasi to'ldirilmagan",
   "Июль": "Iyul",

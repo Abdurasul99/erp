@@ -4,6 +4,7 @@ import { useMsg, formatLastLogin, filterByPeriod } from '../utils.js';
 import { useTranslation } from '../useTranslation.js';
 import { Icon } from '../icons.jsx';
 import PeriodFilter from './PeriodFilter.jsx';
+import useEscape from './useEscape.js';
 import { SECTIONS } from '../owner/modules.js';
 // Роли «Мероприятий» — из их собственного списка: админка ведёт учётки обоих
 // продуктов и не должна держать ещё одну копию, которая однажды разойдётся.
@@ -122,6 +123,7 @@ export default function AdminPanel() {
   // ─── CRUD ─────────────────────────────────────────────────────────────────────
   const openModal = (type, data = {}) => { setActiveModal(type); setModalData(data); clearMsg(); };
   const closeModal = () => { setActiveModal(null); setModalData({}); };
+  useEscape(!!activeModal, closeModal);
 
   const handleCreate = async () => {
     try {
@@ -205,7 +207,11 @@ export default function AdminPanel() {
   };
 
   const handleBlock = async (user) => {
-    try { await api.put(`/users/${user.id}/block`, { is_blocked: !user.is_blocked }); loadAll(); } catch {}
+    // QA 2026-11-17: блокировка была в один клик без подтверждения (сотрудника сразу выкидывает
+    // из системы), а ошибка сервера глоталась — кнопка «молча ничего не делала».
+    if (!window.confirm(t(user.is_blocked ? 'confirmUnblock' : 'confirmBlock').replace('{u}', user.username))) return;
+    try { await api.put(`/users/${user.id}/block`, { is_blocked: !user.is_blocked }); loadAll(); }
+    catch (e) { setMsg('error', e.response?.data?.error || t('error')); }
   };
 
   const handleResetPwd = async () => {
