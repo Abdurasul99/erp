@@ -33,6 +33,11 @@ if (!process.env.DB_PASS) {
 }
 
 process.env.TZ = 'Asia/Tashkent';
+// Границы периодов «…Z» Postgres приводил к timestamp без пояса, отбрасывая «Z» → окна отчётов
+// уезжали на 5 часов. Переводим такие параметры в местное время (подробно — в модуле).
+require('./pgLocalTime').installLocalTimeParams(require('pg'));
+// Даты для подписей и ключей — toLocaleDateString('sv-SE') (местная ГГГГ-ММ-ДД), а не
+// toISOString().slice(0,10): та даёт UTC-дату, и DATE из базы (местная полночь) становился «вчера».
 
 const pool = new Pool({
   database: process.env.DB_NAME || 'warehouse',
@@ -779,9 +784,9 @@ const RFM_SCORING = {
 async function rfmRecompute(companyId) {
   const { rows } = await pool.query(`
     SELECT c.id AS customer_id,
-           COUNT(so.id) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders,
-           COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days'), 0) AS spent,
-           MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at
+           COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders,
+           COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '365 days'), 0) AS spent,
+           MAX(so.created_at) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS last_at
     FROM customers c
     LEFT JOIN stock_outcome so ON so.customer_id = c.id
     WHERE c.company_id = $1 AND c.deleted_at IS NULL
@@ -798,7 +803,7 @@ async function rfmRecompute(companyId) {
     const R = rfmScoreR(days), F = rfmScoreF(orders), M = rfmScoreM(spent);
     const seg = rfmSegment(R, F);
     cols.ids.push(row.customer_id); cols.r.push(R); cols.f.push(F); cols.m.push(M);
-    cols.last.push(lastAt ? lastAt.toISOString().slice(0, 10) : null); cols.days.push(days);
+    cols.last.push(lastAt ? lastAt.toLocaleDateString('sv-SE') : null); cols.days.push(days);
     cols.orders.push(orders); cols.spent.push(spent); cols.seg.push(seg); cols.label.push(RFM_SEGMENTS[seg]);
   }
 
@@ -904,7 +909,7 @@ app.get('/api/inventory/abc-xyz', auth(['admin', 'director', 'founder', 'manager
                SUM(so.quantity * so.price) AS revenue
         FROM products p
         LEFT JOIN stock_outcome so ON so.product_id = p.id
-          AND so.status = 'approved'
+          AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND so.created_at >= NOW() - INTERVAL '90 days'
           ${branchSQL}
         WHERE p.company_id = $1
@@ -979,7 +984,7 @@ app.get('/api/pricing/analyze', auth(['admin', 'director', 'founder', 'manager']
         SELECT SUM(so.quantity * so.price) AS revenue, SUM(so.quantity) AS qty
         FROM stock_outcome so
         WHERE so.product_id = p.id
-          AND so.status='approved'
+          AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND so.created_at >= NOW() - INTERVAL '90 days'
           ${branchSQL}
       ) rev ON TRUE
@@ -1056,7 +1061,7 @@ app.get('/api/risks', auth(['admin', 'director', 'founder', 'manager']), async (
       JOIN products p ON p.id = ps.product_id
       LEFT JOIN branches b ON b.id = ps.branch_id
       WHERE p.company_id = $1 AND ps.quantity = 0 ${branchSQL}
-        AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+        AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '14 days')
       LIMIT 30
     `, [companyId]);
     for (const r of outOfStock.rows) {
@@ -1118,7 +1123,7 @@ app.get('/api/risks', auth(['admin', 'director', 'founder', 'manager']), async (
                COALESCE(SUM(so.quantity*so.price), 0) AS revenue,
                MAX(so.created_at) AS last_at
         FROM customers c
-        LEFT JOIN stock_outcome so ON so.customer_id = c.id AND so.status='approved' ${branchSQLso}
+        LEFT JOIN stock_outcome so ON so.customer_id = c.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' ${branchSQLso}
         WHERE c.company_id = $1 AND c.deleted_at IS NULL
         GROUP BY c.id, c.name
       )
@@ -1255,7 +1260,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
                COUNT(*) AS deals
         FROM stock_outcome so
         JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList} ${periodSQL}
         GROUP BY so.branch_id`,
         periodParams),
       pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) AS t FROM cash_income
@@ -1346,7 +1351,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
                COALESCE(SUM(so.quantity * so.price / NULLIF(so.exchange_rate, 0)), 0) AS orig,
                COUNT(*) AS deals
         FROM stock_outcome so
-        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList} ${periodSQL}
         GROUP BY COALESCE(so.payment_method, 'cash'), COALESCE(so.currency, 'UZS')`,
         periodParams),
       // 2) Приход в кассу за период по способу + валюте
@@ -1489,7 +1494,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
              COUNT(*) AS deals
       FROM stock_outcome so
       LEFT JOIN products p ON p.id = so.product_id
-      WHERE so.status='approved'
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
         AND so.branch_id IN ${branchIdsList}
         AND so.created_at >= $1 AND so.created_at < $2
       GROUP BY d ORDER BY d`,
@@ -1537,7 +1542,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
                COUNT(*) AS deals
         FROM stock_outcome so
         JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList}
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList}
           AND so.created_at >= $1 AND so.created_at < $2`,
         [prevFrom, prevTo]);
       const pr = prevAgg.rows[0];
@@ -1555,16 +1560,16 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
         SELECT date_trunc('day', so.created_at)::date AS d,
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue
         FROM stock_outcome so
-        WHERE so.status='approved' AND so.branch_id IN ${branchIdsList}
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList}
           AND so.created_at >= $1 AND so.created_at < $2
         GROUP BY d ORDER BY d`,
         [prevFrom, prevTo]);
       const prevMap = new Map();
-      for (const r of prevTrendQ.rows) prevMap.set(new Date(r.d).toISOString().slice(0, 10), parseFloat(r.revenue) || 0);
+      for (const r of prevTrendQ.rows) prevMap.set(new Date(r.d).toLocaleDateString('sv-SE'), parseFloat(r.revenue) || 0);
       const ps = new Date(prevFrom); ps.setHours(0, 0, 0, 0);
       const pe = new Date(prevTo); pe.setHours(0, 0, 0, 0);
       for (let d = new Date(ps); d < pe; d.setDate(d.getDate() + 1)) {
-        const key = d.toISOString().slice(0, 10);
+        const key = d.toLocaleDateString('sv-SE');
         prev_trend.push({ date: key, revenue: prevMap.get(key) || 0 });
       }
     }
@@ -1580,7 +1585,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
       pool.query(`SELECT
         (SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0)
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
            AND so.branch_id IN ${branchIdsList}) AS client_debts,
         (SELECT COALESCE(SUM((si.quantity*si.price) - COALESCE(si.paid_amount,0)),0)
          FROM stock_income si JOIN products p ON p.id = si.product_id
@@ -1638,7 +1643,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue
       FROM stock_outcome so
       JOIN products p ON p.id = so.product_id
-      WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList} ${periodSQL}
       GROUP BY p.id, p.name_ru, p.unit
       ORDER BY revenue DESC LIMIT 5`,
       periodParams);
@@ -1650,7 +1655,7 @@ app.get('/api/company/dashboard', auth(['admin', 'director', 'founder', 'manager
              COUNT(*) AS deals
       FROM stock_outcome so
       JOIN users u ON u.id = so.created_by
-      WHERE so.status='approved' AND so.branch_id IN ${branchIdsList} ${periodSQL}
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id IN ${branchIdsList} ${periodSQL}
       GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
       ORDER BY revenue DESC LIMIT 5`,
       periodParams);
@@ -1846,7 +1851,7 @@ app.get('/api/company/sales-chart', auth(['admin', 'director', 'founder', 'manag
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
              COUNT(*) AS deals
       FROM stock_outcome so
-      WHERE so.status = 'approved' AND so.branch_id = ANY($1::int[])
+      WHERE so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
         AND so.created_at >= $2
       GROUP BY k`,
       [ids, rangeFrom.toISOString()]);
@@ -1946,7 +1951,7 @@ app.get('/api/company/branch-daily', auth(['admin', 'director', 'founder', 'mana
         `SELECT to_char(so.created_at::date,'YYYY-MM-DD') d,
                 COALESCE(SUM(so.quantity*so.price),0) - COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) v
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
            AND so.created_at >= $2 AND so.created_at < $3 GROUP BY d`, [ids, isoStart, isoEnd]);
       for (const r of q.rows) byDay.set(r.d, parseFloat(r.v) || 0);
     } else { // stock — из снапшотов (история)
@@ -1968,7 +1973,7 @@ app.get('/api/company/branch-daily', auth(['admin', 'director', 'founder', 'mana
       const [incQ, expQ, salesQ, stockQ] = await Promise.all([
         pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) v FROM cash_income WHERE branch_id=ANY($1::int[]) AND is_settled IS NOT FALSE AND created_at>=$2 GROUP BY branch_id`, [ids, dayStart]),
         pool.query(`SELECT branch_id, COALESCE(SUM(amount),0) v FROM cash_expense WHERE branch_id=ANY($1::int[]) AND created_at>=$2 GROUP BY branch_id`, [ids, dayStart]),
-        pool.query(`SELECT so.branch_id, COALESCE(SUM(so.quantity*so.price),0) rev, COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cost FROM stock_outcome so JOIN products p ON p.id=so.product_id WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$2 GROUP BY so.branch_id`, [ids, dayStart]),
+        pool.query(`SELECT so.branch_id, COALESCE(SUM(so.quantity*so.price),0) rev, COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cost FROM stock_outcome so JOIN products p ON p.id=so.product_id WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$2 GROUP BY so.branch_id`, [ids, dayStart]),
         pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity*COALESCE(p.price_sell,0)),0) v FROM product_stock ps JOIN products p ON p.id=ps.product_id WHERE ps.branch_id=ANY($1::int[]) GROUP BY ps.branch_id`, [ids]),
       ]);
       const mp = (rows, k = 'v') => Object.fromEntries(rows.map(r => [r.branch_id, parseFloat(r[k]) || 0]));
@@ -2074,7 +2079,7 @@ async function bhiCompute(companyId) {
           COUNT(DISTINCT CASE WHEN so.created_at>=$2 THEN so.created_at::date END) sales_days,
           COUNT(DISTINCT CASE WHEN so.created_at>=$2 THEN so.created_by END) sellers
         FROM stock_outcome so JOIN products p ON p.id=so.product_id
-        WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$3`,
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id=ANY($1::int[]) AND so.created_at>=$3`,
         [ids, iso30, iso60]);
       const r = sq.rows[0] || {};
       const revCur = parseFloat(r.rev_cur) || 0, cogsCur = parseFloat(r.cogs_cur) || 0, revPrev = parseFloat(r.rev_prev) || 0;
@@ -2172,7 +2177,7 @@ async function bhiCompute(companyId) {
   const weakest = Object.entries(pillarScores).filter(([, v]) => v != null).sort((a, b) => a[1] - b[1])[0];
 
   return {
-    date: now.toISOString().slice(0, 10),
+    date: now.toLocaleDateString('sv-SE'),
     days_active: daysActive,
     revenue_weight: bhiRevenueWeight(daysActive),
     blocks_active: activeCount,
@@ -2195,7 +2200,7 @@ function bhiRowToSnapshot(row) {
   const weakest = Object.entries(ps).filter(([, v]) => v != null).sort((a, b) => a[1] - b[1])[0];
   const bhi = Math.round(parseFloat(row.bhi));
   return {
-    date: row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date).slice(0, 10),
+    date: row.date instanceof Date ? row.date.toLocaleDateString('sv-SE') : String(row.date).slice(0, 10),
     days_active: row.days_active,
     revenue_weight: parseFloat(row.revenue_weight),
     blocks_active: row.blocks_active,
@@ -2215,7 +2220,7 @@ function bhiGetToday(companyId) {
   return recomputeGate.run(`bhi:${companyId}`, () => bhiGetTodayOnce(companyId));
 }
 async function bhiGetTodayOnce(companyId) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString('sv-SE');
   try {
     const c = await pool.query('SELECT * FROM bhi_daily WHERE company_id=$1 AND date=$2', [companyId, today]);
     const row = c.rows[0];
@@ -2267,7 +2272,7 @@ app.get('/api/bhi/monthly', auth(['admin', 'director', 'founder', 'manager']), a
     const start = dstr(startD);
     const end = dstr(now);
     const hq = await pool.query('SELECT date, bhi FROM bhi_daily WHERE company_id=$1 AND date>=$2 AND date<=$3 ORDER BY date', [companyId, start, end]);
-    const points = hq.rows.map(r => ({ date: (r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10)), bhi: Math.round(parseFloat(r.bhi)) }));
+    const points = hq.rows.map(r => ({ date: (r.date instanceof Date ? r.date.toLocaleDateString('sv-SE') : String(r.date).slice(0, 10)), bhi: Math.round(parseFloat(r.bhi)) }));
     // Добавляем сегодняшний (живой) BHI, если его ещё нет в истории — чтобы график доходил до сегодня.
     if (today.bhi != null && (points.length === 0 || points[points.length - 1].date !== end)) {
       points.push({ date: end, bhi: Math.round(today.bhi) });
@@ -2291,7 +2296,7 @@ app.get('/api/bhi/monthly', auth(['admin', 'director', 'founder', 'manager']), a
 app.get('/api/bhi/day', auth(['admin', 'director', 'founder', 'manager']), async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toLocaleDateString('sv-SE');
     const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : today;
     let snap;
     if (date === today) snap = await bhiGetToday(companyId);
@@ -2650,7 +2655,7 @@ app.get('/api/crm/birthdays', auth(['admin', 'director', 'founder', 'manager']),
 
     res.json({
       year, days, branch_id: branchId,
-      today: new Date().toISOString().slice(0, 10),
+      today: new Date().toLocaleDateString('sv-SE'),
       total: list.length,
       greeted: list.filter(x => x.greeted).length,
       channels: BDAY_CHANNELS,
@@ -2690,7 +2695,7 @@ app.get('/api/crm/events', auth(['admin', 'director', 'founder', 'manager']), as
       SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue
       FROM event_greetings eg
       JOIN stock_outcome so ON so.customer_id = eg.customer_id
-        AND so.status = 'approved' AND so.created_at >= eg.sent_at
+        AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= eg.sent_at
       WHERE eg.company_id = $1 AND eg.used = TRUE
         AND eg.sent_at >= NOW() - INTERVAL '${INTERVAL}'
         ${branchId ? `AND so.branch_id = ${parseInt(branchId, 10)}` : ''}`, [companyId]);
@@ -2895,7 +2900,7 @@ app.get('/api/crm/referrals/top', auth(['admin', 'director', 'founder', 'manager
         SELECT SUM(so.quantity * so.price) AS revenue
         FROM stock_outcome so
         WHERE so.customer_id = r.referred_id
-          AND so.status = 'approved'
+          AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND ($3::int IS NULL OR so.branch_id = $3)
       ) rev ON TRUE
       WHERE r.company_id = $1
@@ -3403,7 +3408,7 @@ async function alertCollect(companyId, branchId) {
     JOIN products p ON p.id = ps.product_id
     LEFT JOIN branches b ON b.id = ps.branch_id
     WHERE p.company_id = $1 AND ps.quantity = 0 ${branchSQLps}
-      AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+      AND EXISTS (SELECT 1 FROM stock_outcome so WHERE so.product_id = p.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '14 days')
     LIMIT 60
   `, [companyId]);
   for (const r of outOfStock.rows) {
@@ -3694,7 +3699,7 @@ app.get('/api/analytics/branches/compare', auth(['admin', 'director', 'founder']
                COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
                COUNT(*) AS deals
         FROM stock_outcome so JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
         GROUP BY so.branch_id`, [ids, fromIso]),
       pool.query(`SELECT branch_id, COUNT(*) AS c FROM users WHERE branch_id = ANY($1::int[]) GROUP BY branch_id`, [ids]),
       pool.query(`SELECT ps.branch_id, COALESCE(SUM(ps.quantity * COALESCE(p.price_buy,0)),0) AS cost_value
@@ -3765,7 +3770,7 @@ app.get('/api/analytics/branches/compare', auth(['admin', 'director', 'founder']
       SELECT so.branch_id, to_char(date_trunc('month', so.created_at), 'YYYY-MM') AS m,
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue
       FROM stock_outcome so
-      WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
       GROUP BY so.branch_id, m`, [ids, trendFrom.toISOString()]);
     const months = [];
     for (let i = 5; i >= 0; i--) { const d = new Date(); d.setMonth(d.getMonth() - i); months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`); }
@@ -3934,7 +3939,7 @@ app.get('/api/analytics/trends', auth(['admin', 'director', 'founder', 'manager'
               COUNT(DISTINCT so.created_at::date) AS active_days
        FROM stock_outcome so
        JOIN products p ON p.id = so.product_id
-       WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+       WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
          AND so.created_at >= $2 AND so.created_at < $3
        GROUP BY 1`,
       [ids, periodStart, periodEnd]);
@@ -4111,12 +4116,12 @@ async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
   const histDays = lookbackDays + 30 * 7 + 7;
   const { rows } = await pool.query(`
     SELECT so.branch_id,
-           (so.created_at AT TIME ZONE 'UTC')::date AS d,
+           so.created_at::date AS d,
            COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
            COUNT(*) AS deals
     FROM stock_outcome so
     JOIN products p ON p.id = so.product_id
-    WHERE p.company_id = $1 AND so.status='approved'
+    WHERE p.company_id = $1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
       AND so.branch_id = ANY($2::int[])
       AND so.created_at >= (CURRENT_DATE - ($3 || ' days')::interval)
     GROUP BY so.branch_id, d
@@ -4126,7 +4131,7 @@ async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
   const byBranch = {};
   for (const r of rows) {
     const b = r.branch_id;
-    const iso = (r.d instanceof Date ? r.d : new Date(r.d)).toISOString().slice(0, 10);
+    const iso = (r.d instanceof Date ? r.d : new Date(r.d)).toLocaleDateString('sv-SE');
     const revenue = parseFloat(r.revenue) || 0;
     const deals = parseInt(r.deals) || 0;
     (byBranch[b] = byBranch[b] || {})[iso] = {
@@ -4141,7 +4146,7 @@ async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
     // Целевые даты — последние lookbackDays (исключая сегодня — день неполный).
     for (let back = 1; back <= lookbackDays; back++) {
       const dt = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - back));
-      const iso = dt.toISOString().slice(0, 10);
+      const iso = dt.toLocaleDateString('sv-SE');
       const actual = days[iso];
       if (!actual) continue; // нет продаж в этот день — пропускаем (нет данных)
 
@@ -4149,7 +4154,7 @@ async function anomRecompute(companyId, branchIds, lookbackDays = 30) {
       const baseline = { revenue: [], deals: [], avg_check: [] };
       for (let w = 1; w <= 30; w++) {
         const bd = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() - w * 7));
-        const bIso = bd.toISOString().slice(0, 10);
+        const bIso = bd.toLocaleDateString('sv-SE');
         const v = days[bIso];
         if (!v) continue;
         baseline.revenue.push(v.revenue);
@@ -4343,7 +4348,7 @@ async function cohortRecompute(companyId, branchId) {
   for (const r of rows) {
     const cm = new Date(r.cohort_month);
     const pm = new Date(r.pm);
-    const key = cm.toISOString().slice(0, 10);
+    const key = cm.toLocaleDateString('sv-SE');
     const n = cohortMonthDiff(cm, pm);
     if (n < 0) continue;
     const c = cohorts[key] || (cohorts[key] = { size: new Set(), act: {}, rev: {} });
@@ -4557,14 +4562,14 @@ app.get('/api/analytics/founder-dashboard', auth(['admin', 'director', 'founder'
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
                COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost
         FROM stock_outcome so JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3
         GROUP BY so.branch_id`, [ids, curFromIso, curToIso]),
       // Компания целиком за тот же месяц год назад (для YoY).
       pool.query(`
         SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
                COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost
         FROM stock_outcome so JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
         [ids, yoyFromIso, yoyToIso]),
       // Уникальные клиенты периода по продажам филиала.
       pool.query(`SELECT branch_id, COUNT(DISTINCT customer_id) AS c FROM stock_outcome
@@ -4584,7 +4589,7 @@ app.get('/api/analytics/founder-dashboard', auth(['admin', 'director', 'founder'
       pool.query(`SELECT so.branch_id,
                          COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) AS overdue
                   FROM stock_outcome so JOIN products p ON p.id = so.product_id
-                  WHERE p.company_id=$1 AND so.branch_id = ANY($2::int[]) AND so.status='approved'
+                  WHERE p.company_id=$1 AND so.branch_id = ANY($2::int[]) AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
                     AND so.payment_status <> 'paid'
                     AND so.due_date IS NOT NULL AND so.due_date < CURRENT_DATE
                   GROUP BY so.branch_id`, [companyId, ids]),
@@ -4594,7 +4599,7 @@ app.get('/api/analytics/founder-dashboard', auth(['admin', 'director', 'founder'
                   WHERE p.company_id=$1 AND ps.quantity=0 AND ps.branch_id = ANY($2::int[])
                     AND EXISTS (SELECT 1 FROM stock_outcome so
                                 WHERE so.product_id=p.id AND so.branch_id=ps.branch_id
-                                  AND so.status='approved' AND so.created_at >= NOW() - INTERVAL '14 days')
+                                  AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '14 days')
                   GROUP BY ps.branch_id`, [companyId, ids]),
       bhiGetToday(companyId).catch(() => null),
       // Открытые алерты учредителя (реюз таблицы alerts).
@@ -4685,7 +4690,7 @@ app.get('/api/analytics/founder-dashboard', auth(['admin', 'director', 'founder'
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
              COALESCE(SUM(so.quantity * COALESCE(p.price_buy,0)), 0) AS cost
       FROM stock_outcome so JOIN products p ON p.id = so.product_id
-      WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2
       GROUP BY so.branch_id, m`, [ids, trendFrom.toISOString()]);
     const months = [];
     for (let i = 5; i >= 0; i--) {
@@ -4734,7 +4739,7 @@ function funnelPeriodRange(period) {
   else start = new Date(y, m, 1); // month (default)
   const end = new Date(y, m, d + 1); // эксклюзивная верхняя граница «завтра»
   // Ручной ввод всегда привязан к началу ТЕКУЩЕГО месяца.
-  const inputPeriod = new Date(y, m, 1).toISOString().slice(0, 10);
+  const inputPeriod = new Date(y, m, 1).toLocaleDateString('sv-SE');
   return { startIso: start.toISOString(), endIso: end.toISOString(), inputPeriod };
 }
 
@@ -4865,7 +4870,7 @@ app.post('/api/analytics/funnel/inputs', auth(['admin', 'director', 'founder', '
     const adViews = Math.max(0, parseInt(req.body.ad_views, 10) || 0);
     const visitors = Math.max(0, parseInt(req.body.visitors, 10) || 0);
     const now = new Date();
-    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('sv-SE');
 
     const old = await pool.query(
       `SELECT id, ad_views, visitors FROM funnel_inputs
@@ -4946,7 +4951,7 @@ app.get('/api/analytics/report', auth(['admin', 'director', 'founder', 'manager'
                 COUNT(*) AS deals,
                 COUNT(DISTINCT so.created_at::date) AS active_days
          FROM stock_outcome so JOIN products p ON p.id=so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
            AND so.created_at >= $2 AND so.created_at < $3`,
         [ids, f, t]);
       const row = q.rows[0] || {};
@@ -5020,7 +5025,7 @@ app.get('/api/analytics/report', auth(['admin', 'director', 'founder', 'manager'
          WHERE ps.branch_id = ANY($1::int[]) AND ps.quantity > 0
            AND ps.product_id NOT IN (
              SELECT DISTINCT so.product_id FROM stock_outcome so
-             WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+             WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
                AND so.created_at >= $2 AND so.created_at < $3)`,
         [ids, r.from, r.to]);
       deadstock = parseFloat(dsQ.rows[0]?.v) || 0;
@@ -5510,7 +5515,7 @@ app.get('/api/analytics/unit-economics', auth(['admin', 'director', 'founder', '
                COUNT(*) AS deals
         FROM stock_outcome so JOIN products p ON p.id = so.product_id
         JOIN branches b ON b.id = so.branch_id
-        WHERE b.company_id = $1 AND so.status='approved' AND so.created_at >= $2 ${soBranch}`, soParams),
+        WHERE b.company_id = $1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= $2 ${soBranch}`, soParams),
       // Новые клиенты за период (для CAC). По customers.created_at. Прим.: атрибуции
       // клиента к филиалу в данных нет → счёт всегда компанийный (документировано в NOTES).
       pool.query(`
@@ -5526,7 +5531,7 @@ app.get('/api/analytics/unit-economics', auth(['admin', 'director', 'founder', '
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
                COALESCE(SUM(so.quantity * (so.price - COALESCE(p.price_buy, 0))), 0) AS profit
         FROM products p
-        LEFT JOIN stock_outcome so ON so.product_id = p.id AND so.status='approved'
+        LEFT JOIN stock_outcome so ON so.product_id = p.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
              AND so.created_at >= $2 ${branchId ? 'AND so.branch_id = $3' : ''}
         WHERE p.company_id = $1
         GROUP BY p.id, p.name_ru, p.price_buy, p.price_sell`,
@@ -5537,7 +5542,7 @@ app.get('/api/analytics/unit-economics', auth(['admin', 'director', 'founder', '
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
                COALESCE(SUM(so.quantity * (so.price - COALESCE(p.price_buy, 0))), 0) AS profit
         FROM branches b
-        LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND so.created_at >= $2
+        LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= $2
         LEFT JOIN products p ON p.id = so.product_id
         WHERE b.company_id = $1 ${branchId ? 'AND b.id = $3' : ''}
         GROUP BY b.id, b.name, b.area_sqm, b.rent_monthly_uzs
@@ -5551,8 +5556,8 @@ app.get('/api/analytics/unit-economics', auth(['admin', 'director', 'founder', '
       pool.query(`
         WITH agg AS (
           SELECT c.id, COALESCE(NULLIF(TRIM(c.source),''),'unknown') AS source,
-                 COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
-                 COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'),0) AS revenue
+                 COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS orders,
+                 COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'),0) AS revenue
           FROM customers c
           LEFT JOIN stock_outcome so ON so.customer_id = c.id
                AND so.created_at >= $2 ${branchId ? 'AND so.branch_id = $3' : ''}
@@ -5814,7 +5819,7 @@ function bscPeriodRange(startDate, type, no) {
     from.setUTCMonth(from.getUTCMonth() + (n - 1) * step);
     to.setUTCMonth(to.getUTCMonth() + n * step);
   }
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  return { from: from.toLocaleDateString('sv-SE'), to: to.toLocaleDateString('sv-SE') };
 }
 // Сколько периодов данного типа укладывается в 3 года стратегии.
 const BSC_PERIOD_COUNT = { year: 3, half: 6, quarter: 12, month: 36, week: 157 };
@@ -5825,7 +5830,7 @@ async function bscLoadFull(strategy) {
   const start = new Date(strategy.start_date);
   // Границы 3 лет от start_date
   const yb = (n) => {
-    const d = new Date(start); d.setFullYear(d.getFullYear() + n); return d.toISOString().slice(0, 10);
+    const d = new Date(start); d.setFullYear(d.getFullYear() + n); return d.toLocaleDateString('sv-SE');
   };
   const y0 = yb(0), y1 = yb(1), y2 = yb(2), y3 = yb(3);
 
@@ -6777,7 +6782,7 @@ app.get('/api/checklists/today', auth(['admin', 'director', 'founder', 'manager'
       : (req.query.branch_id ? parseInt(req.query.branch_id, 10) : null);
     if (!isManager && branchId) await assertBranchInCompany(req.user, branchId);
 
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = new Date().toLocaleDateString('sv-SE');
 
     // Без выбранного филиала (владелец, «вся компания») вернуть только шаблоны без статуса.
     if (!branchId) {
@@ -9049,7 +9054,7 @@ app.get('/api/sales/history', auth(['admin', 'founder', 'director', 'manager']),
     const search = (req.query.search || '').trim();
 
     const params = [];
-    const conds = [`so.status = 'approved'`];
+    const conds = [`so.status = 'approved'`, `COALESCE(so.outcome_type,'sale')='sale'`];
     if (scope.ids) { params.push(scope.ids); conds.push(`so.branch_id = ANY($${params.length}::int[])`); }
     if (req.user.role !== 'admin' && companyId) { params.push(companyId); conds.push(`p.company_id = $${params.length}`); }
     if (from) { params.push(from); conds.push(`so.created_at >= $${params.length}`); }
@@ -9083,7 +9088,7 @@ app.get('/api/sales/history', auth(['admin', 'founder', 'director', 'manager']),
 
     // KPI-агрегаты по тому же scope (без фильтров pm/type/search — общая картина периода)
     const kpiParams = [];
-    const kpiConds = [`so.status = 'approved'`];
+    const kpiConds = [`so.status = 'approved'`, `COALESCE(so.outcome_type,'sale')='sale'`];
     if (scope.ids) { kpiParams.push(scope.ids); kpiConds.push(`so.branch_id = ANY($${kpiParams.length}::int[])`); }
     if (req.user.role !== 'admin' && companyId) { kpiParams.push(companyId); kpiConds.push(`p.company_id = $${kpiParams.length}`); }
     if (from) { kpiParams.push(from); kpiConds.push(`so.created_at >= $${kpiParams.length}`); }
@@ -9182,7 +9187,7 @@ async function computeCashflow(scope, fromIso, toIso) {
   const prevBalance = (parseFloat(prevInc.rows[0].t) || 0) - (parseFloat(prevExp.rows[0].t) || 0);
   const balance = income - expense;
   const by_day = byDayQ.rows.map(r => ({
-    day: new Date(r.day).toISOString().slice(0, 10),
+    day: new Date(r.day).toLocaleDateString('sv-SE'),
     income: parseFloat(r.income) || 0,
     expense: parseFloat(r.expense) || 0,
     net: (parseFloat(r.income) || 0) - (parseFloat(r.expense) || 0),
@@ -9196,7 +9201,7 @@ async function computeCashflow(scope, fromIso, toIso) {
   for (let i = 1; i <= 7; i++) {
     const d = new Date(lastDay); d.setDate(d.getDate() + i);
     running += avgNet;
-    forecast_7d.push({ day: d.toISOString().slice(0, 10), projected_balance: Math.round(running) });
+    forecast_7d.push({ day: d.toLocaleDateString('sv-SE'), projected_balance: Math.round(running) });
   }
   return {
     period: { from, to },
@@ -9211,6 +9216,14 @@ async function computeCashflow(scope, fromIso, toIso) {
 }
 
 // — Точка безубыточности: постоянные расходы / маржинальность
+// Расход кассы, который НЕ операционный: оплата товара для перепродажи (его себестоимость уже в
+// COGS при продаже) и возврат денег покупателю (выручка уже уменьшена возвратом). Сервер пишет их
+// без категории, точным текстом: «Закупка… — товар × N», «Оплата поставщику…: приход #N»,
+// «Возврат клиенту: товар × N»; в загруженных данных — категория «Закупка товара» / goods.
+// Ручные расходы кассира и недостачи остаются операционными. Для прибыли / безубыточности /
+// «что если» исключаем, для остатка и движения денег — нет (там закупка — честный отток).
+const OPEX_SQL = (a = '') => `NOT (COALESCE(${a}category,'') IN ('Закупка товара','goods') OR (COALESCE(${a}category,'') = '' AND (${a}description LIKE 'Закупка%×%' OR ${a}description LIKE 'Оплата поставщику%приход #%' OR ${a}description LIKE 'Возврат клиенту: %×%')))`;
+
 async function computeBreakEven(scope, fromIso, toIso) {
   // По умолчанию — текущий календарный месяц
   const now = new Date();
@@ -9224,10 +9237,10 @@ async function computeBreakEven(scope, fromIso, toIso) {
            COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs,
            COUNT(*) deals
     FROM stock_outcome so JOIN products p ON p.id=so.product_id
-    WHERE so.status='approved' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
+    WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
     [...sp, from, to]);
   const ep = []; const ec = branchArrayCond(scope, ep);
-  const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
+  const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND ${OPEX_SQL()} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
 
   const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
   const cogs = parseFloat(salesQ.rows[0].cogs) || 0;
@@ -9283,12 +9296,12 @@ async function computeFinModel(scope) {
            COALESCE(SUM(so.quantity*so.price),0) revenue,
            COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
     FROM stock_outcome so JOIN products p ON p.id=so.product_id
-    WHERE so.status='approved' AND ${sc} AND so.created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+    WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND ${sc} AND so.created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
     GROUP BY m`, sp);
   const ep = []; const ec = branchArrayCond(scope, ep);
   const expByMonth = await pool.query(`
     SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS m, COALESCE(SUM(amount),0) opex
-    FROM cash_expense WHERE ${ec} AND created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+    FROM cash_expense WHERE ${ec} AND ${OPEX_SQL()} AND created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
     GROUP BY m`, ep);
   const salesMap = new Map(salesByMonth.rows.map(r => [r.m, r]));
   const expMap = new Map(expByMonth.rows.map(r => [r.m, parseFloat(r.opex) || 0]));
@@ -9518,7 +9531,7 @@ app.post('/api/integrations/telegram/report', auth(INTEG_ROLES), async (req, res
     const q = await pool.query(`
       SELECT COALESCE(SUM(so.quantity*so.price),0) revenue, COUNT(*) sales
       FROM stock_outcome so JOIN branches b ON b.id=so.branch_id
-      WHERE b.company_id=$1 AND so.status='approved' AND so.created_at::date = CURRENT_DATE`, [companyId]);
+      WHERE b.company_id=$1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at::date = CURRENT_DATE`, [companyId]);
     const cashQ = await pool.query(`
       SELECT COALESCE(SUM(ci.amount),0) cash_in FROM cash_income ci JOIN branches b ON b.id=ci.branch_id
       WHERE b.company_id=$1 AND ci.created_at::date = CURRENT_DATE`, [companyId]);
@@ -9567,7 +9580,7 @@ app.get('/api/hr/overview', auth(['admin', 'founder', 'director', 'manager']), a
                COALESCE(SUM(so.quantity * so.price), 0) AS revenue_30d,
                MAX(so.created_at) AS last_sale_at
         FROM stock_outcome so
-        WHERE so.created_by = u.id AND so.status = 'approved'
+        WHERE so.created_by = u.id AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND so.created_at >= NOW() - INTERVAL '30 days'
       ) s ON TRUE
       WHERE u.company_id = $1 AND u.role <> 'admin' ${branchCond}
@@ -9713,9 +9726,11 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
         const cust = custId ? await client.query('SELECT name FROM customers WHERE id=$1', [custId]) : { rows: [] };
         const custLabel = cust.rows[0] ? ` (${cust.rows[0].name})` : '';
         const desc = `Продажа${custLabel}: ${prod.rows[0]?.name_ru || ''} × ${qty}${pstatus === 'partial' ? ' (частично)' : ''}`;
-        // Seller-created sales are UNSETTLED — seller must hand cash to cashier later.
+        // Seller-created CASH sales are UNSETTLED — seller must hand cash to cashier later.
+        // Card / transfer / wire never pass through the seller's hands: settled at once
+        // (иначе при приёмке выручки безналичная часть записывалась как недостача).
         // Other roles' sales are immediately settled (cashier is the register operator).
-        const isSettled = req.user.role !== 'seller';
+        const isSettled = req.user.role !== 'seller' || (pmethod !== 'cash' && pmethod !== 'debt');
         // For foreign-currency sales: the actual cash received is in `cur`, paid_orig = paid / rate.
         const paidOrig = cur === 'UZS' ? paid : paid / storedRate;
         await client.query(
@@ -10070,6 +10085,44 @@ async function loadScopedOutcome(client, outcomeId, reqUser) {
   return { row: cur, error: null };
 }
 
+// Правка документа продажи (количество / цена / примечание) внутри открытой транзакции.
+// Деньги не двигает: полученные оплаты неизменны (сумма меньше оплаченного — только через
+// возврат), склад — с проверкой остатка, статус оплаты пересчитывается. Один путь и для ручной
+// правки (PUT), и для одобрения заявки продавца: раньше одобрение шло своим кодом — уводило склад
+// в минус, стирало записи кассы (погашения долга, признак сдачи) и клало приход на всю сумму
+// даже по продаже в долг. Возвращает { row, newQty, newPrice } или { error: { status, msg } }.
+async function applyOutcomeEdit(client, cur, { quantity, price, note }) {
+  const newQty = quantity === undefined || quantity === null ? Number(cur.quantity) : Number(quantity);
+  const newPrice = price === undefined || price === null ? Number(cur.price) : Number(price);
+  if (!Number.isFinite(newQty) || newQty <= 0 || !Number.isFinite(newPrice) || newPrice < 0 || !Number.isFinite(newQty * newPrice)) {
+    return { error: { status: 400, msg: 'Укажите корректные количество и цену' } };
+  }
+  const changed = newQty !== Number(cur.quantity) || newPrice !== Number(cur.price);
+  const linked = await client.query('SELECT 1 FROM stock_outcome WHERE original_outcome_id=$1 LIMIT 1', [cur.id]);
+  if (changed && (cur.outcome_type === 'customer_return' || linked.rowCount)) {
+    return { error: { status: 409, msg: 'Нельзя изменять количество или цену операции с возвратом' } };
+  }
+  const isSale = !cur.outcome_type || cur.outcome_type === 'sale';
+  const paid = Number(cur.paid_amount || 0);
+  const total = newQty * newPrice;
+  if (isSale && total < paid - 0.005) {
+    return { error: { status: 409, msg: 'Сумма меньше уже полученной оплаты. Оформите возврат' } };
+  }
+  if (isSale && changed) {
+    const belowRed = await priceBelowRedError(client, cur.product_id, newPrice);
+    if (belowRed) return { error: { status: 400, msg: belowRed } };
+  }
+  if (cur.status === 'approved' && newQty !== Number(cur.quantity)) {
+    const delta = newQty - Number(cur.quantity);
+    const stock = await client.query('UPDATE product_stock SET quantity=quantity-$1, updated_at=NOW() WHERE product_id=$2 AND branch_id=$3 AND quantity >= $1', [delta, cur.product_id, cur.branch_id]);
+    if (!stock.rowCount) return { error: { status: 400, msg: 'Недостаточно остатка' } };
+  }
+  const status = isSale ? (total - paid < 0.005 ? 'paid' : (paid > 0 ? 'partial' : 'debt')) : cur.payment_status;
+  const { rows } = await client.query('UPDATE stock_outcome SET quantity=$1, price=$2, note=$3, payment_status=$4, original_price=$5 WHERE id=$6 RETURNING *',
+    [newQty, newPrice, note === undefined ? cur.note : note, status, newPrice / (Number(cur.exchange_rate) || 1), cur.id]);
+  return { row: rows[0], newQty, newPrice };
+}
+
 // Edit stock outcome (price, note, quantity). Adjusts stock if quantity changes on approved record.
 app.put('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), async (req, res) => {
   const client = await pool.connect();
@@ -10078,39 +10131,11 @@ app.put('/api/stock/outcome/:id', auth(['admin', 'cashier', 'manager']), async (
     const scoped = await loadScopedOutcome(client, req.params.id, req.user);
     if (scoped.error) { await client.query('ROLLBACK'); return res.status(scoped.error.status).json({ error: scoped.error.msg }); }
     const cur = scoped.row;
-    const newQty = req.body.quantity === undefined ? Number(cur.quantity) : Number(req.body.quantity);
-    const newPrice = req.body.price === undefined ? Number(cur.price) : Number(req.body.price);
-    if (!Number.isFinite(newQty) || newQty <= 0 || !Number.isFinite(newPrice) || newPrice < 0 || !Number.isFinite(newQty * newPrice)) {
-      await client.query('ROLLBACK'); return res.status(400).json({ error: 'Укажите корректные количество и цену' });
-    }
-    const changed = newQty !== Number(cur.quantity) || newPrice !== Number(cur.price);
-    const linked = await client.query('SELECT 1 FROM stock_outcome WHERE original_outcome_id=$1 LIMIT 1', [cur.id]);
-    if (changed && (cur.outcome_type === 'customer_return' || linked.rowCount)) {
-      await client.query('ROLLBACK'); return res.status(409).json({ error: 'Нельзя изменять количество или цену операции с возвратом' });
-    }
-    const isSale = !cur.outcome_type || cur.outcome_type === 'sale';
-    const paid = Number(cur.paid_amount || 0);
-    const total = newQty * newPrice;
-    // Editing a document does not receive or refund money. Existing receipts stay immutable.
-    if (isSale && total < paid - 0.005) {
-      await client.query('ROLLBACK'); return res.status(409).json({ error: 'Сумма меньше уже полученной оплаты. Оформите возврат' });
-    }
-    if (isSale && changed) {
-      const belowRed = await priceBelowRedError(client, cur.product_id, newPrice);
-      if (belowRed) { await client.query('ROLLBACK'); return res.status(400).json({ error: belowRed }); }
-    }
-    if (cur.status === 'approved' && newQty !== Number(cur.quantity)) {
-      const delta = newQty - Number(cur.quantity);
-      const stock = await client.query('UPDATE product_stock SET quantity=quantity-$1, updated_at=NOW() WHERE product_id=$2 AND branch_id=$3 AND quantity >= $1', [delta, cur.product_id, cur.branch_id]);
-      if (!stock.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Недостаточно остатка' }); }
-    }
-    const status = isSale ? (total - paid < 0.005 ? 'paid' : (paid > 0 ? 'partial' : 'debt')) : cur.payment_status;
-    const { rows } = await client.query('UPDATE stock_outcome SET quantity=$1, price=$2, note=$3, payment_status=$4, original_price=$5 WHERE id=$6 RETURNING *',
-      [newQty, newPrice, req.body.note === undefined ? cur.note : req.body.note, status,
-       newPrice / (Number(cur.exchange_rate) || 1), cur.id]);
+    const r = await applyOutcomeEdit(client, cur, { quantity: req.body.quantity, price: req.body.price, note: req.body.note });
+    if (r.error) { await client.query('ROLLBACK'); return res.status(r.error.status).json({ error: r.error.msg }); }
     await client.query('COMMIT');
-    audit(req, 'update', 'stock_outcome', cur.id, { quantity: cur.quantity, price: cur.price }, { quantity: newQty, price: newPrice });
-    res.json(rows[0]);
+    audit(req, 'update', 'stock_outcome', cur.id, { quantity: cur.quantity, price: cur.price }, { quantity: r.newQty, price: r.newPrice });
+    res.json(r.row);
   } catch (e) {
     await client.query('ROLLBACK'); res.status(400).json({ error: e.message });
   } finally { client.release(); }
@@ -10363,23 +10388,29 @@ app.get('/api/cash/report', auth(['cashier', 'manager', 'director', 'founder', '
       `SELECT u.id, u.username, u.first_name, u.last_name, u.role,
               COUNT(so.id)::int AS sales_count,
               COALESCE(SUM(so.quantity * so.price),0) AS revenue,
-              COALESCE(SUM(CASE WHEN ci.is_settled IS NOT FALSE THEN ci.amount ELSE 0 END),0) AS settled,
-              COALESCE(SUM(CASE WHEN ci.is_settled = FALSE THEN ci.amount ELSE 0 END),0) AS pending
+              COALESCE(SUM(ci.settled),0) AS settled,
+              COALESCE(SUM(ci.pending),0) AS pending
        FROM stock_outcome so
        JOIN users u ON so.created_by = u.id
-       LEFT JOIN cash_income ci ON ci.outcome_id = so.id
+       -- оплаты продажи — одной строкой: у продажи с погашениями долга несколько записей
+       -- кассы, и прямой JOIN удваивал её выручку и число продаж продавца
+       LEFT JOIN LATERAL (
+         SELECT SUM(CASE WHEN is_settled IS NOT FALSE THEN amount ELSE 0 END) AS settled,
+                SUM(CASE WHEN is_settled = FALSE THEN amount ELSE 0 END) AS pending
+         FROM cash_income WHERE outcome_id = so.id
+       ) ci ON TRUE
        ${soWhere} AND (so.outcome_type = 'sale' OR so.outcome_type IS NULL)
        GROUP BY u.id
        ORDER BY revenue DESC
        LIMIT 10`, params);
     // 7. Daily series — for chart (last N days)
     const byDay = await pool.query(
-      `SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
               COALESCE(SUM(amount),0) AS income
        FROM cash_income ${where} ${where ? 'AND' : 'WHERE'} is_settled IS NOT FALSE
        GROUP BY day ORDER BY day`, params);
     const byDayExp = await pool.query(
-      `SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
               COALESCE(SUM(amount),0) AS expense
        FROM cash_expense ${where}
        GROUP BY day ORDER BY day`, params);
@@ -10406,7 +10437,7 @@ app.get('/api/cash/report', auth(['cashier', 'manager', 'director', 'founder', '
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(so.quantity * so.price - COALESCE(so.paid_amount,0)),0) AS owed
        FROM stock_outcome so
-       ${debtsWhere} AND so.status='approved' AND so.payment_status IN ('debt','partial')`, debtsParams);
+       ${debtsWhere} AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.payment_status IN ('debt','partial')`, debtsParams);
     // 10. Foreign-currency breakdown (sales paid in non-UZS)
     const byCurrency = await pool.query(
       `SELECT COALESCE(so.currency,'UZS') AS currency,
@@ -10414,7 +10445,7 @@ app.get('/api/cash/report', auth(['cashier', 'manager', 'director', 'founder', '
               COALESCE(SUM(so.quantity * COALESCE(so.original_price, so.price)),0) AS original_total,
               COALESCE(SUM(so.quantity * so.price),0) AS uzs_total
        FROM stock_outcome so
-       ${soWhere} AND COALESCE(so.currency,'UZS') <> 'UZS'
+       ${soWhere} AND COALESCE(so.outcome_type,'sale')='sale' AND COALESCE(so.currency,'UZS') <> 'UZS'
        GROUP BY currency
        ORDER BY uzs_total DESC`, params);
 
@@ -10758,7 +10789,7 @@ app.get('/api/team/kpi', auth(['founder', 'director', 'manager']), async (req, r
           COALESCE(SUM(so.quantity * p.price_buy), 0)         AS cost
         FROM stock_outcome so
         JOIN products p ON so.product_id = p.id
-        WHERE so.created_by = u.id AND so.status = 'approved' ${periodWhere}
+        WHERE so.created_by = u.id AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale' ${periodWhere}
       ) s ON TRUE
       LEFT JOIN LATERAL (
         SELECT COUNT(*) AS cnt FROM stock_outcome
@@ -10789,14 +10820,14 @@ app.get('/api/cash/profit', auth(['director', 'founder', 'manager']), async (req
     const cashSettled = ids
       ? 'WHERE branch_id = ANY($1::int[]) AND is_settled IS NOT FALSE'
       : 'WHERE is_settled IS NOT FALSE';
-    const soWhere = ids ? "WHERE so.status = 'approved' AND so.branch_id = ANY($1::int[])" : "WHERE so.status = 'approved'";
+    const soWhere = ids ? "WHERE so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])" : "WHERE so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'";
     const params = ids ? [ids] : [];
 
     const cashI = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_income ${cashSettled}`, params);
     const cashE = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_expense ${cashWhere}`, params);
     const sales = await pool.query(
-      `SELECT COALESCE(SUM(so.quantity * p.price_sell), 0) AS revenue,
-              COALESCE(SUM(so.quantity * p.price_buy), 0) AS cost
+      `SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
+              COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost
        FROM stock_outcome so JOIN products p ON so.product_id = p.id
        ${soWhere}`, params);
     const revenue = parseFloat(sales.rows[0].revenue);
@@ -10963,7 +10994,7 @@ app.get('/api/reports/full', auth(['manager', 'director', 'founder']), async (re
                COALESCE(SUM(so.quantity * so.price), 0)    AS revenue,
                COALESCE(SUM(so.quantity * p.price_buy), 0) AS cost
         FROM stock_outcome so JOIN products p ON so.product_id = p.id
-        WHERE so.created_by = u.id AND so.status = 'approved'
+        WHERE so.created_by = u.id AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND so.created_at >= $2 AND so.created_at < $3
       ) s ON TRUE
       LEFT JOIN LATERAL (
@@ -11564,7 +11595,7 @@ app.get('/api/reports/full', auth(['manager', 'director', 'founder']), async (re
     });
 
     // Stream output
-    const ymd = d => d.toISOString().slice(0, 10);
+    const ymd = d => d.toLocaleDateString('sv-SE');
     const scopeLabel = explicitBranch ? `branch${explicitBranch}` : `company${companyId}`;
     const fname = `report_${scopeLabel}_${ymd(fromDate)}_${ymd(toDate)}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -11760,14 +11791,14 @@ app.get('/api/customers', auth(), async (req, res) => {
            SELECT COUNT(*) AS debts_count,
                   COALESCE(SUM((so.quantity * so.price) - COALESCE(so.paid_amount,0)), 0) AS debt_amount
            FROM stock_outcome so
-           WHERE so.customer_id = c.id AND so.payment_status <> 'paid' AND so.status = 'approved'
+           WHERE so.customer_id = c.id AND so.payment_status <> 'paid' AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
              AND so.branch_id = $${params.push(branchId)}
          ) d ON TRUE`
       : `LEFT JOIN LATERAL (
            SELECT COUNT(*) AS debts_count,
                   COALESCE(SUM((so.quantity * so.price) - COALESCE(so.paid_amount,0)), 0) AS debt_amount
            FROM stock_outcome so
-           WHERE so.customer_id = c.id AND so.payment_status <> 'paid' AND so.status = 'approved'
+           WHERE so.customer_id = c.id AND so.payment_status <> 'paid' AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
          ) d ON TRUE`;
     const { rows } = await pool.query(`
       SELECT c.*, u.username AS created_by_name,
@@ -12333,50 +12364,19 @@ app.post('/api/stock/outcome/edit-requests/:id/approve', auth(['admin', 'directo
     const { rows: [er] } = await client.query('SELECT * FROM sale_edit_requests WHERE id=$1 FOR UPDATE', [req.params.id]);
     if (!er) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Request not found' }); }
     if (er.status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Already reviewed' }); }
-    const { rows: [cur] } = await client.query('SELECT * FROM stock_outcome WHERE id=$1 FOR UPDATE', [er.outcome_id]);
-    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Sale gone' }); }
-    // Продажа обязана быть в границах вызывающего: раньше и заявка, и продажа
-    // читались голым WHERE id=$1, и по чужому номеру можно было изменить продажу
-    // другой компании — с движением её склада и записями в её кассе.
-    const scope = await getUserBranchIds(req.user);
-    if (scope.ids && !scope.ids.includes(cur.branch_id)) {
+    // Продажа — в границах вызывающего, как у ручной правки (PUT): компания, а кассир /
+    // кладовщик / менеджер — только свой филиал (getUserBranchIds пускал их во все филиалы).
+    const scoped = await loadScopedOutcome(client, er.outcome_id, req.user);
+    if (scoped.error) {
       await client.query('ROLLBACK');
-      return res.status(403).json({ error: 'Продажа другого филиала' });
+      return res.status(scoped.error.status).json({ error: scoped.error.status === 404 ? 'Sale gone' : 'Продажа другого филиала' });
     }
-
-    // Apply changes: if approved sale and quantity changed → adjust stock by delta
-    const newQty = parseFloat(er.new_quantity);
-    const newPrice = parseFloat(er.new_price);
-    if (cur.status === 'approved' && newQty !== parseFloat(cur.quantity)) {
-      const delta = newQty - parseFloat(cur.quantity); // positive = take more from stock
-      await client.query(
-        'UPDATE product_stock SET quantity = quantity - $1, updated_at = NOW() WHERE product_id = $2 AND branch_id = $3',
-        [delta, cur.product_id, cur.branch_id]
-      );
-    }
-    // Та же проверка, что и при создании продажи: заявка на правку — второй путь
-    // к цене, и без неё политика обходилась через «продать, потом исправить».
-    const belowRedReq = await priceBelowRedError(client, cur.product_id, newPrice);
-    if (belowRedReq) { await client.query('ROLLBACK'); return res.status(400).json({ error: belowRedReq }); }
-    await client.query(
-      'UPDATE stock_outcome SET quantity=$1, price=$2, note=$3 WHERE id=$4',
-      [newQty, newPrice, er.new_note, cur.id]
-    );
-    // Re-sync linked cash_income for approved sales
-    if (cur.status === 'approved') {
-      const newAmount = newQty * newPrice;
-      await client.query('DELETE FROM cash_income WHERE outcome_id=$1', [cur.id]);
-      if (newAmount > 0) {
-        const prod = await client.query('SELECT name_ru FROM products WHERE id=$1', [cur.product_id]);
-        const desc = `Продажа: ${prod.rows[0]?.name_ru || ''} × ${newQty}`;
-        const sellerRoleQ = await client.query('SELECT role FROM users WHERE id=$1', [cur.created_by]);
-        const isSettled = sellerRoleQ.rows[0]?.role !== 'seller';
-        await client.query(
-          'INSERT INTO cash_income (amount, description, created_by, branch_id, outcome_id, is_settled, payment_method) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [newAmount, desc, cur.created_by, cur.branch_id, cur.id, isSettled, cur.payment_method || 'cash']
-        );
-      }
-    }
+    const cur = scoped.row;
+    // Тот же путь, что и ручная правка: склад с проверкой остатка, деньги не двигаются
+    // (записи кассы, погашения долга и признак сдачи выручки остаются как были).
+    const edit = await applyOutcomeEdit(client, cur, { quantity: er.new_quantity, price: er.new_price, note: er.new_note });
+    if (edit.error) { await client.query('ROLLBACK'); return res.status(edit.error.status).json({ error: edit.error.msg }); }
+    const newQty = edit.newQty, newPrice = edit.newPrice;
     await client.query(
       "UPDATE sale_edit_requests SET status='approved', reviewed_by=$1, reviewed_at=NOW(), review_note=$2 WHERE id=$3",
       [req.user.id, req.body.review_note || null, er.id]
@@ -12396,11 +12396,8 @@ app.post('/api/stock/outcome/edit-requests/:id/reject', auth(['admin', 'director
     if (!er) return res.status(404).json({ error: 'Request not found' });
     if (er.status !== 'pending') return res.status(400).json({ error: 'Already reviewed' });
     // Отклонять чужие заявки тоже нельзя — проверка та же, что и в approve.
-    const { rows: [saleOf] } = await pool.query('SELECT branch_id FROM stock_outcome WHERE id=$1', [er.outcome_id]);
-    const scope = await getUserBranchIds(req.user);
-    if (!saleOf || (scope.ids && !scope.ids.includes(saleOf.branch_id))) {
-      return res.status(403).json({ error: 'Заявка другого филиала' });
-    }
+    const scoped = await loadScopedOutcome(pool, er.outcome_id, req.user);
+    if (scoped.error) return res.status(403).json({ error: 'Заявка другого филиала' });
     await pool.query(
       "UPDATE sale_edit_requests SET status='rejected', reviewed_by=$1, reviewed_at=NOW(), review_note=$2 WHERE id=$3",
       [req.user.id, req.body.review_note || null, er.id]
@@ -12489,7 +12486,7 @@ app.get('/api/shifts/:id/zreport', auth(), async (req, res) => {
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue,
              COALESCE(SUM(so.quantity * p.price_buy), 0) AS cost
       FROM stock_outcome so JOIN products p ON so.product_id = p.id
-      WHERE so.branch_id = $1 AND so.status = 'approved'
+      WHERE so.branch_id = $1 AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
         AND so.created_at >= $2 AND so.created_at < $3
     `, params);
     const sellers = await pool.query(`
@@ -12498,7 +12495,7 @@ app.get('/api/shifts/:id/zreport', auth(), async (req, res) => {
              COUNT(so.id)::int AS sales_count,
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue
       FROM stock_outcome so JOIN users u ON so.created_by = u.id
-      WHERE so.branch_id = $1 AND so.status = 'approved'
+      WHERE so.branch_id = $1 AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
         AND so.created_at >= $2 AND so.created_at < $3
       GROUP BY u.id, u.username, u.first_name, u.last_name
       ORDER BY revenue DESC
@@ -13360,10 +13357,10 @@ app.get('/api/marketing/ltv', auth(MKT_ROLES), async (req, res) => {
     const { rows } = await pool.query(`
       WITH agg AS (
         SELECT c.id, c.name, c.phone,
-               COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
-               COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
-               MAX(so.created_at) FILTER (WHERE so.status='approved') AS last_at,
-               EXTRACT(DAY FROM NOW() - MAX(so.created_at) FILTER (WHERE so.status='approved')) AS days_since
+               COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS orders,
+               COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'), 0) AS revenue,
+               MAX(so.created_at) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS last_at,
+               EXTRACT(DAY FROM NOW() - MAX(so.created_at) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale')) AS days_since
         FROM customers c
         LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
         WHERE c.company_id = $1 AND c.deleted_at IS NULL
@@ -13426,8 +13423,8 @@ async function computeChannels(companyId, branchId) {
   const custQ = await pool.query(`
     WITH agg AS (
       SELECT c.id, COALESCE(NULLIF(TRIM(c.source),''),'unknown') AS source,
-             COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
-             COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved'),0) AS revenue
+             COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS orders,
+             COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'),0) AS revenue
       FROM customers c
       LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
       WHERE c.company_id = $1 AND c.deleted_at IS NULL
@@ -13604,7 +13601,7 @@ async function getCompanyContextForAI(user) {
                 MIN(so.created_at) AS first_sale,
                 MAX(so.created_at) AS last_sale
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2`,
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2`,
         [branchIds, user.company_id]
       ),
       pool.query(
@@ -13612,7 +13609,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
                 COUNT(*) AS deals
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
            AND p.company_id = $4 AND so.created_at >= $2 AND so.created_at < $3`,
         [branchIds, monthAgo.toISOString(), now.toISOString(), user.company_id]
       ),
@@ -13621,7 +13618,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost,
                 COUNT(*) AS deals
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
            AND p.company_id = $4 AND so.created_at >= $2 AND so.created_at < $3`,
         [branchIds, prevMonthAgo.toISOString(), monthAgo.toISOString(), user.company_id]
       ),
@@ -13647,14 +13644,14 @@ async function getCompanyContextForAI(user) {
       pool.query(
         `SELECT COALESCE(SUM(so.quantity*so.price),0) AS total_spent
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND p.company_id = $1 AND so.customer_id IS NOT NULL`,
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND p.company_id = $1 AND so.customer_id IS NOT NULL`,
         [user.company_id]
       ),
       pool.query('SELECT COUNT(*) AS c FROM suppliers WHERE company_id = $1', [user.company_id]),
       pool.query(
         `SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) AS amt, COUNT(*) AS cnt
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved'
+         WHERE p.company_id = $1 AND so.payment_status <> 'paid' AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
            AND so.branch_id = ANY($2::int[])`,
         [user.company_id, branchIds]
       ),
@@ -13675,7 +13672,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity),0) AS qty,
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
          GROUP BY p.id, p.name_ru ORDER BY revenue DESC LIMIT 10`,
         [branchIds, user.company_id]
       ),
@@ -13683,7 +13680,7 @@ async function getCompanyContextForAI(user) {
         `SELECT p.name_ru AS name,
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
            AND so.created_at >= $3
          GROUP BY p.id, p.name_ru ORDER BY revenue DESC LIMIT 5`,
         [branchIds, user.company_id, monthAgo.toISOString()]
@@ -13696,7 +13693,7 @@ async function getCompanyContextForAI(user) {
          FROM stock_outcome so
          JOIN users u ON u.id = so.created_by
          JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
          GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
          ORDER BY revenue DESC LIMIT 5`,
         [branchIds, user.company_id]
@@ -13706,7 +13703,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 COUNT(so.id) AS deals
          FROM branches b
-         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved'
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
          LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
          WHERE b.id = ANY($1::int[])
          GROUP BY b.id, b.name ORDER BY revenue DESC`,
@@ -13717,7 +13714,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 COUNT(so.id) AS deals
          FROM branches b
-         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND so.created_at >= $3
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= $3
          LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
          WHERE b.id = ANY($1::int[])
          GROUP BY b.id, b.name ORDER BY revenue DESC`,
@@ -13728,7 +13725,7 @@ async function getCompanyContextForAI(user) {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 COUNT(so.id) AS deals
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
            AND so.created_at >= $3
          GROUP BY month ORDER BY month`,
         [branchIds, user.company_id, twoYearsAgo.toISOString()]
@@ -13993,7 +13990,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 COUNT(so.id) AS deals
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
            AND so.created_at >= $3
          GROUP BY month ORDER BY month`,
         [branchIds, req.user.company_id, twoYearsAgo.toISOString()]
@@ -14011,7 +14008,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 p.unit
          FROM stock_outcome so JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
          GROUP BY p.id, p.name_ru, p.unit ORDER BY revenue DESC LIMIT 10`,
         [branchIds, req.user.company_id]
       );
@@ -14030,7 +14027,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
          FROM stock_outcome so
          JOIN users u ON u.id = so.created_by
          JOIN products p ON p.id = so.product_id
-         WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+         WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
          GROUP BY u.id, u.username, u.first_name, u.last_name, u.role
          ORDER BY revenue DESC LIMIT 10`,
         [branchIds, req.user.company_id]
@@ -14047,7 +14044,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
                 COALESCE(SUM(so.quantity*so.price),0) AS revenue,
                 COUNT(so.id) AS deals
          FROM branches b
-         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved'
+         LEFT JOIN stock_outcome so ON so.branch_id = b.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
          LEFT JOIN products p ON p.id = so.product_id AND p.company_id = $2
          WHERE b.id = ANY($1::int[])
          GROUP BY b.id, b.name ORDER BY revenue DESC`,
@@ -14065,7 +14062,7 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
           `SELECT date_trunc('day', so.created_at)::date AS d,
                   COALESCE(SUM(so.quantity*so.price),0) AS revenue
            FROM stock_outcome so JOIN products p ON p.id = so.product_id
-           WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+           WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
              AND so.created_at >= $3 AND so.created_at < $4
            GROUP BY d ORDER BY d`,
           [branchIds, req.user.company_id, monthAgo.toISOString(), now.toISOString()]
@@ -14074,13 +14071,13 @@ app.get('/api/ai/chart-data', auth(AI_ROLES), aiGate, async (req, res) => {
           `SELECT date_trunc('day', so.created_at)::date AS d,
                   COALESCE(SUM(so.quantity*so.price),0) AS revenue
            FROM stock_outcome so JOIN products p ON p.id = so.product_id
-           WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+           WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
              AND so.created_at >= $3 AND so.created_at < $4
            GROUP BY d ORDER BY d`,
           [branchIds, req.user.company_id, prevMonthAgo.toISOString(), monthAgo.toISOString()]
         ),
       ]);
-      const fmt = (rows) => rows.map(r => ({ label: new Date(r.d).toISOString().slice(5, 10), value: parseFloat(r.revenue) }));
+      const fmt = (rows) => rows.map(r => ({ label: new Date(r.d).toLocaleDateString('sv-SE').slice(5, 10), value: parseFloat(r.revenue) }));
       return res.json({
         type, title: CT.period_compare, unit: 'UZS',
         data: { current: fmt(curR.rows), prev: fmt(prevR.rows) },
@@ -14282,7 +14279,7 @@ app.post('/api/ai/diagnose', auth(['admin', 'founder', 'director', 'manager']), 
           const revQ = await pool.query(
             `SELECT so.branch_id, COALESCE(SUM(so.quantity*so.price),0) AS rev
              FROM stock_outcome so JOIN products p ON p.id = so.product_id
-             WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
+             WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND p.company_id = $2
                AND so.created_at >= NOW() - INTERVAL '30 days'
              GROUP BY so.branch_id`, [bids, user.company_id]);
           const revMap = {}; revQ.rows.forEach(r => { revMap[r.branch_id] = parseFloat(r.rev); });
@@ -14478,19 +14475,19 @@ async function collectCanvasFacts(user, bodyBranchId) {
          COALESCE(SUM(so.quantity*so.price) FILTER (WHERE so.created_at>=$4 AND so.created_at<$3),0) AS prev,
          COUNT(*) FILTER (WHERE so.created_at>=$3) AS deals
        FROM stock_outcome so JOIN products p ON p.id=so.product_id
-       WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2`,
+       WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2`,
       [branchIds, companyId, d30.toISOString(), d60.toISOString()]),
     pool.query(
       `SELECT p.name_ru AS name, COALESCE(SUM(so.quantity*so.price),0) AS rev
        FROM stock_outcome so JOIN products p ON p.id=so.product_id
-       WHERE so.status='approved' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2 AND so.created_at>=$3
+       WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id=ANY($1::int[]) AND p.company_id=$2 AND so.created_at>=$3
        GROUP BY p.id,p.name_ru ORDER BY rev DESC LIMIT 1`,
       [branchIds, companyId, d30.toISOString()]),
     (!isManager)
       ? pool.query(
           `SELECT b.name, COALESCE(SUM(so.quantity*so.price),0) AS rev
            FROM branches b
-           LEFT JOIN stock_outcome so ON so.branch_id=b.id AND so.status='approved' AND so.created_at>=$3
+           LEFT JOIN stock_outcome so ON so.branch_id=b.id AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at>=$3
            LEFT JOIN products p ON p.id=so.product_id AND p.company_id=$2
            WHERE b.id=ANY($1::int[]) GROUP BY b.id,b.name ORDER BY rev DESC`,
           [branchIds, companyId, d30.toISOString()])
@@ -16346,13 +16343,13 @@ app.get('/api/warehouse/movements', auth(['admin', 'director', 'founder', 'manag
     const seriesMap = {};
     movements.forEach(m => {
       const d = new Date(m.created_at);
-      const key = d.toISOString().slice(0, 10);
+      const key = d.toLocaleDateString('sv-SE');
       seriesMap[key] = m.balance_after;
     });
     let lastVal = movements.length ? (movements.find(m => new Date(m.created_at).getTime() >= sinceMs)?.balance_after ?? currentBalance) : currentBalance;
     const balance_series = [];
     for (let t = sinceMs; t <= Date.now(); t += 86400000) {
-      const key = new Date(t).toISOString().slice(0, 10);
+      const key = new Date(t).toLocaleDateString('sv-SE');
       if (seriesMap[key] != null) lastVal = seriesMap[key];
       balance_series.push({ date: key, balance: lastVal });
     }
@@ -17570,7 +17567,7 @@ app.get('/api/finance/profitability', auth(['admin', 'director', 'founder']), as
       `SELECT COALESCE(SUM(so.quantity*so.price),0) AS revenue,
               COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) AS cost
        FROM stock_outcome so JOIN products p ON p.id=so.product_id
-       WHERE so.status='approved' AND so.branch_id = ANY($1::int[])
+       WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[])
          AND so.created_at >= $2 AND so.created_at < $3`,
       [ids, r.from, r.to]);
     const revenue = parseFloat(salesQ.rows[0]?.revenue) || 0;
@@ -17579,7 +17576,7 @@ app.get('/api/finance/profitability', auth(['admin', 'director', 'founder']), as
     // --- Операционные расходы из кассы за период ---
     const expQ = await pool.query(
       `SELECT COALESCE(SUM(amount),0) AS v FROM cash_expense
-       WHERE branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3`,
+       WHERE branch_id = ANY($1::int[]) AND created_at >= $2 AND created_at < $3 AND ${OPEX_SQL()}`,
       [ids, r.from, r.to]);
     const opex = parseFloat(expQ.rows[0]?.v) || 0;
 
@@ -17723,7 +17720,7 @@ app.get('/api/finance/payment-calendar', auth(['admin','director','founder']), a
           ${soBranch}
         ORDER BY so.due_date ASC`, [...p, days]);
 
-    const iso = (dt) => new Date(dt).toISOString().slice(0, 10);
+    const iso = (dt) => new Date(dt).toLocaleDateString('sv-SE');
     const rawPayments = [];
     for (const r of out.rows) {
       const amt = Math.round(parseFloat(r.amount) || 0);
@@ -17902,13 +17899,13 @@ const TAX_REGIME_LABEL = { simplified: 'Упрощёнка', vat: 'НДС', gene
 // Синхронизирует начисления: для каждого квартала года с выручкой создаёт строку в tax_payments,
 // если её ещё нет. Уже существующие (в т.ч. оплаченные) — не трогает.
 async function syncTaxAccruals(companyId, year, ratePct) {
-  // Выручка по кварталам из одобренных продаж (UZS полным числом через total/price*qty с курсом)
+  // Выручка по кварталам — только продажи. price уже в UZS (валютная продажа хранит цену × курс), на курс не умножаем
   const { rows } = await pool.query(`
     SELECT EXTRACT(QUARTER FROM so.created_at)::int AS q,
-           COALESCE(SUM(so.quantity * so.price * COALESCE(so.exchange_rate,1)),0) AS base
+           COALESCE(SUM(so.quantity * so.price),0) AS base
     FROM stock_outcome so
     JOIN branches b ON b.id = so.branch_id
-    WHERE b.company_id = $1 AND so.status='approved'
+    WHERE b.company_id = $1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
       AND EXTRACT(YEAR FROM so.created_at)::int = $2
     GROUP BY 1`, [companyId, year]);
   for (const r of rows) {
@@ -17919,7 +17916,7 @@ async function syncTaxAccruals(companyId, year, ratePct) {
     // Срок оплаты — 25-е число месяца, следующего за кварталом
     const dueMonth = r.q * 3; // конец квартала: 3,6,9,12 → срок в след. месяце
     const due = new Date(Date.UTC(year, dueMonth, 25)); // месяц 0-based: q3 → month index 3 = апрель? корректируем ниже
-    const dueDate = new Date(Date.UTC(year, r.q * 3, 25)).toISOString().slice(0, 10);
+    const dueDate = new Date(Date.UTC(year, r.q * 3, 25)).toLocaleDateString('sv-SE');
     await pool.query(`
       INSERT INTO tax_payments (company_id, period, base_amount, rate_pct, amount, status, due_date)
       VALUES ($1,$2,$3,$4,$5,'pending',$6)
@@ -17950,9 +17947,9 @@ app.get('/api/finance/taxes', auth(['admin','director','founder']), async (req, 
 
     // Выручка за год (для налоговой нагрузки)
     const { rows: revRows } = await pool.query(`
-      SELECT COALESCE(SUM(so.quantity * so.price * COALESCE(so.exchange_rate,1)),0) AS rev
+      SELECT COALESCE(SUM(so.quantity * so.price),0) AS rev
       FROM stock_outcome so JOIN branches b ON b.id = so.branch_id
-      WHERE b.company_id=$1 AND so.status='approved'
+      WHERE b.company_id=$1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'
         AND EXTRACT(YEAR FROM so.created_at)::int = $2`, [companyId, year]);
     const revenueYear = Math.round(parseFloat(revRows[0]?.rev) || 0);
 
@@ -18039,7 +18036,7 @@ app.get('/api/finance/ratios', auth(['admin','director','founder']), async (req,
     const recvQ = await pool.query(`
       SELECT COALESCE(SUM((so.quantity*so.price) - COALESCE(so.paid_amount,0)),0) v
       FROM stock_outcome so JOIN products p ON p.id=so.product_id
-      WHERE p.company_id=$1 AND so.payment_status <> 'paid' AND so.status='approved' ${branchId?'AND so.branch_id=$2':''}`, bParam);
+      WHERE p.company_id=$1 AND so.payment_status <> 'paid' AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' ${branchId?'AND so.branch_id=$2':''}`, bParam);
     const receivables = parseFloat(recvQ.rows[0].v) || 0;
 
     // Кредиторка = неоплаченные закупки (мы должны поставщикам)
@@ -18061,13 +18058,13 @@ app.get('/api/finance/ratios', auth(['admin','director','founder']), async (req,
       SELECT COALESCE(SUM(so.quantity*so.price),0) revenue,
              COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
       FROM stock_outcome so JOIN products p ON p.id=so.product_id
-      WHERE p.company_id=$1 AND so.status='approved' AND so.created_at>=${branchId?'$3':'$2'} AND so.created_at<${branchId?'$4':'$3'} ${branchId?'AND so.branch_id=$2':''}`,
+      WHERE p.company_id=$1 AND so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at>=${branchId?'$3':'$2'} AND so.created_at<${branchId?'$4':'$3'} ${branchId?'AND so.branch_id=$2':''}`,
       branchId ? [companyId, branchId, fromIso, toIso] : [companyId, fromIso, toIso]);
     const revenue = parseFloat(salesQ.rows[0].revenue) || 0;
     const cogs = parseFloat(salesQ.rows[0].cogs) || 0;
     const opexQ = await pool.query(`
       SELECT COALESCE(SUM(ce.amount),0) v FROM cash_expense ce JOIN branches b ON b.id=ce.branch_id
-      WHERE b.company_id=$1 AND ce.created_at>=${branchId?'$3':'$2'} AND ce.created_at<${branchId?'$4':'$3'} ${branchId?'AND ce.branch_id=$2':''}`,
+      WHERE b.company_id=$1 AND ${OPEX_SQL('ce.')} AND ce.created_at>=${branchId?'$3':'$2'} AND ce.created_at<${branchId?'$4':'$3'} ${branchId?'AND ce.branch_id=$2':''}`,
       branchId ? [companyId, branchId, fromIso, toIso] : [companyId, fromIso, toIso]);
     const opex = parseFloat(opexQ.rows[0].v) || 0;
     const operatingProfit = (revenue - cogs) - opex;
@@ -18167,12 +18164,12 @@ app.get('/api/finance/whatif-base', auth(['admin', 'director', 'founder']), asyn
       SELECT COALESCE(SUM(so.quantity*so.price),0) revenue,
              COALESCE(SUM(so.quantity*COALESCE(p.price_buy,0)),0) cogs
       FROM stock_outcome so JOIN products p ON p.id=so.product_id
-      WHERE so.status='approved' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
+      WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND ${sc} AND so.created_at>=$${sp.length+1} AND so.created_at<$${sp.length+2}`,
       [...sp, from, to]);
 
     // Постоянные расходы за месяц (касса)
     const ep = []; const ec = branchArrayCond(scope, ep);
-    const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
+    const expQ = await pool.query(`SELECT COALESCE(SUM(amount),0) t FROM cash_expense WHERE ${ec} AND ${OPEX_SQL()} AND created_at>=$${ep.length+1} AND created_at<$${ep.length+2}`, [...ep, from, to]);
 
     // Остаток в кассе (приход − расход за всё время; income только settled)
     const ip2 = []; const ic2 = branchArrayCond(scope, ip2);
@@ -18538,7 +18535,7 @@ app.get('/api/procurement/forecast', auth(['admin', 'director', 'founder', 'mana
         SELECT so.product_id,
                SUM(so.quantity)::numeric / 90.0 AS avg_daily
         FROM stock_outcome so
-        WHERE so.status = 'approved'
+        WHERE so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
           AND so.created_at >= NOW() - INTERVAL '90 days'
           ${soBranch}
         GROUP BY so.product_id
@@ -18654,7 +18651,7 @@ app.get('/api/procurement/whatif-base', auth(['admin', 'director', 'founder']), 
       FROM stock_outcome so
       JOIN products p ON p.id = so.product_id
       WHERE p.company_id = $1
-        AND so.status = 'approved'
+        AND so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
         AND so.created_at >= NOW() - INTERVAL '90 days'
         ${soBranch}
     `, [companyId]);
@@ -19471,7 +19468,7 @@ app.get('/api/operations/seller-avg-check', auth(['admin', 'director', 'founder'
 
     // Дневная динамика среднего чека (по всем продавцам в скоупе)
     const { rows: dayRows } = await pool.query(`
-      SELECT (so.created_at AT TIME ZONE 'UTC')::date AS d,
+      SELECT so.created_at::date AS d,
              COUNT(*)::int AS checks,
              COALESCE(SUM(so.quantity * so.price), 0) AS revenue
       FROM stock_outcome so
@@ -19484,7 +19481,7 @@ app.get('/api/operations/seller-avg-check', auth(['admin', 'director', 'founder'
       const c = parseInt(r.checks) || 0;
       const rev = parseFloat(r.revenue) || 0;
       const dt = r.d instanceof Date ? r.d : new Date(r.d);
-      const iso = dt.toISOString().slice(0, 10);
+      const iso = dt.toLocaleDateString('sv-SE');
       return { date: iso, label: iso.slice(5), avg_check: c > 0 ? rev / c : 0 };
     });
 
@@ -19725,12 +19722,12 @@ app.get('/api/sales/forecast', auth(['admin', 'director', 'founder', 'manager'])
 
     // Заполняем нулями пропущенные дни, считаем сезонность по дню недели.
     const histMap = new Map();
-    for (const r of histQ.rows) histMap.set(new Date(r.d).toISOString().slice(0, 10), { revenue: parseFloat(r.revenue) || 0, checks: parseInt(r.checks) || 0 });
+    for (const r of histQ.rows) histMap.set(new Date(r.d).toLocaleDateString('sv-SE'), { revenue: parseFloat(r.revenue) || 0, checks: parseInt(r.checks) || 0 });
     const history = [];
     const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - HIST);
     for (let i = 0; i < HIST; i++) {
       const d = new Date(start); d.setDate(start.getDate() + i);
-      const key = d.toISOString().slice(0, 10);
+      const key = d.toLocaleDateString('sv-SE');
       const v = histMap.get(key) || { revenue: 0, checks: 0 };
       history.push({ date: key, dow: d.getDay(), revenue: v.revenue, checks: v.checks });
     }
@@ -19767,7 +19764,7 @@ app.get('/api/sales/forecast', auth(['admin', 'director', 'founder', 'manager'])
       const f = Math.round(dowAvgRev[dow]);
       const spread = Math.max(0.15, 1 - accuracy / 100); // ширина коридора зависит от точности
       days.push({
-        date: d.toISOString().slice(0, 10),
+        date: d.toLocaleDateString('sv-SE'),
         dow,
         forecast: f,
         min: Math.round(f * (1 - spread)),
@@ -19787,7 +19784,7 @@ app.get('/api/sales/forecast', auth(['admin', 'director', 'founder', 'manager'])
 
     // План текущего месяца = факт месяц-к-дате; цель = прогноз на полный месяц по средней дневной.
     const now = new Date();
-    const monthStartKey = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const monthStartKey = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('sv-SE');
     const mtdRevenue = history.filter(h => h.date >= monthStartKey).reduce((s, h) => s + h.revenue, 0);
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const planTarget = Math.round(overallRev * daysInMonth);
@@ -20467,7 +20464,7 @@ app.get('/api/hr/schedules', auth(['admin', 'director', 'founder', 'manager']), 
       const now = new Date();
       const day = (now.getDay() + 6) % 7;
       now.setDate(now.getDate() - day);
-      weekStart = now.toISOString().slice(0, 10);
+      weekStart = now.toLocaleDateString('sv-SE');
     }
 
     const params = [companyId, weekStart];
@@ -20511,7 +20508,7 @@ app.get('/api/hr/schedules', auth(['admin', 'director', 'founder', 'manager']), 
         if (h < 0) h += 24;
       }
       row.days.push({
-        work_date: sh.work_date instanceof Date ? sh.work_date.toISOString().slice(0, 10) : sh.work_date,
+        work_date: sh.work_date instanceof Date ? sh.work_date.toLocaleDateString('sv-SE') : sh.work_date,
         start: sh.start_time,
         end: sh.end_time,
         status: sh.status,
@@ -20529,7 +20526,7 @@ app.get('/api/hr/schedules', auth(['admin', 'director', 'founder', 'manager']), 
       if (sh.status === 'open' || sh.status === 'unassigned') {
         warnings.push({
           type: 'uncovered',
-          message: `${sh.branch_name || 'Филиал'}: ${sh.work_date instanceof Date ? sh.work_date.toISOString().slice(0, 10) : sh.work_date} · смена не закрыта`,
+          message: `${sh.branch_name || 'Филиал'}: ${sh.work_date instanceof Date ? sh.work_date.toLocaleDateString('sv-SE') : sh.work_date} · смена не закрыта`,
         });
       }
     }
@@ -20664,7 +20661,7 @@ app.post('/api/hr/attendance', auth(['admin','director','founder','manager']), a
     const branchId = getBranchFilter(req.user, req.query);
     if (branchId) await assertBranchInCompany(req.user, branchId);
     const { action, employee_id, work_date, planned_start, planned_end, actual_start, actual_end, status } = req.body || {};
-    const wd = work_date || new Date().toISOString().slice(0,10);
+    const wd = work_date || new Date().toLocaleDateString('sv-SE');
     const empId = employee_id ? parseInt(employee_id,10) : null;
 
     // Находим/создаём строку табеля сотрудника на дату
@@ -20868,7 +20865,7 @@ app.get('/api/hr/salaries', auth(['admin', 'director', 'founder', 'manager']), a
   try {
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
-    const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toISOString().slice(0, 7);
+    const period = /^\d{4}-\d{2}$/.test(req.query.period || '') ? req.query.period : new Date().toLocaleDateString('sv-SE').slice(0, 7);
     const pStart = `${period}-01`;
 
     // Сотрудники компании (без admin), опц. скоуп по филиалу
@@ -20955,7 +20952,7 @@ app.patch('/api/hr/salaries/:id/approve', auth(['admin', 'director', 'founder'])
     const companyId = req.user.company_id;
     const branchId = getBranchFilter(req.user, req.query);
     const employeeId = parseInt(req.params.id, 10);
-    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toISOString().slice(0, 7);
+    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toLocaleDateString('sv-SE').slice(0, 7);
     const pStart = `${period}-01`;
 
     // Проверяем сотрудника в компании
@@ -20994,7 +20991,7 @@ app.patch('/api/hr/salaries/:id/pay', auth(['admin', 'director', 'founder']), as
   try {
     const companyId = req.user.company_id;
     const employeeId = parseInt(req.params.id, 10);
-    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toISOString().slice(0, 7);
+    const period = /^\d{4}-\d{2}$/.test(req.body.period || '') ? req.body.period : new Date().toLocaleDateString('sv-SE').slice(0, 7);
     const { rows } = await pool.query(`
       UPDATE salaries SET status = 'paid'
       WHERE company_id = $1 AND employee_id = $2 AND period = $3 AND status = 'approved'
@@ -21659,10 +21656,10 @@ app.get('/api/customers/churn', auth(['admin', 'founder', 'director', 'manager']
     const { rows } = await pool.query(`
       WITH agg AS (
         SELECT c.id, c.name, c.phone,
-               COUNT(so.id) FILTER (WHERE so.status='approved')                                AS orders,
-               COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved'), 0)     AS ltv,
-               MAX(so.created_at) FILTER (WHERE so.status='approved')                           AS last_at,
-               MIN(so.created_at) FILTER (WHERE so.status='approved')                           AS first_at
+               COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale')                                AS orders,
+               COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'), 0)     AS ltv,
+               MAX(so.created_at) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale')                           AS last_at,
+               MIN(so.created_at) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale')                           AS first_at
         FROM customers c
         LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL}
         WHERE c.company_id = $1 AND c.deleted_at IS NULL
@@ -21698,7 +21695,7 @@ app.get('/api/customers/churn', auth(['admin', 'founder', 'director', 'manager']
         orders, ltv,
         cycle_days: cycle,
         days_since: daysSince,
-        last_at: r.last_at ? new Date(r.last_at).toISOString().slice(0, 10) : null,
+        last_at: r.last_at ? new Date(r.last_at).toLocaleDateString('sv-SE') : null,
         status,
       };
     });
@@ -21743,10 +21740,10 @@ app.get('/api/customers/abc', auth(['admin', 'founder', 'director', 'manager']),
 
     const { rows } = await pool.query(`
       SELECT c.id, c.name, c.phone,
-             COUNT(so.id) FILTER (WHERE so.status='approved') AS orders,
-             COUNT(so.id) FILTER (WHERE so.status='approved' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders_year,
-             COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved'), 0) AS revenue,
-             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)) FILTER (WHERE so.status='approved'), 0) AS cost
+             COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale') AS orders,
+             COUNT(so.id) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.created_at >= NOW() - INTERVAL '365 days') AS orders_year,
+             COALESCE(SUM(so.quantity * so.price) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'), 0) AS revenue,
+             COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)) FILTER (WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale'), 0) AS cost
       FROM customers c
       LEFT JOIN stock_outcome so ON so.customer_id = c.id ${branchSQL} ${sinceSQL}
       LEFT JOIN products p ON p.id = so.product_id
@@ -21869,7 +21866,7 @@ app.get('/api/finance/cash-gap', auth(['admin','director','founder']), async (re
           ${soBranch}
         ORDER BY so.due_date ASC`, [...p, horizon]);
 
-    const iso = (dt) => new Date(dt).toISOString().slice(0, 10);
+    const iso = (dt) => new Date(dt).toLocaleDateString('sv-SE');
 
     // Агрегируем приток/отток по дню (с учётом сценарных множителей).
     const dayAgg = new Map(); // key -> { inflow, outflow }
@@ -22019,7 +22016,7 @@ app.get('/api/marketing/loss-funnel', auth(['admin', 'director', 'founder', 'man
     const startIso = start.toISOString();
     const endIso = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
     // Ручной ввод показов/визитов всегда привязан к началу ТЕКУЩЕГО месяца (как в /analytics/funnel).
-    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    const inputPeriod = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('sv-SE');
 
     // RFM свежий (ступени лояльный/VIP).
     await rfmEnsureFresh(companyId);
@@ -22066,7 +22063,7 @@ app.get('/api/marketing/loss-funnel', auth(['admin', 'director', 'founder', 'man
     const chkQ = await pool.query(
       `SELECT COALESCE(SUM(so.quantity * so.price), 0) AS revenue, COUNT(*)::int AS deals
        FROM stock_outcome so
-       WHERE so.status = 'approved'
+       WHERE so.status = 'approved' AND COALESCE(so.outcome_type,'sale')='sale'
          AND so.created_at >= $2 AND so.created_at < $3
          AND EXISTS (SELECT 1 FROM customers c WHERE c.id = so.customer_id AND c.company_id = $1)
          AND ($4::int IS NULL OR so.branch_id = $4)`,
@@ -22286,7 +22283,7 @@ async function abPointCompute(user, query = {}) {
                COALESCE(SUM(so.quantity * COALESCE(p.price_buy, 0)), 0) AS cost,
                COUNT(*) AS deals
         FROM stock_outcome so JOIN products p ON p.id = so.product_id
-        WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
+        WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.created_at >= $2 AND so.created_at < $3`,
         [ids, fromIso, toIso]),
       // Штат по выбранным филиалам.
       pool.query(`SELECT COUNT(*) AS c FROM users WHERE branch_id = ANY($1::int[])`, [ids]),
@@ -22304,7 +22301,7 @@ async function abPointCompute(user, query = {}) {
       pool.query(`SELECT COALESCE(AVG(rev), 0) AS ltv FROM (
                     SELECT customer_id, SUM(so.quantity * so.price) AS rev
                     FROM stock_outcome so
-                    WHERE so.status='approved' AND so.branch_id = ANY($1::int[]) AND so.customer_id IS NOT NULL
+                    WHERE so.status='approved' AND COALESCE(so.outcome_type,'sale')='sale' AND so.branch_id = ANY($1::int[]) AND so.customer_id IS NOT NULL
                     GROUP BY customer_id) t`,
         [ids]),
       // Retention: клиенты предыдущего окна (для расчёта удержания).

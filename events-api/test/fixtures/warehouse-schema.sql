@@ -2997,7 +2997,7 @@ CREATE TABLE public.stock_outcome (
     exchange_rate numeric(14,4) DEFAULT 1,
     CONSTRAINT stock_outcome_outcome_type_check CHECK (((outcome_type)::text = ANY ((ARRAY['sale'::character varying, 'return_to_supplier'::character varying, 'writeoff'::character varying, 'customer_return'::character varying])::text[]))),
     CONSTRAINT stock_outcome_payment_status_check CHECK (((payment_status)::text = ANY ((ARRAY['paid'::character varying, 'debt'::character varying, 'partial'::character varying])::text[]))),
-    CONSTRAINT stock_outcome_qty_positive CHECK ((quantity > (0)::numeric)),
+    CONSTRAINT stock_outcome_qty_nonneg CHECK ((quantity >= (0)::numeric)),
     CONSTRAINT stock_outcome_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
 );
 
