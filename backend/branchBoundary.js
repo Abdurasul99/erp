@@ -13,39 +13,52 @@
 // в которую вошли, и проверяется по ней.
 
 const FIELDS = ['branch_id', 'from_branch_id', 'to_branch_id'];
+const DIGITS = /^\d{1,10}$/;
 
-function toIds(v) {
-  const list = Array.isArray(v) ? v : [v];
-  const out = [];
-  for (const x of list) {
-    if (x === null || x === undefined || x === '') continue;
-    const n = Number(x);
-    if (Number.isInteger(n) && n > 0) out.push(n);
+// Значение поля филиала → { id } | { bad: true }. Принимаем ТОЛЬКО однозначные значения:
+// пусто/null (= «без фильтра»), целое число или строку из одних цифр. Всё остальное
+// («1x», «0x1», «1.5», « 1», массив, true) — отказ: маршруты читают branch_id через
+// parseInt (местами без основания), и для них это филиал 1, а не «нет значения» —
+// мягкий пропуск такого значения границей был обходом изоляции (security review 2026-11-17).
+function parseBranchValue(x) {
+  if (x === null || x === undefined || x === '') return { id: null };
+  if (typeof x === 'number') {
+    if (!Number.isInteger(x) || x < 0) return { bad: true };
+    return { id: x > 0 ? x : null };
   }
-  return out;
+  if (typeof x === 'string' && DIGITS.test(x)) { const n = Number(x); return { id: n > 0 ? n : null }; }
+  return { bad: true };
 }
 
-function requestedBranchIds(req) {
+// Все филиалы из query и тела. invalid — имя поля с недопустимым значением (или null).
+function inspectBranchParams(req) {
   const ids = new Set();
   for (const src of [req.query, req.body]) {
     if (!src || typeof src !== 'object') continue;
-    for (const f of FIELDS) for (const id of toIds(src[f])) ids.add(id);
+    for (const f of FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(src, f)) continue;
+      const v = parseBranchValue(src[f]);
+      if (v.bad) return { ids, invalid: f };
+      if (v.id) ids.add(v.id);
+    }
   }
-  return ids;
+  return { ids, invalid: null };
 }
 
 const OUT_OF_COMPANY = Object.freeze({ error: 'Филиал не относится к вашей компании', code: 'BRANCH_OUT_OF_COMPANY' });
+const BAD_BRANCH = Object.freeze({ error: 'Некорректный номер филиала', code: 'BAD_BRANCH_ID' });
 
 // verify(token) → decoded JWT (бросает на плохом токене); branchCompany(id) → company_id | null
 function createBranchBoundary({ verify, branchCompany }) {
   return async function branchBoundary(req, res, next) {
     const token = req.headers?.authorization?.split(' ')[1];
     if (!token) return next();
-    const ids = requestedBranchIds(req);
-    if (!ids.size) return next();
+    const { ids, invalid } = inspectBranchParams(req);
+    if (!invalid && !ids.size) return next();
     let decoded;
     try { decoded = verify(token); } catch { return next(); }   // плохой токен — решит auth() маршрута
     if (!decoded?.company_id) return next();                    // платформенный admin — своя граница
+    if (invalid) return res.status(400).json({ ...BAD_BRANCH, field: invalid });
     try {
       for (const id of ids) {
         const companyId = await branchCompany(id);
@@ -74,4 +87,4 @@ function cachedBranchCompany(query, ttlMs = 5 * 60 * 1000) {
   };
 }
 
-module.exports = { requestedBranchIds, createBranchBoundary, cachedBranchCompany, OUT_OF_COMPANY };
+module.exports = { inspectBranchParams, parseBranchValue, createBranchBoundary, cachedBranchCompany, OUT_OF_COMPANY, BAD_BRANCH };

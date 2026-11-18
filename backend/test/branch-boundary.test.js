@@ -7,15 +7,37 @@ const assert = require('node:assert/strict');
 let mod = {};
 try { mod = require('../branchBoundary'); } catch { /* RED: модуля ещё нет */ }
 
-test('collects every branch id from query and body, ignoring empty and non-numeric values', () => {
-  assert.equal(typeof mod.requestedBranchIds, 'function');
-  const ids = mod.requestedBranchIds({
-    query: { branch_id: '7', from_branch_id: 'all' },
-    body: { to_branch_id: 9, branch_id: '' },
+test('collects every branch id from query and body; empty values mean «no filter»', () => {
+  assert.equal(typeof mod.inspectBranchParams, 'function');
+  const r = mod.inspectBranchParams({
+    query: { branch_id: '7', from_branch_id: '' },
+    body: { to_branch_id: 9, branch_id: null },
   });
-  assert.deepEqual([...ids].sort(), [7, 9]);
-  assert.deepEqual([...mod.requestedBranchIds({ query: {}, body: undefined })], []);
-  assert.deepEqual([...mod.requestedBranchIds({ query: { branch_id: ['3', '4'] }, body: {} })].sort(), [3, 4]);
+  assert.equal(r.invalid, null);
+  assert.deepEqual([...r.ids].sort(), [7, 9]);
+  assert.deepEqual([...mod.inspectBranchParams({ query: {}, body: undefined }).ids], []);
+  assert.deepEqual([...mod.inspectBranchParams({ query: { branch_id: '0' }, body: {} }).ids], []);
+});
+
+// Расхождение разборщиков (security review 2026-11-17): маршруты читают branch_id через
+// parseInt (часто БЕЗ основания), граница — иначе. «1x», «0x1», «1.5», « 1», массив — для
+// parseInt это филиал 1, а не «нет значения». Такие значения отклоняем целиком.
+test('rejects values that parseInt would read differently (parser differential)', () => {
+  for (const bad of ['1x', '0x1', '1.5', ' 1', '1 ', '+1', '-1', '1e1', ['3', '1'], true, { a: 1 }, 1.5, -2]) {
+    const r = mod.inspectBranchParams({ query: { branch_id: bad }, body: {} });
+    assert.ok(r.invalid, `должно отклоняться: ${JSON.stringify(bad)}`);
+  }
+  assert.ok(mod.inspectBranchParams({ query: {}, body: { to_branch_id: '2abc' } }).invalid);
+});
+
+test('a malformed branch id answers 400 before any lookup', async () => {
+  let looked = 0;
+  const mw = mod.createBranchBoundary({ verify: () => ({ role: 'founder', company_id: 20 }), branchCompany: async () => { looked++; return 20; } });
+  const r = await run(mw, req({ branch_id: '1x' }));
+  assert.equal(r.blocked, true);
+  assert.equal(r.status, 400);
+  assert.equal(r.body.code, 'BAD_BRANCH_ID');
+  assert.equal(looked, 0);
 });
 
 function run(mw, req) {
