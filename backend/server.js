@@ -8950,8 +8950,8 @@ app.post('/api/stock/income', auth(['cashier', 'warehouse', 'manager']), async (
       const prodName = await client.query('SELECT name_ru FROM products WHERE id=$1', [pid]);
       const desc = `Закупка${supText ? ': ' + supText : ''} — ${prodName.rows[0]?.name_ru || ''} × ${qty}${pstatus === 'partial' ? ' (частично)' : ''}`;
       await client.query(
-        `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate, source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'purchase')`,
         [paid, desc, req.user.id, branchId, pmethod === 'debt' ? 'cash' : pmethod, 'UZS', paid, 1]
       );
     }
@@ -9217,12 +9217,12 @@ async function computeCashflow(scope, fromIso, toIso) {
 
 // — Точка безубыточности: постоянные расходы / маржинальность
 // Расход кассы, который НЕ операционный: оплата товара для перепродажи (его себестоимость уже в
-// COGS при продаже) и возврат денег покупателю (выручка уже уменьшена возвратом). Сервер пишет их
-// без категории, точным текстом: «Закупка… — товар × N», «Оплата поставщику…: приход #N»,
-// «Возврат клиенту: товар × N»; в загруженных данных — категория «Закупка товара» / goods.
-// Ручные расходы кассира и недостачи остаются операционными. Для прибыли / безубыточности /
-// «что если» исключаем, для остатка и движения денег — нет (там закупка — честный отток).
-const OPEX_SQL = (a = '') => `NOT (COALESCE(${a}category,'') IN ('Закупка товара','goods') OR (COALESCE(${a}category,'') = '' AND (${a}description LIKE 'Закупка%×%' OR ${a}description LIKE 'Оплата поставщику%приход #%' OR ${a}description LIKE 'Возврат клиенту: %×%')))`;
+// COGS при продаже) и возврат денег покупателю (выручка уже уменьшена возвратом). Признак ставит
+// только сервер: cash_expense.source (purchase / supplier_payment / customer_refund) у своих
+// записей, категория «Закупка товара» / goods — у загруженных данных (API категорию не пишет).
+// Текст описания НЕ учитываем: его вводит кассир. Ручные расходы и недостачи — операционные.
+// Для прибыли / безубыточности / «что если» исключаем, для остатка и движения денег — нет.
+const OPEX_SQL = (a = '') => `NOT (COALESCE(${a}source,'') IN ('purchase','supplier_payment','customer_refund') OR COALESCE(${a}category,'') IN ('Закупка товара','goods'))`;
 
 async function computeBreakEven(scope, fromIso, toIso) {
   // По умолчанию — текущий календарный месяц
@@ -9726,11 +9726,11 @@ app.post('/api/stock/outcome', auth(['admin', 'cashier', 'warehouse', 'seller'])
         const cust = custId ? await client.query('SELECT name FROM customers WHERE id=$1', [custId]) : { rows: [] };
         const custLabel = cust.rows[0] ? ` (${cust.rows[0].name})` : '';
         const desc = `Продажа${custLabel}: ${prod.rows[0]?.name_ru || ''} × ${qty}${pstatus === 'partial' ? ' (частично)' : ''}`;
-        // Seller-created CASH sales are UNSETTLED — seller must hand cash to cashier later.
-        // Card / transfer / wire never pass through the seller's hands: settled at once
-        // (иначе при приёмке выручки безналичная часть записывалась как недостача).
+        // Seller-created sales are UNSETTLED — seller must hand cash to cashier later.
+        // Безнал продавца тоже ждёт подтверждения кассира (сверка с терминалом): иначе наличные,
+        // проведённые «картой», не попадали бы на контроль.
         // Other roles' sales are immediately settled (cashier is the register operator).
-        const isSettled = req.user.role !== 'seller' || (pmethod !== 'cash' && pmethod !== 'debt');
+        const isSettled = req.user.role !== 'seller';
         // For foreign-currency sales: the actual cash received is in `cur`, paid_orig = paid / rate.
         const paidOrig = cur === 'UZS' ? paid : paid / storedRate;
         await client.query(
@@ -9945,8 +9945,8 @@ app.post('/api/stock/customer-return', auth(['admin', 'manager', 'cashier', 'sel
       const prodName = await client.query('SELECT name_ru FROM products WHERE id=$1', [pid]);
       {
         await client.query(
-          `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
-           VALUES ($1,$2,$3,$4,$5,'UZS',$1,1)`,
+          `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate, source)
+           VALUES ($1,$2,$3,$4,$5,'UZS',$1,1,'customer_refund')`,
           [refundTotal, `Возврат клиенту: ${prodName.rows[0]?.name_ru || ''} × ${qty}`, req.user.id, branchId, pm]
         );
       }
@@ -11743,8 +11743,8 @@ app.post('/api/stock/income/:id/pay', auth(['admin', 'director', 'founder', 'man
     // Record cash outflow
     const desc = `Оплата поставщику${cur.supplier_name ? ' ('+cur.supplier_name+')' : ''}: приход #${cur.id}`;
     await client.query(
-      `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate)
-       VALUES ($1,$2,$3,$4,$5,'UZS',$1,1)`,
+      `INSERT INTO cash_expense (amount, description, created_by, branch_id, payment_method, currency, original_amount, exchange_rate, source)
+       VALUES ($1,$2,$3,$4,$5,'UZS',$1,1,'supplier_payment')`,
       [amt, desc, req.user.id, cur.branch_id, pmethod]
     );
     await client.query('COMMIT');
@@ -15533,6 +15533,9 @@ async function ensureSchema() {
     // ===== Волна 2 (Финансы) — миграции =====
     try {
       await pool.query(`ALTER TABLE cash_expense ADD COLUMN IF NOT EXISTS category TEXT;`);
+      // source — кто создал расход: purchase / supplier_payment / customer_refund ставит сам сервер,
+      // у ручных расходов NULL. По нему прибыль отличает закупку от операционного расхода.
+      await pool.query(`ALTER TABLE cash_expense ADD COLUMN IF NOT EXISTS source TEXT;`);
       console.log('wave2 (finance) schema OK');
     } catch (w2) { console.error('wave2 schema err', w2.message); }
 
