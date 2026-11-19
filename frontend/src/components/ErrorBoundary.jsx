@@ -33,6 +33,8 @@ export default class ErrorBoundary extends React.Component {
 
   render() {
     if (!this.state.error) return this.props.children;
+    // Страница уже перезагружается за свежими чанками (main.jsx, vite:preloadError) — не мигать ошибкой.
+    if (typeof window !== 'undefined' && window.__wvChunkReload) return null;
     // Compact: падение одного инструмента показывает карточку внутри оболочки —
     // сайдбар и остальные инструменты продолжают работать (не «белый экран» всего app).
     if (this.props.compact) {

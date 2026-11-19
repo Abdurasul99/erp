@@ -182,6 +182,30 @@ function Splash({ out = false }) {
   );
 }
 
+// Пока догружается чанк раздела (после входа, при переходе в другую оболочку) — тихая
+// заглушка, а НЕ второй экземпляр сплеша: тот вспыхивал на 0.2–0.3 с полной анимацией
+// бренда и тут же пропадал (QA 2026-11-18). Фон как у сплеша, тонкая полоска сверху —
+// и та только если загрузка длится дольше 150 мс (быстрая сеть не видит ничего).
+function RouteLoading() {
+  const [shown, setShown] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setShown(true), 150); return () => clearTimeout(t); }, []);
+  return (
+    <div className="wv-route-loading" aria-busy="true">
+      {shown && <span className="wv-route-bar" />}
+      <style>{`
+        .wv-route-loading { position: fixed; inset: 0; z-index: 9998; background: #F4F4F6; }
+        .wv-route-bar {
+          position: absolute; top: 0; left: 0; height: 3px; width: 35%; border-radius: 0 3px 3px 0;
+          background: linear-gradient(90deg, #0A84FF, #5E5CE6);
+          animation: wvRouteSlide 1s ease-in-out infinite;
+        }
+        @keyframes wvRouteSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+        @media (prefers-reduced-motion: reduce) { .wv-route-bar { animation: none; width: 100%; opacity: .5; } }
+      `}</style>
+    </div>
+  );
+}
+
 // Плашка режима «войти как» (WoW). Видна во всех оболочках, пока активна impersonation.
 const IMP_ROLE_LABEL = {
   founder: 'Учредитель', director: 'Директор', manager: 'Менеджер',
@@ -383,7 +407,7 @@ function ErpApp() {
         <TaskInboxProvider>
           <BrowserRouter>
             <ImpersonationBanner />
-            <Suspense fallback={<Splash />}>
+            <Suspense fallback={<RouteLoading />}>
               <Routes>
                 <Route path="/login" element={user ? <RootRedirect /> : <Login />} />
                 <Route path="/select" element={<RequireAuth><RequireWaveProduct><RequireNonSeller><InterfaceSelect /></RequireNonSeller></RequireWaveProduct></RequireAuth>} />
